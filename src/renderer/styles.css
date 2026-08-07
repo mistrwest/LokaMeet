@@ -1390,6 +1390,7 @@ select optgroup {
   color: var(--accent);
   cursor: pointer;
   font: inherit;
+  font-weight: 700;
   text-decoration: underline;
   text-underline-offset: 2px;
 }

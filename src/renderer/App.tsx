@@ -5273,7 +5273,7 @@ export function App() {
             <button
               type="button"
               className="settingsProjectLinkButton"
-              onClick={() => void window.lokameet.app.openExternal("https://github.com/mistrwest/LokaMeet/tree/main").catch(() => undefined)}
+              onClick={() => void window.lokameet.app.openExternal("https://github.com/mistrwest/LokaMeet").catch(() => undefined)}
             >
               github.com/mistrwest/LokaMeet
             </button>
