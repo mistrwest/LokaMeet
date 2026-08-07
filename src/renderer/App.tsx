@@ -5268,6 +5268,16 @@ export function App() {
 
       {settingsOpen && (
         <Modal title="Настройки" onClose={() => setSettingsOpen(false)} size="settings">
+          <div className="settingsProjectLink">
+            <span>Проект LokaMeet:</span>
+            <button
+              type="button"
+              className="settingsProjectLinkButton"
+              onClick={() => void window.lokameet.app.openExternal("https://github.com/mistrwest/LokaMeet/tree/main").catch(() => undefined)}
+            >
+              github.com/mistrwest/LokaMeet
+            </button>
+          </div>
           <div className="settingsTabs">
             <button
               className="btn"

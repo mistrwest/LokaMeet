@@ -1373,6 +1373,32 @@ select optgroup {
   padding-bottom: 10px;
 }
 
+.settingsProjectLink {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  color: var(--muted);
+  font-size: 13px;
+  flex: 0 0 auto;
+}
+
+.settingsProjectLinkButton {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  cursor: pointer;
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.settingsProjectLinkButton:hover,
+.settingsProjectLinkButton:focus-visible {
+  color: var(--text);
+}
+
 .settingsTabs {
   display: flex;
   flex-wrap: wrap;
