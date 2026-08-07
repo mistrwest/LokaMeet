@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>LokaMeet</title>
+    <style>
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+        background: #0b0f16;
+        color: #e5e7eb;
+        font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      }
+      #boot-splash {
+        position: fixed;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        background: radial-gradient(ellipse 80% 50% at 50% 0%, rgba(96, 165, 250, 0.14), transparent 55%), #0b0f16;
+        z-index: 10000;
+      }
+      #boot-splash .inner {
+        width: min(420px, calc(100vw - 48px));
+        text-align: center;
+      }
+      #boot-splash .brand {
+        font-size: 34px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        margin-bottom: 28px;
+      }
+      #boot-splash .label {
+        font-size: 14px;
+        color: #9ca3af;
+        margin-bottom: 14px;
+      }
+      #boot-splash .track {
+        height: 8px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.08);
+        overflow: hidden;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+      }
+      #boot-splash .fill {
+        height: 100%;
+        width: 0%;
+        border-radius: inherit;
+        background: linear-gradient(90deg, #3b82f6, #60a5fa 55%, #93c5fd);
+        animation: bootPulse 1.2s ease-in-out infinite;
+      }
+      #boot-splash .pct {
+        margin-top: 12px;
+        font-size: 20px;
+        font-weight: 600;
+        font-variant-numeric: tabular-nums;
+      }
+      @keyframes bootPulse {
+        0%,
+        100% {
+          width: 8%;
+          opacity: 0.7;
+        }
+        50% {
+          width: 28%;
+          opacity: 1;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="boot-splash" aria-busy="true" aria-live="polite">
+      <div class="inner">
+        <div class="brand">LokaMeet</div>
+        <div class="label">Загрузка…</div>
+        <div class="track"><div class="fill"></div></div>
+        <div class="pct">0%</div>
+      </div>
+    </div>
+    <div id="root"></div>
+    <script type="module" src="/src/renderer/main.tsx"></script>
+  </body>
+</html>
