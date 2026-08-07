@@ -62,8 +62,10 @@ export function RemotePeerMedia({
     const el = ref.current;
     if (!el) return;
 
-    pruneStaleRemoteStreamTracks(stream, { dropMutedVideo: !hasLiveVideo });
-
+    pruneStaleRemoteStreamTracks(stream);
+    // Не удаляем muted live-видео: после выключения камеры трек остаётся muted,
+    // а демонстрация экрана через replaceTrack делает unmute того же receiver без нового ontrack.
+    // Зависший кадр скрывается через visibility ниже.
     if (el.srcObject !== playbackStream) {
       el.srcObject = playbackStream;
     }

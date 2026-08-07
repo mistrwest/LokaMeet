@@ -29,13 +29,24 @@ export function registerIpc(params: {
 }) {
   ipcMain.handle("app:getState", () => {
     const s = params.getState();
-    return { profile: s.profile, chats: s.chats, hostedRoom: s.hostedRoom, signalingPort: params.signaling.getPort() };
+    return {
+      profile: s.profile,
+      chats: s.chats,
+      hostedRoom: s.hostedRoom,
+      signalingPort: params.signaling.getPort(),
+      appVersion: app.getVersion()
+    };
   });
 
   // setProfile сам пишет state.json — без повторного saveState
   ipcMain.handle("app:updateProfile", (_evt, patch: Partial<UserProfile>) => {
     params.setProfile(patch);
     return params.getState().profile;
+  });
+
+  ipcMain.handle("app:quit", () => {
+    app.quit();
+    return true;
   });
 
   ipcMain.handle("avatar:saveFromPath", (_evt, sourcePath: string) => {

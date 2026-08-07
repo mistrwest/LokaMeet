@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import type { AvailabilityStatus, ChatAttachment, ChatMessage, ChatScope, PeerInfo, RoomInfo, RtcSignal, UserProfile, WsEnvelope } from "../shared/types";
+import type { AvailabilityStatus, AvatarPosition, ChatAttachment, ChatMessage, ChatScope, PeerInfo, RoomInfo, RtcSignal, UserProfile, WsEnvelope } from "../shared/types";
 import { createPeerConnection, getVideoConstraints, replaceAudioTrack, replaceVideoTrack, replaceMicAudioTrack, addScreenAudioTrack, detachScreenAudioTrack, type LocalMediaConfig } from "./lib/webrtc";
 import {
   captureDesktopMedia,
@@ -148,20 +148,32 @@ function ProfileAvatar({
   src: string;
   name: string;
   className?: string;
-  position?: { x: number; y: number };
+  position?: AvatarPosition;
   onClick?: () => void;
 }) {
+  const x = position?.x ?? 50;
+  const y = position?.y ?? 50;
+  const zoom = Math.max(1, Math.min(3, (position?.zoom ?? 100) / 100));
   return (
-    <img
+    <span
       className={`profileAvatar ${className}${onClick ? " profileAvatarClickable" : ""}`}
-      src={src}
-      alt={`Аватар ${name}`}
-      style={{ objectPosition: `${position?.x ?? 50}% ${position?.y ?? 50}%` }}
       onClick={onClick}
       role={onClick ? "button" : undefined}
       tabIndex={onClick ? 0 : undefined}
       onKeyDown={onClick ? (event) => (event.key === "Enter" || event.key === " " ? (event.preventDefault(), onClick()) : undefined) : undefined}
-    />
+    >
+      <img
+        className="profileAvatarInner"
+        src={src}
+        alt={`Аватар ${name}`}
+        style={{
+          objectPosition: `${x}% ${y}%`,
+          transform: `scale(${zoom})`,
+          transformOrigin: `${x}% ${y}%`
+        }}
+        draggable={false}
+      />
+    </span>
   );
 }
 
@@ -175,6 +187,7 @@ export function App() {
   const [bootLabel, setBootLabel] = useState("loading");
   const [bootReady, setBootReady] = useState(false);
   const [signalingPort, setSignalingPort] = useState<number>(0);
+  const [appVersion, setAppVersion] = useState("1.0.1");
   const [localIps, setLocalIps] = useState<string[]>([]);
   const [logFilePath, setLogFilePath] = useState<string | null>(null);
   const [peers, setPeers] = useState<PeerInfo[]>([]);
@@ -274,7 +287,10 @@ export function App() {
   const [messageSoundVolume, setMessageSoundVolume] = useState(50);
   const [callerSoundVolume, setCallerSoundVolume] = useState(50);
   const [connectionSoundVolume, setConnectionSoundVolume] = useState(50);
-  const [settingsTab, setSettingsTab] = useState<"media" | "audio" | "ui" | "chat" | "connection" | "other" | "help">("media");
+  const [settingsTab, setSettingsTab] = useState<"media" | "camera" | "audio" | "ui" | "chat" | "connection" | "other" | "help">("media");
+  const [exitConfirmOpen, setExitConfirmOpen] = useState(false);
+  const cameraPreviewRef = useRef<HTMLVideoElement | null>(null);
+  const cameraPreviewStreamRef = useRef<MediaStream | null>(null);
   const testSoundAudioRef = useRef<HTMLAudioElement | null>(null);
   const audioNotificationRef = useRef<HTMLAudioElement | null>(null);
 
@@ -591,6 +607,64 @@ export function App() {
       }
     };
   }, [settingsOpen, selectedAudioInputId, noiseSuppression, noiseSuppressionSensitivity, localStreamVer]);
+
+  useEffect(() => {
+    if (!settingsOpen || settingsTab !== "camera") {
+      const prev = cameraPreviewStreamRef.current;
+      cameraPreviewStreamRef.current = null;
+      if (cameraPreviewRef.current) cameraPreviewRef.current.srcObject = null;
+      prev?.getTracks().forEach((t) => {
+        try {
+          t.stop();
+        } catch {
+          // игнор
+        }
+      });
+      return;
+    }
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const vc = getVideoConstraints(mediaCfg.videoQuality);
+        if (selectedVideoDeviceId) (vc as MediaTrackConstraints & { deviceId?: ConstrainDOMString }).deviceId = { ideal: selectedVideoDeviceId };
+        const stream = await navigator.mediaDevices.getUserMedia({ video: vc, audio: false });
+        if (cancelled) {
+          stream.getTracks().forEach((t) => t.stop());
+          return;
+        }
+        const old = cameraPreviewStreamRef.current;
+        cameraPreviewStreamRef.current = stream;
+        old?.getTracks().forEach((t) => {
+          try {
+            t.stop();
+          } catch {
+            // игнор
+          }
+        });
+        if (cameraPreviewRef.current) {
+          cameraPreviewRef.current.srcObject = stream;
+          await cameraPreviewRef.current.play().catch(() => undefined);
+        }
+      } catch {
+        if (!cancelled && cameraPreviewRef.current) cameraPreviewRef.current.srcObject = null;
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      const prev = cameraPreviewStreamRef.current;
+      cameraPreviewStreamRef.current = null;
+      if (cameraPreviewRef.current) cameraPreviewRef.current.srcObject = null;
+      prev?.getTracks().forEach((t) => {
+        try {
+          t.stop();
+        } catch {
+          // игнор
+        }
+      });
+    };
+  }, [settingsOpen, settingsTab, selectedVideoDeviceId, mediaCfg.videoQuality]);
 
   useEffect(() => {
     // Индикатор говорящего (локальный + удалённый)
@@ -993,6 +1067,10 @@ export function App() {
       markBoot(48, "bootSettings");
       setChats(s.chats);
       setSignalingPort(s.signalingPort);
+      if (s.appVersion) {
+        setAppVersion(s.appVersion);
+        document.title = `LokaMeet ${s.appVersion}`;
+      }
       document.documentElement.dataset.theme = s.profile.theme;
       await i18n.changeLanguage(s.profile.language);
       if (cancelled) return;
@@ -2897,6 +2975,17 @@ export function App() {
       const prev = remoteRef.current.get(remotePeerId);
       const track = e.track;
       track.onunmute = () => {
+        // После replaceTrack(null)/mute трек могли убрать из MediaStream (prune).
+        // replaceTrack(screen|camera) не шлёт новый ontrack — возвращаем трек в stream.
+        const remote = remoteRef.current.get(remotePeerId);
+        if (remote && !remote.stream.getTracks().some((t) => t.id === track.id)) {
+          try {
+            remote.stream.addTrack(track);
+          } catch {
+            // игнор
+          }
+        }
+        refreshRemotePeerVideo(remotePeerId);
       };
       
       // Отслеживать изменения состояния треков для обновления UI
@@ -3610,10 +3699,12 @@ export function App() {
     return peers.find((peer) => peer.peerId === peerId)?.avatarPosition ?? manualPeers.find((peer) => peer.peerId === peerId)?.avatarPosition;
   }
 
-  async function setAvatarPosition(axis: "x" | "y", value: number) {
+  async function setAvatarPosition(axis: "x" | "y" | "zoom", value: number) {
     if (!profile) return;
-    const current = profile.avatarPosition ?? { x: 50, y: 50 };
-    const avatarPosition = { ...current, [axis]: Math.max(0, Math.min(100, value)) };
+    const current = profile.avatarPosition ?? { x: 50, y: 50, zoom: 100 };
+    const clamped =
+      axis === "zoom" ? Math.max(100, Math.min(300, value)) : Math.max(0, Math.min(100, value));
+    const avatarPosition: AvatarPosition = { ...current, zoom: current.zoom ?? 100, [axis]: clamped };
     setProfile({ ...profile, avatarPosition });
     try {
       const updated = await window.lokameet.app.updateProfile({ avatarPosition });
@@ -4334,11 +4425,14 @@ export function App() {
                   { value: "ipad-midnight", label: t("theme_ipad-midnight") }
                 ]}
               />
-              <button className="btn" onClick={() => setSettingsOpen(true)} title="Настройки">
+              <button className="btn" onClick={() => setSettingsOpen(true)} title={t("settings")}>
                 ⚙
               </button>
               <button className="btn" onClick={() => void toggleLanguage()}>
                 {profile.language.toUpperCase()}
+              </button>
+              <button className="btn btnDanger" onClick={() => setExitConfirmOpen(true)} title={t("exitApp")}>
+                {t("exit")}
               </button>
             </div>
           </div>
@@ -4412,6 +4506,11 @@ export function App() {
                     const local = localStreamRef.current;
                     const stillSharing = Boolean(shareTrackRef.current);
                     if (local && !stillSharing) {
+                      // Сначала detach от PC, потом stop — иначе remote получает ended
+                      // и prune выкидывает трек до того, как screen share сможет его unmute'нуть.
+                      for (const pc of pcsRef.current.values()) {
+                        replaceVideoTrack(pc, null);
+                      }
                       for (const t of [...local.getVideoTracks()]) {
                         local.removeTrack(t);
                         try {
@@ -4419,9 +4518,6 @@ export function App() {
                         } catch {
                           // игнор
                         }
-                      }
-                      for (const pc of pcsRef.current.values()) {
-                        replaceVideoTrack(pc, null);
                       }
                       setLocalStreamVer((v) => v + 1);
                     } else if (local) {
@@ -5230,18 +5326,23 @@ export function App() {
       {avatarViewer && avatarUrls[avatarViewer.peerId] && (
         <Modal title={avatarViewer.name} onClose={() => setAvatarViewer(null)}>
           <div className="avatarViewer">
-            <img
-              className="avatarViewerImage"
-              src={avatarUrls[avatarViewer.peerId]}
-              alt={`Аватар ${avatarViewer.name}`}
-              style={{
-                objectPosition: `${avatarPositionFor(avatarViewer.peerId)?.x ?? 50}% ${avatarPositionFor(avatarViewer.peerId)?.y ?? 50}%`
-              }}
-            />
+            <div className="avatarViewerImage">
+              <img
+                className="avatarViewerImageInner"
+                src={avatarUrls[avatarViewer.peerId]}
+                alt={`Аватар ${avatarViewer.name}`}
+                style={{
+                  objectPosition: `${avatarPositionFor(avatarViewer.peerId)?.x ?? 50}% ${avatarPositionFor(avatarViewer.peerId)?.y ?? 50}%`,
+                  transform: `scale(${Math.max(1, Math.min(3, (avatarPositionFor(avatarViewer.peerId)?.zoom ?? 100) / 100))})`,
+                  transformOrigin: `${avatarPositionFor(avatarViewer.peerId)?.x ?? 50}% ${avatarPositionFor(avatarViewer.peerId)?.y ?? 50}%`
+                }}
+                draggable={false}
+              />
+            </div>
             {avatarViewer.peerId === profile?.peerId && (
               <div className="avatarPositionControls">
                 <label>
-                  По горизонтали
+                  {t("avatarPosX")}
                   <input
                     type="range"
                     min="0"
@@ -5251,7 +5352,7 @@ export function App() {
                   />
                 </label>
                 <label>
-                  По вертикали
+                  {t("avatarPosY")}
                   <input
                     type="range"
                     min="0"
@@ -5260,14 +5361,46 @@ export function App() {
                     onChange={(event) => void setAvatarPosition("y", Number(event.target.value))}
                   />
                 </label>
+                <label>
+                  {t("avatarZoom")}
+                  <input
+                    type="range"
+                    min="100"
+                    max="300"
+                    value={profile.avatarPosition?.zoom ?? 100}
+                    onChange={(event) => void setAvatarPosition("zoom", Number(event.target.value))}
+                  />
+                  <span className="muted">{profile.avatarPosition?.zoom ?? 100}%</span>
+                </label>
               </div>
             )}
           </div>
         </Modal>
       )}
 
+      {exitConfirmOpen && (
+        <Modal title={t("exitConfirmTitle")} onClose={() => setExitConfirmOpen(false)}>
+          <div className="muted" style={{ marginBottom: 16 }}>
+            {t("exitConfirmBody")}
+          </div>
+          <div className="row" style={{ justifyContent: "flex-end", flexWrap: "wrap", gap: 8 }}>
+            <button className="btn" onClick={() => setExitConfirmOpen(false)}>
+              {t("cancel")}
+            </button>
+            <button
+              className="btn btnDanger"
+              onClick={() => {
+                void window.lokameet.app.quit().catch(() => undefined);
+              }}
+            >
+              {t("exitApp")}
+            </button>
+          </div>
+        </Modal>
+      )}
+
       {settingsOpen && (
-        <Modal title="Настройки" onClose={() => setSettingsOpen(false)} size="settings">
+        <Modal title={t("settings")} onClose={() => setSettingsOpen(false)} size="settings">
           <div className="settingsProjectLink">
             <span>Проект LokaMeet:</span>
             <button
@@ -5288,7 +5421,18 @@ export function App() {
               }}
               onClick={() => setSettingsTab("media")}
             >
-              Медиа
+              {t("settingsMedia")}
+            </button>
+            <button
+              className="btn"
+              style={{
+                borderRadius: "4px 4px 0 0",
+                borderBottom: settingsTab === "camera" ? "2px solid var(--primary)" : "2px solid transparent",
+                background: settingsTab === "camera" ? "rgba(255,255,255,0.1)" : undefined
+              }}
+              onClick={() => setSettingsTab("camera")}
+            >
+              {t("settingsCamera")}
             </button>
             <button
               className="btn"
@@ -5299,7 +5443,7 @@ export function App() {
               }}
               onClick={() => setSettingsTab("audio")}
             >
-              Аудио
+              {t("settingsAudio")}
             </button>
             <button
               className="btn"
@@ -5310,7 +5454,7 @@ export function App() {
               }}
               onClick={() => setSettingsTab("ui")}
             >
-              Интерфейс
+              {t("settingsUi")}
             </button>
             <button
               className="btn"
@@ -5321,7 +5465,7 @@ export function App() {
               }}
               onClick={() => setSettingsTab("chat")}
             >
-              Чат
+              {t("settingsChat")}
             </button>
             <button
               className="btn"
@@ -5332,7 +5476,7 @@ export function App() {
               }}
               onClick={() => setSettingsTab("connection")}
             >
-              Подключение
+              {t("settingsConnection")}
             </button>
             <button
               className="btn"
@@ -5343,7 +5487,7 @@ export function App() {
               }}
               onClick={() => setSettingsTab("other")}
             >
-              Прочее
+              {t("settingsOther")}
             </button>
             <button
               className="btn"
@@ -5363,70 +5507,14 @@ export function App() {
           <>
           <div className="row" style={{ flexWrap: "wrap" }}>
             <div className="muted" style={{ width: 160 }}>
-              Ширина чата
-            </div>
-            <input
-              type="range"
-              min={360}
-              max={440}
-              value={chatHeight}
-              onChange={(e) => {
-                const v = Number(e.target.value);
-                setChatHeight(v);
-              }}
-              style={{ flex: "1 1 240px" }}
-            />
-            <span className="muted" style={{ width: 54, textAlign: "right" }}>
-              {chatHeight}px
-            </span>
-          </div>
-
-          <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
-            <div className="muted" style={{ width: 160 }}>
-              Видео по умолчанию
-            </div>
-            <Select
-              value={mediaCfg.videoQuality}
-              onChange={(v) => {
-                const q = v as any;
-                setMediaCfg((c) => ({ ...c, videoQuality: q }));
-              }}
-              options={[
-                { value: "low", label: t("low") },
-                { value: "medium", label: t("medium") },
-                { value: "high", label: t("high") }
-              ]}
-            />
-          </div>
-
-          <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
-            <div className="muted" style={{ width: 160 }}>
-              Камера
-            </div>
-            <Select
-              value={selectedVideoDeviceId}
-              onChange={(v) => void switchCamera(v)}
-              style={{ flex: "1 1 240px", maxWidth: 520 }}
-              options={[
-                { value: "", label: "(по умолчанию)" },
-                ...videoDevices.map((d) => ({
-                  value: d.deviceId,
-                  label: d.label || `Camera ${d.deviceId.slice(0, 6)}`
-                }))
-              ]}
-            />
-          </div>
-
-          <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
-            <div className="muted" style={{ width: 160 }}>
-              Микрофон
+              {t("microphone")}
             </div>
             <div style={{ flex: "1 1 240px", maxWidth: 520, display: "flex", flexDirection: "column", gap: 6 }}>
               <Select
                 value={selectedAudioInputId}
                 onChange={(v) => void switchMicrophone(v)}
                 options={[
-                  { value: "", label: "(по умолчанию)" },
+                  { value: "", label: t("deviceDefault") },
                   ...audioInputDevices.map((d) => ({
                     value: d.deviceId,
                     label: d.label || `Mic ${d.deviceId.slice(0, 6)}`
@@ -5444,27 +5532,79 @@ export function App() {
                 />
               </div>
               <div className="muted" style={{ fontSize: 12 }}>
-                Уровень: {Math.round(micLevel * 100)}%
+                {t("micLevel")}: {Math.round(micLevel * 100)}%
               </div>
             </div>
           </div>
 
           <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
             <div className="muted" style={{ width: 160 }}>
-              Вывод звука
+              {t("audioOutput")}
             </div>
             <Select
               value={selectedAudioOutputId}
               onChange={(v) => setSelectedAudioOutputId(v)}
               style={{ flex: "1 1 240px", maxWidth: 520 }}
               options={[
-                { value: "", label: "(по умолчанию)" },
+                { value: "", label: t("deviceDefault") },
                 ...audioOutputDevices.map((d) => ({
                   value: d.deviceId,
                   label: d.label || `Speaker ${d.deviceId.slice(0, 6)}`
                 }))
               ]}
             />
+          </div>
+          </>
+          )}
+
+          {settingsTab === "camera" && (
+          <>
+          <div className="row" style={{ flexWrap: "wrap" }}>
+            <div className="muted" style={{ width: 160 }}>
+              {t("cameraDevice")}
+            </div>
+            <Select
+              value={selectedVideoDeviceId}
+              onChange={(v) => void switchCamera(v)}
+              style={{ flex: "1 1 240px", maxWidth: 520 }}
+              options={[
+                { value: "", label: t("deviceDefault") },
+                ...videoDevices.map((d) => ({
+                  value: d.deviceId,
+                  label: d.label || `Camera ${d.deviceId.slice(0, 6)}`
+                }))
+              ]}
+            />
+          </div>
+
+          <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
+            <div className="muted" style={{ width: 160 }}>
+              {t("videoQuality")}
+            </div>
+            <Select
+              value={mediaCfg.videoQuality}
+              onChange={(v) => {
+                const q = v as LocalMediaConfig["videoQuality"];
+                setMediaCfg((c) => ({ ...c, videoQuality: q }));
+              }}
+              options={[
+                { value: "low", label: t("low") },
+                { value: "medium", label: t("medium") },
+                { value: "high", label: t("high") }
+              ]}
+            />
+          </div>
+
+          <div className="row" style={{ marginTop: 16, flexWrap: "wrap", alignItems: "flex-start" }}>
+            <div className="muted" style={{ width: 160 }}>
+              {t("cameraPreview")}
+            </div>
+            <div style={{ flex: "1 1 240px" }}>
+              <video ref={cameraPreviewRef} className="cameraSettingsPreview" playsInline muted autoPlay />
+              <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
+                {t("cameraPreviewHint")}
+              </div>
+            </div>
           </div>
           </>
           )}
@@ -6188,7 +6328,7 @@ export function App() {
           </>
           )}
 
-          {settingsTab === "help" && <SettingsHelpPanel language={profile?.language ?? "ru"} />}
+          {settingsTab === "help" && <SettingsHelpPanel language={profile?.language ?? "ru"} version={appVersion} />}
           </div>
 
           <div className="settingsFooter row" style={{ justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
@@ -6395,7 +6535,7 @@ function ChatComposer(props: { disabled: boolean; onSend: (text: string) => void
   );
 }
 
-function SettingsHelpPanel(props: { language: "ru" | "en" }) {
+function SettingsHelpPanel(props: { language: "ru" | "en"; version: string }) {
   const ru = props.language !== "en";
   const openLink = (url: string) => {
     void window.lokameet.app.openExternal(url).catch(() => undefined);
@@ -6532,7 +6672,12 @@ function SettingsHelpPanel(props: { language: "ru" | "en" }) {
   return (
     <div className="helpPanel">
       <div className="helpHero">
-        <div className="helpHeroTitle">{copy.heroTitle}</div>
+        <div className="helpHeroTitleRow">
+          <div className="helpHeroTitle">{copy.heroTitle}</div>
+          <span className="appVersionBadge" title={ru ? "Версия сборки" : "Build version"}>
+            v{props.version}
+          </span>
+        </div>
         <p className="helpHeroLead">{copy.heroLead}</p>
       </div>
 

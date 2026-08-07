@@ -1,6 +1,5 @@
-MIT License
-
-Copyright (c) 2026 LokaMeet contributors
+LokaMeet License (MIT-based, with mandatory attribution)
+Copyright (c) 2026 LokaMeet / mistrwest
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -9,8 +8,26 @@ to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
 copies of the Software, and to permit persons to whom the Software is
 furnished to do so, subject to the following conditions:
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+1. The above copyright notice and this permission notice shall be included in
+   all copies or substantial portions of the Software.
+
+2. MANDATORY ATTRIBUTION. Any use, distribution, modification, fork, public
+   demonstration, redistribution, or inclusion of the Software (or substantial
+   portions thereof) in another product or project MUST retain and clearly
+   display all of the following without removal or alteration of meaning:
+
+   - Project name: LokaMeet
+   - Project repository: https://github.com/mistrwest/LokaMeet
+   - Author / copyright holder: mistrwest
+   - Author profile / contact: https://github.com/mistrwest
+
+   Attribution must be reasonably visible to end users and recipients
+   (for example: About / Help / License screen, README, documentation,
+   website, or installer license page). Removing, hiding, or replacing these
+   links and author contacts is prohibited.
+
+3. The name "LokaMeet" and related branding may not be used in a way that
+   falsely implies endorsement by the original author without prior permission.
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
@@ -19,3 +36,50 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+--------------------------------------------------------------------------------
+
+Лицензия LokaMeet (на основе MIT, с обязательной атрибуцией)
+Copyright (c) 2026 LokaMeet / mistrwest
+
+Настоящим бесплатно предоставляется разрешение любому лицу, получившему
+копию данного программного обеспечения и сопутствующей документации
+(далее — «Программное обеспечение»), использовать Программное обеспечение
+без ограничений, включая без ограничения права на использование, копирование,
+изменение, объединение, публикацию, распространение, сублицензирование
+и/или продажу копий Программного обеспечения, а также разрешать лицам,
+которым предоставляется Программное обеспечение, делать это при соблюдении
+следующих условий:
+
+1. Указанное выше уведомление об авторских правах и настоящее разрешение
+   должны быть включены во все копии или существенные части Программного
+   обеспечения.
+
+2. ОБЯЗАТЕЛЬНАЯ АТРИБУЦИЯ. При любом использовании, распространении,
+   изменении, форке, публичной демонстрации, перераспространении или
+   включении Программного обеспечения (либо его существенных частей)
+   в другой продукт или проект ОБЯЗАТЕЛЬНО сохранять и ясно указывать
+   без удаления и искажения смысла все следующие сведения:
+
+   - Название проекта: LokaMeet
+   - Репозиторий проекта: https://github.com/mistrwest/LokaMeet
+   - Автор / правообладатель: mistrwest
+   - Профиль / контакты автора: https://github.com/mistrwest
+
+   Указание должно быть разумно заметным для пользователей и получателей
+   (например: экран «О программе» / «Помощь» / «Лицензия», README,
+   документация, сайт или страница лицензии установщика).
+   Удалять, скрывать или подменять эти ссылки и контакты автора запрещено.
+
+3. Название «LokaMeet» и связанные обозначения не допускается использовать
+   так, чтобы создавалось ложное впечатление об одобрении оригинальным
+   автором, без предварительного разрешения.
+
+ПРОГРАММНОЕ ОБЕСПЕЧЕНИЕ ПРЕДОСТАВЛЯЕТСЯ «КАК ЕСТЬ», БЕЗ КАКИХ-ЛИБО ГАРАНТИЙ,
+ЯВНЫХ ИЛИ ПОДРАЗУМЕВАЕМЫХ, ВКЛЮЧАЯ, НО НЕ ОГРАНИЧИВАЯСЬ ГАРАНТИЯМИ
+ТОВАРНОЙ ПРИГОДНОСТИ, СООТВЕТСТВИЯ КОНКРЕТНОМУ НАЗНАЧЕНИЮ И ОТСУТСТВИЯ
+НАРУШЕНИЙ ПРАВ. НИ В КАКОМ СЛУЧАЕ АВТОРЫ ИЛИ ПРАВООБЛАДАТЕЛИ НЕ НЕСУТ
+ОТВЕТСТВЕННОСТИ ПО ИСКАМ О ВОЗМЕЩЕНИИ УБЫТКОВ, УЩЕРБА ИЛИ ПО ИНЫМ ТРЕБОВАНИЯМ,
+ВОЗНИКАЮЩИМ ИЗ ДОГОВОРА, ДЕЛИКТА ИЛИ ИНЫМ ОБРАЗОМ В СВЯЗИ С ПРОГРАММНЫМ
+ОБЕСПЕЧЕНИЕМ ИЛИ ИСПОЛЬЗОВАНИЕМ ИЛИ ИНЫМИ ДЕЙСТВИЯМИ С ПРОГРАММНЫМ
+ОБЕСПЕЧЕНИЕМ.

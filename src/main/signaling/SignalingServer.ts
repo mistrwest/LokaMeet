@@ -1,6 +1,6 @@
 import { WebSocketServer, WebSocket } from "ws";
 import { v4 as uuidv4 } from "uuid";
-import { WsEnvelope } from "../../shared/types";
+import { AvatarPosition, WsEnvelope } from "../../shared/types";
 import { clampConferenceMaxParticipants } from "../../shared/conference";
 import { logInfo, logWarn, logError } from "../log";
 
@@ -25,7 +25,7 @@ type SelfProfile = {
   status: string;
   statusText?: string;
   avatarHash?: string;
-  avatarPosition?: { x: number; y: number };
+  avatarPosition?: AvatarPosition;
 };
 
 type Callbacks = {

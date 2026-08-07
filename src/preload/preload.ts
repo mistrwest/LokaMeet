@@ -8,12 +8,20 @@ type Unsub = () => void;
 // Слой preload предоставляет рендереру узкий IPC-интерфейс вместо прямого доступа к Electron API.
 const api = {
   app: {
-    getState: () => ipcRenderer.invoke("app:getState") as Promise<{ profile: UserProfile; chats: ChatMessage[]; hostedRoom?: HostedRoom; signalingPort: number }>,
+    getState: () =>
+      ipcRenderer.invoke("app:getState") as Promise<{
+        profile: UserProfile;
+        chats: ChatMessage[];
+        hostedRoom?: HostedRoom;
+        signalingPort: number;
+        appVersion: string;
+      }>,
     updateProfile: (patch: Partial<UserProfile>) => ipcRenderer.invoke("app:updateProfile", patch) as Promise<UserProfile>,
     openDevTools: () => ipcRenderer.invoke("app:openDevTools") as Promise<boolean>,
     openPath: (pathToOpen: string) => ipcRenderer.invoke("app:openPath", pathToOpen) as Promise<boolean>,
     openExternal: (url: string) => ipcRenderer.invoke("app:openExternal", url) as Promise<boolean>,
-    showOpenDialog: (options: { filters?: Array<{ name: string; extensions: string[] }> }) => ipcRenderer.invoke("app:showOpenDialog", options) as Promise<string | null>
+    showOpenDialog: (options: { filters?: Array<{ name: string; extensions: string[] }> }) => ipcRenderer.invoke("app:showOpenDialog", options) as Promise<string | null>,
+    quit: () => ipcRenderer.invoke("app:quit") as Promise<boolean>
   },
   avatar: {
     saveFromPath: (sourcePath: string) =>
@@ -35,7 +43,7 @@ const api = {
   },
   net: {
     connect: (host: string, port: number) =>
-      ipcRenderer.invoke("net:connect", host, port) as Promise<{ peerId: string; userName: string; status: string; statusText?: string; avatarHash?: string; avatarPosition?: { x: number; y: number } }>,
+      ipcRenderer.invoke("net:connect", host, port) as Promise<{ peerId: string; userName: string; status: string; statusText?: string; avatarHash?: string; avatarPosition?: import("../shared/types").AvatarPosition }>,
     getLocalIPv4: () => ipcRenderer.invoke("net:getLocalIPv4") as Promise<string[]>,
     sendToPeer: (peerId: string, env: WsEnvelope) => ipcRenderer.invoke("net:sendToPeer", peerId, env) as Promise<boolean>,
     onEnvelope: (cb: (env: WsEnvelope) => void): Unsub => {

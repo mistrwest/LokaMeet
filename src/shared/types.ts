@@ -6,13 +6,21 @@ export type AvailabilityStatus =
   | "in_conference"
   | "in_call";
 
+/** Позиция кадрирования аватара: x/y — object-position (%), zoom — приближение (%). */
+export type AvatarPosition = {
+  x: number;
+  y: number;
+  /** 100 = без зума, до 300 = сильное приближение. */
+  zoom?: number;
+};
+
 export type PeerInfo = {
   peerId: string;
   userName: string;
   status: AvailabilityStatus;
   statusText?: string;
   avatarHash?: string;
-  avatarPosition?: { x: number; y: number };
+  avatarPosition?: AvatarPosition;
   host: string;
   port: number;
   lastSeenAt: number;
@@ -47,7 +55,7 @@ export type UserProfile = {
     | "ipad-lagoon"
     | "ipad-midnight";
   avatarHash?: string;
-  avatarPosition?: { x: number; y: number };
+  avatarPosition?: AvatarPosition;
   hasChosenName?: boolean;
   uiChatHeight?: number;
   uiSidebarWidth?: number;
@@ -198,7 +206,7 @@ export type WsEnvelope =
       status: AvailabilityStatus;
       statusText?: string;
       avatarHash?: string;
-      avatarPosition?: { x: number; y: number };
+      avatarPosition?: AvatarPosition;
     }
   | { type: "direct-call-request"; fromPeerId: string; fromUserName: string }
   | { type: "direct-call-accept"; fromPeerId: string }

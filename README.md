@@ -96,9 +96,16 @@ npm run dev
 npm run dist
 ```
 
-Артефакты появятся в `release/` (NSIS‑установщик и portable для Windows).
+или `build_app.bat`.
 
-Для полной сборки нужны ресурсы: `build/icon.png`, а также при необходимости папки `smiles/` и `snds/`.
+В `release/` появятся:
+
+| Файл | Описание |
+|------|----------|
+| `LokaMeet-Setup-*.exe` | Полноценный NSIS‑установщик: выбор папки, описание, ярлыки, лицензия |
+| `LokaMeet-Portable-*.exe` | Portable‑сборка без установки |
+
+Для иконки установщика нужен `build/icon.png`.
 
 ## Сеть и firewall
 
@@ -108,10 +115,45 @@ npm run dist
 - mDNS использует **UDP 5353**; есть UDP‑фолбэк на порт **45454**
 - Устройства должны быть в **одной подсети**
 
-## Стек
+## Стек и библиотеки
 
-Electron · React · TypeScript · Vite · WebRTC · WebSocket · mDNS
+| Слой | Технологии |
+|------|------------|
+| Desktop | [Electron](https://www.electronjs.org/) |
+| UI | [React](https://react.dev/) · [TypeScript](https://www.typescriptlang.org/) |
+| Медиа | WebRTC (встроенный) |
+| Сигналинг | [ws](https://github.com/websockets/ws) (WebSocket) |
+| Discovery | [bonjour-service](https://github.com/onlxltd/bonjour-service) (mDNS) + UDP‑broadcast |
+| i18n | [i18next](https://www.i18next.com/) · [react-i18next](https://react.i18next.com/) |
+| Сборка | [Vite](https://vitejs.dev/) · [electron-builder](https://www.electron.build/) |
+
+### Runtime (`dependencies`)
+
+| Пакет | Назначение |
+|-------|------------|
+| [`react`](https://www.npmjs.com/package/react) / [`react-dom`](https://www.npmjs.com/package/react-dom) | Интерфейс |
+| [`i18next`](https://www.npmjs.com/package/i18next) / [`react-i18next`](https://www.npmjs.com/package/react-i18next) | Локализация RU / EN |
+| [`ws`](https://www.npmjs.com/package/ws) | Локальный signaling‑сервер |
+| [`bonjour-service`](https://www.npmjs.com/package/bonjour-service) | Автообнаружение в LAN (mDNS) |
+| [`uuid`](https://www.npmjs.com/package/uuid) | Идентификаторы peer / room |
+
+### Development (`devDependencies`)
+
+| Пакет | Назначение |
+|-------|------------|
+| [`electron`](https://www.npmjs.com/package/electron) | Оболочка десктоп‑приложения |
+| [`typescript`](https://www.npmjs.com/package/typescript) + `@types/*` | Компиляция и типы |
+| [`vite`](https://www.npmjs.com/package/vite) / [`@vitejs/plugin-react`](https://www.npmjs.com/package/@vitejs/plugin-react) | Dev‑сервер и сборка renderer |
+| [`electron-builder`](https://www.npmjs.com/package/electron-builder) | Установщик / portable |
+| [`concurrently`](https://www.npmjs.com/package/concurrently) / [`cross-env`](https://www.npmjs.com/package/cross-env) | Скрипты разработки |
+
+Полный список версий — в [`package.json`](package.json).
 
 ## Лицензия
 
-[MIT](LICENSE)
+Исходный код распространяется на условиях [LokaMeet License](LICENSE) (на основе MIT) с **обязательной атрибуцией**:
+
+- проект: https://github.com/mistrwest/LokaMeet  
+- автор: [mistrwest](https://github.com/mistrwest)  
+
+При использовании, форке или распространении эти ссылки и указание автора удалять нельзя.

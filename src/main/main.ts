@@ -113,12 +113,13 @@ const discovery = new LanDiscovery(
 
 async function createMainWindow() {
   Menu.setApplicationMenu(null);
+  const appTitle = `LokaMeet ${app.getVersion()}`;
   mainWindow = new BrowserWindow({
     width: 1600,
     height: 900,
     minWidth: 1600,
     minHeight: 900,
-    title: "LokaMeet",
+    title: appTitle,
     autoHideMenuBar: true,
     show: false,
     backgroundColor: "#0b0f16",
@@ -129,8 +130,14 @@ async function createMainWindow() {
     }
   });
   mainWindow.setMenuBarVisibility(false);
+  // Vite/index.html ставит <title>LokaMeet</title> и сбрасывает заголовок окна — блокируем.
+  mainWindow.on("page-title-updated", (e) => {
+    e.preventDefault();
+  });
+  mainWindow.setTitle(appTitle);
 
   mainWindow.once("ready-to-show", () => {
+    mainWindow?.setTitle(appTitle);
     mainWindow?.show();
   });
 
@@ -141,6 +148,7 @@ async function createMainWindow() {
     const indexHtml = path.join(__dirname, "..", "renderer", "index.html");
     await mainWindow.loadFile(indexHtml);
   }
+  mainWindow.setTitle(appTitle);
 
   mainWindow.on("closed", () => {
     mainWindow = null;

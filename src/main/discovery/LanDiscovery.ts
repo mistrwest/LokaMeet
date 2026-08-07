@@ -1,7 +1,7 @@
 import os from "node:os";
 import dgram from "node:dgram";
 import { Bonjour, Service } from "bonjour-service";
-import { PeerInfo, RoomInfo, UserProfile } from "../../shared/types";
+import { AvatarPosition, PeerInfo, RoomInfo, UserProfile } from "../../shared/types";
 import { clampConferenceMaxParticipants } from "../../shared/conference";
 import { logInfo, logWarn } from "../log";
 
@@ -27,7 +27,7 @@ type UdpBeacon = {
   status: PeerInfo["status"];
   statusText?: string;
   avatarHash?: string;
-  avatarPosition?: { x: number; y: number };
+  avatarPosition?: AvatarPosition;
   signalingPort: number;
   rooms?: Array<{
     roomId: string;
@@ -354,7 +354,11 @@ export class LanDiscovery {
       try {
         const parsed = JSON.parse(avatarPositionText);
         if (Number.isFinite(parsed?.x) && Number.isFinite(parsed?.y)) {
-          avatarPosition = { x: Math.max(0, Math.min(100, parsed.x)), y: Math.max(0, Math.min(100, parsed.y)) };
+          avatarPosition = {
+            x: Math.max(0, Math.min(100, parsed.x)),
+            y: Math.max(0, Math.min(100, parsed.y)),
+            zoom: Number.isFinite(parsed?.zoom) ? Math.max(100, Math.min(300, parsed.zoom)) : undefined
+          };
         }
       } catch {
         // Некорректные координаты аватара не должны отклонять сведения об узле целиком.
