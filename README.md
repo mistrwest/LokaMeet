@@ -4,6 +4,10 @@ LokaMeet — десктоп‑приложение для видеосвязи �
 
 Этот файл — краткий обзор возможностей, быстрый старт и заметки по архитектуре.
 
+## Интерфейс
+
+![Интерфейс LokaMeet](https://raw.githubusercontent.com/mistrwest/LokaMeet/main/img1.PNG)
+
 ## Быстрый старт (Windows)
 
 Откройте PowerShell в корне репозитория — папке, где лежит `package.json`:
