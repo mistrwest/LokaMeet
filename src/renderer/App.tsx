@@ -99,6 +99,7 @@ function PanelResizer({
   axis: "horizontal" | "vertical";
   onDrag: (delta: number) => void;
 }) {
+  const { t } = useTranslation();
   const startRef = useRef(0);
   const onDragRef = useRef(onDrag);
   onDragRef.current = onDrag;
@@ -133,7 +134,7 @@ function PanelResizer({
       onMouseDown={handleMouseDown}
       role="separator"
       aria-orientation={isVertical ? "vertical" : "horizontal"}
-      title={isVertical ? "Тяните для изменения ширины" : "Тяните для изменения высоты"}
+      title={isVertical ? t("resizeWidth") : t("resizeHeight")}
     />
   );
 }
@@ -151,6 +152,7 @@ function ProfileAvatar({
   position?: AvatarPosition;
   onClick?: () => void;
 }) {
+  const { t } = useTranslation();
   const x = position?.x ?? 50;
   const y = position?.y ?? 50;
   const zoom = Math.max(1, Math.min(3, (position?.zoom ?? 100) / 100));
@@ -165,7 +167,7 @@ function ProfileAvatar({
       <img
         className="profileAvatarInner"
         src={src}
-        alt={`Аватар ${name}`}
+        alt={t("avatarAlt", { name })}
         style={{
           objectPosition: `${x}% ${y}%`,
           transform: `scale(${zoom})`,
@@ -187,7 +189,7 @@ export function App() {
   const [bootLabel, setBootLabel] = useState("loading");
   const [bootReady, setBootReady] = useState(false);
   const [signalingPort, setSignalingPort] = useState<number>(0);
-  const [appVersion, setAppVersion] = useState("1.0.1");
+  const [appVersion, setAppVersion] = useState("1.0.2");
   const [localIps, setLocalIps] = useState<string[]>([]);
   const [logFilePath, setLogFilePath] = useState<string | null>(null);
   const [peers, setPeers] = useState<PeerInfo[]>([]);
@@ -306,6 +308,8 @@ export function App() {
   const onEnvelopeRef = useRef<(env: WsEnvelope) => void>(() => undefined);
 
   const [nameDialogOpen, setNameDialogOpen] = useState(false);
+  /** При true крестик/Отмена на диалоге имени закрывают приложение (старт). */
+  const [nameDialogExitsApp, setNameDialogExitsApp] = useState(false);
   const [pendingName, setPendingName] = useState("");
   const [pendingStatus, setPendingStatus] = useState<AvailabilityStatus>("online");
 
@@ -515,9 +519,21 @@ export function App() {
 
   function speakingVars(level: number): React.CSSProperties {
     const lv = Number.isFinite(level) ? Math.max(0, Math.min(1, level)) : 0;
-    // Яркость по уровню: тихо → тускло, громко → ярко (лёгкий floor, чтобы тихая речь читалась).
-    const intensity = lv <= 0.01 ? 0 : Math.min(1, 0.18 + Math.pow(lv, 0.85) * 0.82);
+    // Чуть ярче: выше floor и круче кривая, чтобы кольцо и квадрат у ника лучше читались.
+    const intensity = lv <= 0.01 ? 0 : Math.min(1, 0.34 + Math.pow(lv, 0.75) * 0.78);
     return { ["--speak-level" as string]: String(intensity) };
+  }
+
+  function quitApp() {
+    void window.lokameet.app.quit().catch(() => undefined);
+  }
+
+  function closeNameDialog() {
+    if (nameDialogExitsApp) {
+      quitApp();
+      return;
+    }
+    setNameDialogOpen(false);
   }
 
   useEffect(() => {
@@ -1073,6 +1089,7 @@ export function App() {
       }
       document.documentElement.dataset.theme = s.profile.theme;
       await i18n.changeLanguage(s.profile.language);
+      document.documentElement.lang = s.profile.language;
       if (cancelled) return;
       setChatHeight(Math.max(360, Math.min(440, s.profile.uiChatHeight ?? 380)));
       setSidebarWidth(Math.max(360, Math.min(420, s.profile.uiSidebarWidth ?? 380)));
@@ -1183,6 +1200,7 @@ export function App() {
       unsubEnv = window.lokameet.net.onEnvelope((env) => onEnvelopeRef.current(env));
 
       markBoot(100, "bootReady");
+      setNameDialogExitsApp(true);
       setNameDialogOpen(true);
       setBootReady(true);
     })().catch((e) => {
@@ -2844,7 +2862,7 @@ export function App() {
               }, 3000);
               typingTimeoutRef.current.set(remotePeerId, timeoutId);
             } else if (msg?.t === "file-sending") {
-              const fileName = msg.name ? String(msg.name) : "файл";
+              const fileName = msg.name ? String(msg.name) : t("fileFallbackName");
               const key = `recv:${remotePeerId}:pending`;
               upsertFileTransfer(
                 {
@@ -3758,6 +3776,7 @@ export function App() {
     setPendingStatus(
       profile.status === "in_call" || profile.status === "in_conference" ? "online" : profile.status
     );
+    setNameDialogExitsApp(false);
     setNameDialogOpen(true);
   }
 
@@ -3765,6 +3784,7 @@ export function App() {
     if (!profile) return;
     const next = profile.language === "ru" ? "en" : "ru";
     await i18n.changeLanguage(next);
+    document.documentElement.lang = next;
     const updated = await window.lokameet.app.updateProfile({ language: next });
     setProfile(updated);
   }
@@ -4126,7 +4146,7 @@ export function App() {
   return (
     <div className="app">
       {nameDialogOpen && (
-        <Modal title={t("promptYourName")} onClose={() => setNameDialogOpen(false)}>
+        <Modal title={t("promptYourName")} onClose={closeNameDialog}>
           <div className="row" style={{ flexWrap: "wrap" }}>
             <input className="btn grow" value={pendingName} onChange={(e) => setPendingName(e.target.value)} placeholder="User" />
           </div>
@@ -4158,22 +4178,16 @@ export function App() {
                   .updateProfile({ userName: v, hasChosenName: true, status: pendingStatus })
                   .then((p) => setProfile(p))
                   .catch((e) => setError(String(e?.message ?? e)))
-                  .finally(() => setNameDialogOpen(false));
+                  .finally(() => {
+                    setNameDialogExitsApp(false);
+                    setNameDialogOpen(false);
+                  });
               }}
             >
               OK
             </button>
-            <button
-              className="btn"
-              onClick={() => {
-                window.lokameet.app
-                  .updateProfile({ hasChosenName: true })
-                  .then((p) => setProfile(p))
-                  .catch(() => undefined)
-                  .finally(() => setNameDialogOpen(false));
-              }}
-            >
-              Отмена
+            <button className="btn" onClick={closeNameDialog}>
+              {t("cancel")}
             </button>
           </div>
         </Modal>
@@ -4400,11 +4414,11 @@ export function App() {
               <button className="btn" onClick={() => void updateName()}>
                 {t("name")}
               </button>
-              <button className="btn" onClick={() => void chooseAvatar()} title="Выбрать аватар">
-                Аватар
+              <button className="btn" onClick={() => void chooseAvatar()} title={t("chooseAvatar")}>
+                {t("avatar")}
               </button>
               {profile.avatarHash && (
-                <button className="btn" onClick={() => void removeAvatar()} title="Удалить аватар">
+                <button className="btn" onClick={() => void removeAvatar()} title={t("removeAvatar")}>
                   ×
                 </button>
               )}
@@ -4730,7 +4744,15 @@ export function App() {
                 <div key={profile.peerId} className="item" style={{ cursor: "default" }}>
                   <div className="itemTitle">
                     <div className="truncate" style={{ fontWeight: 700, display: "flex", alignItems: "center", gap: 6 }} title={profile.userName}>
-                      {avatarUrls[profile.peerId] && <ProfileAvatar className="listAvatar" src={avatarUrls[profile.peerId]} name={profile.userName} position={profile.avatarPosition} onClick={() => setAvatarViewer({ peerId: profile.peerId, name: profile.userName })} />}
+                      {avatarUrls[profile.peerId] ? (
+                        <span className={`avatarStatusRing avatarStatusRing--${profile.status}`} title={statusLabel(profile.status)}>
+                          <ProfileAvatar className="listAvatar" src={avatarUrls[profile.peerId]} name={profile.userName} position={profile.avatarPosition} onClick={() => setAvatarViewer({ peerId: profile.peerId, name: profile.userName })} />
+                        </span>
+                      ) : (
+                        <span className={`avatarStatusRing avatarStatusRing--${profile.status}`} title={statusLabel(profile.status)}>
+                          <span className="listAvatar listAvatarPlaceholder" aria-hidden="true" />
+                        </span>
+                      )}
                       <span className="truncate">
                         {profile.userName} {t("you")}
                       </span>
@@ -4786,10 +4808,18 @@ export function App() {
                             : p.userName
                       }
                     >
-                      {avatarUrls[p.peerId] && <ProfileAvatar className="listAvatar" src={avatarUrls[p.peerId]} name={p.userName} position={p.avatarPosition} onClick={() => setAvatarViewer({ peerId: p.peerId, name: p.userName })} />}
+                      {avatarUrls[p.peerId] ? (
+                        <span className={`avatarStatusRing avatarStatusRing--${p.status}`} title={statusLabel(p.status)}>
+                          <ProfileAvatar className="listAvatar" src={avatarUrls[p.peerId]} name={p.userName} position={p.avatarPosition} onClick={() => setAvatarViewer({ peerId: p.peerId, name: p.userName })} />
+                        </span>
+                      ) : (
+                        <span className={`avatarStatusRing avatarStatusRing--${p.status}`} title={statusLabel(p.status)}>
+                          <span className="listAvatar listAvatarPlaceholder" aria-hidden="true" />
+                        </span>
+                      )}
                       <span className="truncate">{p.userName}</span>
                       {screenSharingPeerId === p.peerId && <ScreenSharingDot title={t("screenShareIndicator")} />}
-                      {unreadPeerIds.has(p.peerId) && <span className="unreadMessageDot" title="Новое сообщение" aria-label="Новое сообщение" />}
+                      {unreadPeerIds.has(p.peerId) && <span className="unreadMessageDot" title={t("newMessage")} aria-label={t("newMessage")} />}
                     </div>
                     <span className={`badge ${statusBadgeClass(p.status)}`}>{statusLabel(p.status)}</span>
                   </div>
@@ -5017,7 +5047,8 @@ export function App() {
               </div>
             )}
             <div className="tileLabel">
-              Вы: {profile.userName}
+              <span className="tileSpeakMark" aria-hidden="true" />
+              {t("youPrefix", { name: profile.userName })}
               {screenSharingPeerId === profile.peerId && <ScreenSharingDot title={t("screenShareIndicator")} />}
             </div>
           </div>
@@ -5060,6 +5091,7 @@ export function App() {
                   </div>
                 )}
                 <div className="tileLabel">
+                  <span className="tileSpeakMark" aria-hidden="true" />
                   {r.userName}
                   {screenSharingPeerId === r.peerId && <ScreenSharingDot title={t("screenShareIndicator")} />}
                 </div>
@@ -5089,29 +5121,33 @@ export function App() {
             <div>
               {call?.mode === "direct" && (
                 <>
-                  Чат: <b>{call.peerName}</b>
+                  {t("chatWith")}
+                  <b>{call.peerName}</b>
                 </>
               )}
               {call?.mode === "room" && (
                 <>
-                  Конференция: <b>{call.roomName}</b> <span className="muted">({call.participants.length})</span>
+                  {t("conferenceWith")}
+                  <b>{call.roomName}</b> <span className="muted">({call.participants.length})</span>
                 </>
               )}
               {!call && selectedPeer && (
                 <>
-                  Чат: <b>{selectedPeer.userName}</b>
+                  {t("chatWith")}
+                  <b>{selectedPeer.userName}</b>
                 </>
               )}
               {!call && selectedRoom && (
                 <>
-                  Конференция: <b>{selectedRoom.roomName}</b>
+                  {t("conferenceWith")}
+                  <b>{selectedRoom.roomName}</b>
                 </>
               )}
               {!call && !selectedPeer && !selectedRoom && <span className="muted">{t("chat")}</span>}
             </div>
             <div className="row">
                 {call && callStartedAt && (
-                  <span className="badge" title="Время разговора">
+                  <span className="badge" title={t("callDuration")}>
                     {formatDurationMs(nowTick - callStartedAt)}
                   </span>
                 )}
@@ -5330,7 +5366,7 @@ export function App() {
               <img
                 className="avatarViewerImageInner"
                 src={avatarUrls[avatarViewer.peerId]}
-                alt={`Аватар ${avatarViewer.name}`}
+                alt={t("avatarAlt", { name: avatarViewer.name })}
                 style={{
                   objectPosition: `${avatarPositionFor(avatarViewer.peerId)?.x ?? 50}% ${avatarPositionFor(avatarViewer.peerId)?.y ?? 50}%`,
                   transform: `scale(${Math.max(1, Math.min(3, (avatarPositionFor(avatarViewer.peerId)?.zoom ?? 100) / 100))})`,
@@ -5389,9 +5425,7 @@ export function App() {
             </button>
             <button
               className="btn btnDanger"
-              onClick={() => {
-                void window.lokameet.app.quit().catch(() => undefined);
-              }}
+              onClick={quitApp}
             >
               {t("exitApp")}
             </button>
@@ -5402,7 +5436,7 @@ export function App() {
       {settingsOpen && (
         <Modal title={t("settings")} onClose={() => setSettingsOpen(false)} size="settings">
           <div className="settingsProjectLink">
-            <span>Проект LokaMeet:</span>
+            <span>{t("projectLink")}</span>
             <button
               type="button"
               className="settingsProjectLinkButton"
@@ -5613,7 +5647,7 @@ export function App() {
           <>
           <div className="row" style={{ flexWrap: "wrap" }}>
             <div className="muted" style={{ width: 160 }}>
-              Громкость микрофона
+              {t("micVolume")}
             </div>
             <input
               type="range"
@@ -5668,18 +5702,18 @@ export function App() {
 
           <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
             <div className="muted" style={{ width: 160 }}>
-              Шумоподавление
+              {t("noiseSuppression")}
             </div>
             <label className="row" style={{ gap: 8, flex: "1 1 240px" }}>
               <input type="checkbox" checked={noiseSuppression} onChange={(e) => setNoiseSuppression(e.target.checked)} />
-              <span>Включить шумоподавление микрофона</span>
+              <span>{t("noiseSuppressionEnable")}</span>
             </label>
           </div>
 
           {noiseSuppression && (
             <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
               <div className="muted" style={{ width: 160 }}>
-                Чувствительность
+                {t("noiseSensitivity")}
               </div>
               <input
                 type="range"
@@ -5697,11 +5731,11 @@ export function App() {
 
           <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
             <div className="muted" style={{ width: 160 }}>
-              Звуковые уведомления
+              {t("soundNotifications")}
             </div>
             <label className="row" style={{ gap: 8, flex: "1 1 240px" }}>
               <input type="checkbox" checked={soundNotificationsEnabled} onChange={(e) => setSoundNotificationsEnabled(e.target.checked)} />
-              <span>Включить звуковые уведомления</span>
+              <span>{t("soundNotificationsEnable")}</span>
             </label>
           </div>
 
@@ -5709,7 +5743,7 @@ export function App() {
             <>
               <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
                 <div className="muted" style={{ width: 160 }}>
-                  Громкость уведомлений
+                  {t("notificationVolume")}
                 </div>
                 <input
                   type="range"
@@ -5725,7 +5759,7 @@ export function App() {
               </div>
               <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
                 <div className="muted" style={{ width: 160 }}>
-                  Звук звонка
+                  {t("soundCall")}
                 </div>
                 <div style={{ display: "flex", gap: 8, flex: "1 1 240px", alignItems: "center" }}>
                   <input
@@ -5752,7 +5786,7 @@ export function App() {
                         setError(t("errPickFile"));
                       }
                     }}
-                    title="Выбрать файл"
+                    title={t("chooseFile")}
                   >
                     📁
                   </button>
@@ -5778,7 +5812,7 @@ export function App() {
                         setError(t("errPlaySound"));
                       }
                     }}
-                    title="Прослушать"
+                    title={t("previewSound")}
                   >
                     ▶️
                   </button>
@@ -5786,7 +5820,7 @@ export function App() {
               </div>
               <div className="row" style={{ marginTop: 8, flexWrap: "wrap", marginLeft: 168 }}>
                 <div className="muted" style={{ fontSize: 12, width: 80 }}>
-                  Громкость:
+                  {t("volume")}
                 </div>
                 <input
                   type="range"
@@ -5802,7 +5836,7 @@ export function App() {
               </div>
               <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
                 <div className="muted" style={{ width: 160 }}>
-                  Звук звонящего
+                  {t("soundCaller")}
                 </div>
                 <div style={{ display: "flex", gap: 8, flex: "1 1 240px", alignItems: "center" }}>
                   <input
@@ -5827,7 +5861,7 @@ export function App() {
                         setError(t("errPickFile"));
                       }
                     }}
-                    title="Выбрать файл"
+                    title={t("chooseFile")}
                   >
                     📁
                   </button>
@@ -5853,7 +5887,7 @@ export function App() {
                         setError(t("errPlaySound"));
                       }
                     }}
-                    title="Прослушать"
+                    title={t("previewSound")}
                   >
                     ▶️
                   </button>
@@ -5861,7 +5895,7 @@ export function App() {
               </div>
               <div className="row" style={{ marginTop: 8, flexWrap: "wrap", marginLeft: 168 }}>
                 <div className="muted" style={{ fontSize: 12, width: 80 }}>
-                  Громкость:
+                  {t("volume")}
                 </div>
                 <input
                   type="range"
@@ -5877,7 +5911,7 @@ export function App() {
               </div>
               <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
                 <div className="muted" style={{ width: 160 }}>
-                  Звук соединения
+                  {t("soundConnect")}
                 </div>
                 <div style={{ display: "flex", gap: 8, flex: "1 1 240px", alignItems: "center" }}>
                   <input
@@ -5902,7 +5936,7 @@ export function App() {
                         setError(t("errPickFile"));
                       }
                     }}
-                    title="Выбрать файл"
+                    title={t("chooseFile")}
                   >
                     📁
                   </button>
@@ -5928,7 +5962,7 @@ export function App() {
                         setError(t("errPlaySound"));
                       }
                     }}
-                    title="Прослушать"
+                    title={t("previewSound")}
                   >
                     ▶️
                   </button>
@@ -5936,7 +5970,7 @@ export function App() {
               </div>
               <div className="row" style={{ marginTop: 8, flexWrap: "wrap", marginLeft: 168 }}>
                 <div className="muted" style={{ fontSize: 12, width: 80 }}>
-                  Громкость:
+                  {t("volume")}
                 </div>
                 <input
                   type="range"
@@ -5952,7 +5986,7 @@ export function App() {
               </div>
               <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
                 <div className="muted" style={{ width: 160 }}>
-                  Звук сообщений
+                  {t("soundMessage")}
                 </div>
                 <div style={{ display: "flex", gap: 8, flex: "1 1 240px", alignItems: "center" }}>
                   <input
@@ -5977,7 +6011,7 @@ export function App() {
                         setError(t("errPickFile"));
                       }
                     }}
-                    title="Выбрать файл"
+                    title={t("chooseFile")}
                   >
                     📁
                   </button>
@@ -6003,7 +6037,7 @@ export function App() {
                         setError(t("errPlaySound"));
                       }
                     }}
-                    title="Прослушать"
+                    title={t("previewSound")}
                   >
                     ▶️
                   </button>
@@ -6011,7 +6045,7 @@ export function App() {
               </div>
               <div className="row" style={{ marginTop: 8, flexWrap: "wrap", marginLeft: 168 }}>
                 <div className="muted" style={{ fontSize: 12, width: 80 }}>
-                  Громкость:
+                  {t("volume")}
                 </div>
                 <input
                   type="range"
@@ -6034,7 +6068,7 @@ export function App() {
           <>
           <div className="row" style={{ flexWrap: "wrap" }}>
             <div className="muted" style={{ width: 160 }}>
-              Ширина чата
+              {t("chatWidth")}
             </div>
             <input
               type="range"
@@ -6054,7 +6088,7 @@ export function App() {
 
           <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
             <div className="muted" style={{ width: 160 }}>
-              Ширина панели
+              {t("sidebarWidth")}
             </div>
             <input
               type="range"
@@ -6071,7 +6105,7 @@ export function App() {
 
           <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
             <div className="muted" style={{ width: 160 }}>
-              Размер текста
+              {t("fontSize")}
             </div>
             <input
               type="range"
@@ -6089,18 +6123,18 @@ export function App() {
 
           <div className="panelSectionDivider" />
           <div className="muted" style={{ marginTop: 12, marginBottom: 8, fontWeight: 600 }}>
-            Плитки видео
+            {t("videoTiles")}
           </div>
 
           <div className="row" style={{ flexWrap: "wrap" }}>
             <div className="muted" style={{ width: 160 }}>
-              Соотношение сторон
+              {t("tileAspect")}
             </div>
             <Select
               value={tileAspect}
               onChange={(v) => setTileAspect(v as typeof tileAspect)}
               options={[
-                { value: "auto", label: "Авто (заполнить сетку)" },
+                { value: "auto", label: t("tileAspectAuto") },
                 { value: "16x9", label: "16:9" },
                 { value: "4x3", label: "4:3" },
                 { value: "1x1", label: "1:1" }
@@ -6110,21 +6144,21 @@ export function App() {
 
           <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
             <div className="muted" style={{ width: 160 }}>
-              Масштаб видео
+              {t("tileFit")}
             </div>
             <Select
               value={tileObjectFit}
               onChange={(v) => setTileObjectFit(v as typeof tileObjectFit)}
               options={[
-                { value: "cover", label: "Обрезать (cover)" },
-                { value: "contain", label: "Вписать (contain)" }
+                { value: "cover", label: t("tileFitCover") },
+                { value: "contain", label: t("tileFitContain") }
               ]}
             />
           </div>
 
           <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
             <div className="muted" style={{ width: 160 }}>
-              Скругление
+              {t("tileRadius")}
             </div>
             <input
               type="range"
@@ -6141,7 +6175,7 @@ export function App() {
 
           <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
             <div className="muted" style={{ width: 160 }}>
-              Зазор плиток
+              {t("tileGap")}
             </div>
             <input
               type="range"
@@ -6158,7 +6192,7 @@ export function App() {
 
           <label className="row" style={{ marginTop: 12, gap: 8 }}>
             <input type="checkbox" checked={speakingIndicator} onChange={(e) => setSpeakingIndicator(e.target.checked)} />
-            <span>Индикатор «кто говорит»</span>
+            <span>{t("speakingIndicator")}</span>
           </label>
           </>
           )}
@@ -6167,7 +6201,7 @@ export function App() {
           <>
           <div className="row" style={{ flexWrap: "wrap" }}>
             <div className="muted" style={{ width: 160 }}>
-              Размер смайлов
+              {t("smileSize")}
             </div>
             <input
               type="range"
@@ -6184,7 +6218,7 @@ export function App() {
 
           <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
             <div className="muted" style={{ width: 160 }}>
-              Размер шрифта чата
+              {t("chatFontSize")}
             </div>
             <input
               type="range"
@@ -6201,17 +6235,17 @@ export function App() {
 
           <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
             <div className="muted" style={{ width: 160 }}>
-              Диалог (сообщений)
+              {t("chatDisplayLimit")}
             </div>
             <Select
               value={String(chatDisplayLimit)}
               onChange={(v) => setChatDisplayLimit(Number(v) || 0)}
               style={{ flex: "1 1 240px" }}
               options={[
-                { value: "0", label: "Показывать весь" },
-                { value: "200", label: "Последние 200" },
-                { value: "500", label: "Последние 500" },
-                { value: "1000", label: "Последние 1000" }
+                { value: "0", label: t("chatShowAll") },
+                { value: "200", label: t("chatLastN", { n: 200 }) },
+                { value: "500", label: t("chatLastN", { n: 500 }) },
+                { value: "1000", label: t("chatLastN", { n: 1000 }) }
               ]}
             />
             <span className="muted" style={{ width: 54, textAlign: "right" }}>
@@ -6224,7 +6258,7 @@ export function App() {
           {settingsTab === "connection" && (
           <>
           <div className="muted" style={{ marginBottom: 12 }}>
-            Подключение к signaling-серверу по IP и порту (вне mDNS/UDP discovery).
+            {t("connectionHint")}
           </div>
           <div className="row" style={{ flexWrap: "wrap" }}>
             <input
@@ -6239,7 +6273,7 @@ export function App() {
               style={{ width: 110 }}
               value={manualPort}
               onChange={(e) => setManualPort(e.target.value)}
-              placeholder="порт"
+              placeholder={t("portPlaceholder")}
             />
             <button className="btn btnPrimary" onClick={() => void manualConnect()}>
               OK
@@ -6253,7 +6287,7 @@ export function App() {
                     <div style={{ fontWeight: 700, display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
                       <span className="truncate">{p.userName}</span>
                       {screenSharingPeerId === p.peerId && <ScreenSharingDot title={t("screenShareIndicator")} />}
-                      {unreadPeerIds.has(p.peerId) && <span className="unreadMessageDot" title="Новое сообщение" aria-label="Новое сообщение" />}
+                      {unreadPeerIds.has(p.peerId) && <span className="unreadMessageDot" title={t("newMessage")} aria-label={t("newMessage")} />}
                     </div>
                     <span className={`badge ${statusBadgeClass(p.status)}`}>{statusLabel(p.status)}</span>
                   </div>
@@ -6279,24 +6313,24 @@ export function App() {
           <>
           <div className="row" style={{ flexWrap: "wrap", alignItems: "flex-start" }}>
             <div className="muted" style={{ width: 160 }}>
-              Опции
+              {t("options")}
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 8, flex: "1 1 240px" }}>
               <label className="row" style={{ gap: 8 }}>
                 <input type="checkbox" checked={compactUi} onChange={(e) => setCompactUi(e.target.checked)} />
-                <span>Компактный чат</span>
+                <span>{t("compactChat")}</span>
               </label>
               <label className="row" style={{ gap: 8 }}>
                 <input type="checkbox" checked={chatAutoScroll} onChange={(e) => setChatAutoScroll(e.target.checked)} />
-                <span>Автопрокрутка чата вниз</span>
+                <span>{t("chatAutoScroll")}</span>
               </label>
               <label className="row" style={{ gap: 8 }}>
                 <input type="checkbox" checked={showSeconds} onChange={(e) => setShowSeconds(e.target.checked)} />
-                <span>Показывать секунды</span>
+                <span>{t("showSeconds")}</span>
               </label>
               <label className="row" style={{ gap: 8 }}>
                 <input type="checkbox" checked={autoSwitchToChat} onChange={(e) => setAutoSwitchToChat(e.target.checked)} />
-                <span>Автопереход в чат при принятии звонка</span>
+                <span>{t("autoSwitchToChat")}</span>
               </label>
               <label className="row" style={{ gap: 8, alignItems: "center", flexWrap: "wrap" }}>
                 <input
@@ -6347,12 +6381,12 @@ export function App() {
                 }
               }}
             >
-              📁 Открыть папку логов
+              📁 {t("openLogsFolder")}
             </button>
             <button
               className="btn btnDanger"
               onClick={() => {
-                if (confirm("Удалить всю историю сообщений? Это действие нельзя отменить.")) {
+                if (confirm(t("clearHistoryConfirm"))) {
                   window.lokameet.chat.clearHistory().then(() => {
                     setChats([]);
                     setError(null);
@@ -6362,7 +6396,7 @@ export function App() {
                 }
               }}
             >
-              Очистить историю
+              {t("clearHistory")}
             </button>
             <button
               className="btn btnPrimary"
@@ -6585,7 +6619,16 @@ function SettingsHelpPanel(props: { language: "ru" | "en"; version: string }) {
         softwareNotNeeded:
           "Интернет, Zoom, браузер, отдельный медиа‑сервер или облачный аккаунт — для работы звонков в LAN не нужны.",
         linksTitle: "Полезные ссылки и программы",
-        tip: "Если пользователи не видны друг друга: проверьте сеть, брандмауэр и попробуйте ручное подключение по IP/порту во вкладке «Подключение»."
+        tip: "Если пользователи не видны друг друга: проверьте сеть, брандмауэр и попробуйте ручное подключение по IP/порту во вкладке «Подключение».",
+        changesTitle: "Что нового в 1.0.2",
+        changesItems: [
+          "Установщик: по умолчанию C:\\Program Files с выбором папки; принудительное закрытие LokaMeet перед копированием файлов.",
+          "Диалог имени при входе: «Отмена» и × закрывают программу.",
+          "Полный перевод интерфейса при переключении RU ↔ EN (меню, настройки, чат, статусы).",
+          "Индикаторы речи в звонке стали заметнее (кольцо у аватара и маркер у ника).",
+          "Цветовая рамка статуса вокруг аватара в списке LAN (онлайн / отошёл / в звонке / конференция / DND / офлайн).",
+          "Бейджи статусов «В звонке» и «На конференции» стали читаемее на тёмных темах."
+        ]
       }
     : {
         heroTitle: "LokaMeet",
@@ -6630,7 +6673,16 @@ function SettingsHelpPanel(props: { language: "ru" | "en"; version: string }) {
         softwareNotNeeded:
           "Internet, Zoom, a browser, a separate media server, or a cloud account are not needed for LAN calls.",
         linksTitle: "Useful links & software",
-        tip: "If peers do not appear: check the network and firewall, then try manual connect by IP/port in the Connection tab."
+        tip: "If peers do not appear: check the network and firewall, then try manual connect by IP/port in the Connection tab.",
+        changesTitle: "What's new in 1.0.2",
+        changesItems: [
+          "Installer: defaults to C:\\Program Files with folder choice; force-closes LokaMeet before copying files.",
+          "Startup name dialog: Cancel and × quit the application.",
+          "Full UI translation when switching RU ↔ EN (menus, settings, chat, statuses).",
+          "Speaking indicators in calls are clearer (avatar ring and nick marker).",
+          "Color status ring around avatars in the LAN list (online / away / in call / conference / DND / offline).",
+          "“In call” and “In conference” status badges are easier to read on dark themes."
+        ]
       };
 
   const links = [
@@ -6680,6 +6732,15 @@ function SettingsHelpPanel(props: { language: "ru" | "en"; version: string }) {
         </div>
         <p className="helpHeroLead">{copy.heroLead}</p>
       </div>
+
+      <section className="helpSection">
+        <h3>{copy.changesTitle}</h3>
+        <ul className="helpList">
+          {copy.changesItems.map((item) => (
+            <li key={item}>{item}</li>
+          ))}
+        </ul>
+      </section>
 
       <section className="helpSection">
         <h3>{copy.aboutTitle}</h3>

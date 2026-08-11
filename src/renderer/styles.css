@@ -83,7 +83,7 @@
   --accent: #9be2ff;
   --danger: #ffd0ca;
   --ok: #9ee6c4;
-  --speak: #9ee6c4;
+  --speak: #b6f5d6;
   --shadow: rgba(7, 42, 64, 0.28);
   --control-bg: #1f638d;
   --control-bg-hover: #1a587f;
@@ -632,21 +632,26 @@ select optgroup {
 }
 
 .badgeInCall {
-  color: #fbbf24;
-  border-color: color-mix(in srgb, #fbbf24 45%, var(--border));
+  color: #f59e0b;
+  border-color: color-mix(in srgb, #f59e0b 55%, var(--border));
+  background: color-mix(in srgb, #f59e0b 12%, transparent);
 }
 
 .badgeInConference {
-  color: #eab308;
-  border-color: color-mix(in srgb, #eab308 45%, var(--border));
+  color: #fbbf24;
+  border-color: color-mix(in srgb, #fbbf24 55%, var(--border));
+  background: color-mix(in srgb, #fbbf24 12%, transparent);
 }
 
 .badgeAway {
-  color: #fbbf24;
+  color: #fde68a;
+  border-color: color-mix(in srgb, #fde68a 45%, var(--border));
 }
 
 .badgeDnd {
-  color: var(--danger);
+  color: #ff6b6b;
+  border-color: color-mix(in srgb, #ff6b6b 50%, var(--border));
+  background: color-mix(in srgb, #ff6b6b 10%, transparent);
 }
 
 .badgeOffline {
@@ -688,8 +693,8 @@ select optgroup {
   --speak-level: 0;
   border-color: color-mix(in srgb, var(--speak) calc(var(--speak-level) * 100%), var(--border));
   box-shadow:
-    0 0 0 calc(var(--speak-level) * 2px) color-mix(in srgb, var(--speak) calc(var(--speak-level) * 70%), transparent),
-    0 0 calc(var(--speak-level) * 22px) color-mix(in srgb, var(--speak) calc(var(--speak-level) * 45%), transparent);
+    0 0 0 calc(var(--speak-level) * 3px) color-mix(in srgb, var(--speak) calc(var(--speak-level) * 85%), transparent),
+    0 0 calc(var(--speak-level) * 28px) color-mix(in srgb, var(--speak) calc(var(--speak-level) * 60%), transparent);
   transition:
     border-color 0.1s linear,
     box-shadow 0.1s linear,
@@ -870,13 +875,68 @@ select optgroup {
   width: min(40%, 128px);
   aspect-ratio: 1;
   height: auto;
-  border-width: 2px;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+  border-width: 3px;
+  border-color: color-mix(in srgb, var(--speak) calc(var(--speak-level) * 100%), var(--border));
+  box-shadow:
+    0 0 0 calc(var(--speak-level) * 3px) color-mix(in srgb, var(--speak) calc(var(--speak-level) * 90%), transparent),
+    0 0 calc(var(--speak-level) * 22px) color-mix(in srgb, var(--speak) calc(var(--speak-level) * 65%), transparent),
+    0 10px 30px rgba(0, 0, 0, 0.25);
+  transition:
+    border-color 0.1s linear,
+    box-shadow 0.1s linear;
 }
 
 .listAvatar {
   width: 36px;
   height: 36px;
+}
+
+.listAvatarPlaceholder {
+  display: block;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--panel2) 70%, var(--muted) 30%);
+  border: 1px solid var(--border);
+}
+
+.avatarStatusRing {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  padding: 1px;
+  border: 2px solid transparent;
+  box-shadow: none;
+  line-height: 0;
+}
+
+.avatarStatusRing .listAvatar,
+.avatarStatusRing .profileAvatar {
+  display: block;
+}
+
+.avatarStatusRing--online {
+  border-color: var(--ok);
+}
+
+.avatarStatusRing--away {
+  border-color: #fde68a;
+}
+
+.avatarStatusRing--in_call {
+  border-color: #f59e0b;
+}
+
+.avatarStatusRing--in_conference {
+  border-color: #fbbf24;
+}
+
+.avatarStatusRing--dnd {
+  border-color: #ff6b6b;
+}
+
+.avatarStatusRing--offline {
+  border-color: #9ca3af;
 }
 
 .chatAvatar {
@@ -909,11 +969,28 @@ select optgroup {
   background: rgba(0, 0, 0, 0.45);
   border: 1px solid rgba(255, 255, 255, 0.12);
   font-size: 13px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   border-color: color-mix(in srgb, var(--speak) calc(var(--speak-level) * 100%), rgba(255, 255, 255, 0.12));
-  box-shadow: 0 0 calc(var(--speak-level) * 10px) color-mix(in srgb, var(--speak) calc(var(--speak-level) * 55%), transparent);
+  box-shadow: 0 0 calc(var(--speak-level) * 14px) color-mix(in srgb, var(--speak) calc(var(--speak-level) * 70%), transparent);
   transition:
     border-color 0.1s linear,
     box-shadow 0.1s linear;
+}
+
+.tileSpeakMark {
+  width: 9px;
+  height: 9px;
+  flex: 0 0 auto;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--speak) calc(var(--speak-level) * 100%), rgba(255, 255, 255, 0.42));
+  box-shadow: 0 0 calc(var(--speak-level) * 10px) color-mix(in srgb, var(--speak) calc(var(--speak-level) * 85%), transparent);
+  opacity: calc(0.5 + var(--speak-level) * 0.5);
+  transition:
+    background 0.1s linear,
+    box-shadow 0.1s linear,
+    opacity 0.1s linear;
 }
 
 .screenShareView {
@@ -1938,15 +2015,27 @@ select optgroup {
   background: color-mix(in srgb, var(--accent) 8%, var(--panel));
 }
 
-[data-theme="light"] .badgeInCall,
-[data-theme="soft-light"] .badgeInCall,
-[data-theme="light"] .badgeInConference,
-[data-theme="soft-light"] .badgeInConference,
 [data-theme="light"] .badgeAway,
 [data-theme="soft-light"] .badgeAway {
+  color: #a16207;
+  background: #fef9c3;
+  border-color: #fde68a;
+  font-weight: 650;
+}
+
+[data-theme="light"] .badgeInCall,
+[data-theme="soft-light"] .badgeInCall {
   color: #92400e;
-  background: #fef3c7;
+  background: #ffedd5;
   border-color: #f59e0b;
+  font-weight: 650;
+}
+
+[data-theme="light"] .badgeInConference,
+[data-theme="soft-light"] .badgeInConference {
+  color: #854d0e;
+  background: #fef3c7;
+  border-color: #fbbf24;
   font-weight: 650;
 }
 
@@ -1969,9 +2058,9 @@ select optgroup {
 [data-theme="soft-light"] .badgeDnd,
 [data-theme="light"] .badgeDanger,
 [data-theme="soft-light"] .badgeDanger {
-  color: #991b1b;
-  background: #fee2e2;
-  border-color: #f87171;
+  color: #b91c1c;
+  background: #fecaca;
+  border-color: #ef4444;
   font-weight: 650;
 }
 
@@ -2033,15 +2122,15 @@ select optgroup {
   background: rgba(15, 23, 42, 0.72);
   color: #f8fafc;
   border-color: color-mix(in srgb, var(--speak) calc(var(--speak-level) * 100%), rgba(255, 255, 255, 0.28));
-  box-shadow: 0 0 calc(var(--speak-level) * 12px) color-mix(in srgb, var(--speak) calc(var(--speak-level) * 55%), transparent);
+  box-shadow: 0 0 calc(var(--speak-level) * 16px) color-mix(in srgb, var(--speak) calc(var(--speak-level) * 70%), transparent);
 }
 
 [data-theme="light"] .tile,
 [data-theme="soft-light"] .tile {
   border-width: 2px;
   box-shadow:
-    0 0 0 calc(var(--speak-level) * 2.5px) color-mix(in srgb, var(--speak) calc(var(--speak-level) * 75%), transparent),
-    0 0 calc(var(--speak-level) * 26px) color-mix(in srgb, var(--speak) calc(var(--speak-level) * 50%), transparent);
+    0 0 0 calc(var(--speak-level) * 3px) color-mix(in srgb, var(--speak) calc(var(--speak-level) * 88%), transparent),
+    0 0 calc(var(--speak-level) * 30px) color-mix(in srgb, var(--speak) calc(var(--speak-level) * 62%), transparent);
 }
 
 [data-theme="light"] .selectOption:hover,
