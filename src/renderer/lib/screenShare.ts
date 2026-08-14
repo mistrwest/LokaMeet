@@ -36,6 +36,7 @@ export function isAppWindowSourceId(sourceId: string) {
 }
 
 const SCREEN_AUDIO_LABEL_RE = /screen|desktop|display|loopback|share|system/i;
+const SCREEN_VIDEO_LABEL_RE = /screen|window|desktop|web-contents-media-stream|primary monitor/i;
 
 export function isScreenBroadcastAudioTrack(track: MediaStreamTrack, stream: MediaStream, knownTrackId?: string) {
   if (track.kind !== "audio") return false;
@@ -65,10 +66,46 @@ export function createPeerTileStream(stream: MediaStream, knownScreenAudioTrackI
   return out;
 }
 
+export function isScreenVideoTrack(track: MediaStreamTrack, knownScreenVideoTrackId?: string) {
+  if (track.kind !== "video") return false;
+  if (knownScreenVideoTrackId && track.id === knownScreenVideoTrackId) return true;
+  return SCREEN_VIDEO_LABEL_RE.test(track.label);
+}
+
+export function pickScreenVideoTrack(stream: MediaStream, knownScreenVideoTrackId?: string) {
+  const live = stream.getVideoTracks().filter((t) => t.readyState === "live");
+  if (knownScreenVideoTrackId) {
+    const exact = live.find((t) => t.id === knownScreenVideoTrackId);
+    if (exact) return exact;
+  }
+  const labeled = live.find((t) => isScreenVideoTrack(t));
+  if (labeled) return labeled;
+  return live[0] ?? null;
+}
+
+export function findPresenterCameraTrack(stream: MediaStream, knownScreenVideoTrackId?: string) {
+  const screen = pickScreenVideoTrack(stream, knownScreenVideoTrackId);
+  return (
+    stream.getVideoTracks().find(
+      (t) =>
+        t.readyState === "live" &&
+        t.enabled &&
+        !t.muted &&
+        t.id !== screen?.id &&
+        !isScreenVideoTrack(t, knownScreenVideoTrackId)
+    ) ?? null
+  );
+}
+
 /** Формирует поток просмотра без микрофона, чтобы зритель слышал только звук демонстрации. */
-export function createScreenShareViewStream(stream: MediaStream, knownScreenAudioTrackId?: string) {
+export function createScreenShareViewStream(
+  stream: MediaStream,
+  knownScreenAudioTrackId?: string,
+  knownScreenVideoTrackId?: string
+) {
   const out = new MediaStream();
-  for (const track of stream.getVideoTracks()) out.addTrack(track);
+  const screenVideo = pickScreenVideoTrack(stream, knownScreenVideoTrackId);
+  if (screenVideo) out.addTrack(screenVideo);
   const screenAudio = findScreenBroadcastAudioTrack(stream, knownScreenAudioTrackId);
   if (screenAudio) out.addTrack(screenAudio);
   return out;
@@ -98,26 +135,19 @@ export function pruneStaleRemoteStreamTracks(stream: MediaStream, opts?: { dropM
     }
   }
 
-  const liveVideo = stream.getVideoTracks().filter((track) => track.readyState === "live" && !track.muted);
-  if (liveVideo.length > 1) {
-    for (let i = 0; i < liveVideo.length - 1; i++) {
-      try {
-        stream.removeTrack(liveVideo[i]);
-      } catch {
-        // Неудача удаления дубликата не должна мешать воспроизведению оставшегося трека.
-      }
-    }
-  }
+  // Два живых video — экран и вебкамера докладчика; не схлопываем до одного.
 }
 
 type ElectronDesktopVideoConstraints = MediaTrackConstraints & {
   chromeMediaSource?: string;
   chromeMediaSourceId?: string;
   maxFrameRate?: number;
+  minFrameRate?: number;
   mandatory?: {
     chromeMediaSource: string;
     chromeMediaSourceId?: string;
     maxFrameRate?: number;
+    minFrameRate?: number;
   };
 };
 
@@ -139,7 +169,8 @@ async function captureDesktopSourceVideoOnly(sourceId: string): Promise<MediaStr
   const videoConstraints: ElectronDesktopVideoConstraints = {
     chromeMediaSource: "desktop",
     chromeMediaSourceId: sourceId,
-    maxFrameRate: 30
+    maxFrameRate: 30,
+    minFrameRate: 5
   };
 
   try {
@@ -154,6 +185,7 @@ async function captureDesktopSourceVideoOnly(sourceId: string): Promise<MediaStr
         mandatory: {
           chromeMediaSource: "desktop",
           chromeMediaSourceId: sourceId,
+          minFrameRate: 5,
           maxFrameRate: 30
         }
       } as ElectronDesktopVideoConstraints
@@ -169,7 +201,7 @@ async function captureDisplayMedia(withAudio: boolean, preferredSourceId?: strin
   const video = {
     width: { ideal: 1920 },
     height: { ideal: 1080 },
-    frameRate: { ideal: 30 }
+    frameRate: { ideal: 30, max: 30 }
   } as MediaTrackConstraints;
   const audio: boolean | MediaTrackConstraints = withAudio
     ? ({ suppressLocalAudioPlayback: true } as MediaTrackConstraints)
@@ -182,8 +214,13 @@ async function captureDisplayMedia(withAudio: boolean, preferredSourceId?: strin
   try {
     return await navigator.mediaDevices.getDisplayMedia({ video, audio });
   } catch (err) {
-    if (!withAudio || isUserMediaCancelError(err)) throw err;
-    return navigator.mediaDevices.getDisplayMedia({ video, audio: false });
+    if (isUserMediaCancelError(err)) throw err;
+    try {
+      return await navigator.mediaDevices.getDisplayMedia({ video: true, audio });
+    } catch (err2) {
+      if (!withAudio || isUserMediaCancelError(err2)) throw err2;
+      return navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
+    }
   } finally {
     if (preferredSourceId && typeof window !== "undefined" && window.lokameet?.screen?.setPreferredSource) {
       await window.lokameet.screen.setPreferredSource(null).catch(() => undefined);
@@ -196,19 +233,34 @@ async function captureDisplayMedia(withAudio: boolean, preferredSourceId?: strin
  * При sourceId=null источник выбирается системным или handler picker через getDisplayMedia.
  * Захват со звуком всегда идёт через getDisplayMedia с suppressLocalAudioPlayback, чтобы избежать эха.
  */
+/** Помечает захват экрана как детальный контент и держит ненулевой FPS, чтобы кадры не замирали. */
+export function configureScreenShareTrack(track: MediaStreamTrack) {
+  try {
+    track.contentHint = "detail";
+  } catch {
+    // contentHint может отсутствовать в старых Chromium
+  }
+  void track
+    .applyConstraints({
+      frameRate: { ideal: 30, max: 30 }
+    })
+    .catch(() => undefined);
+}
+
 export async function captureDesktopMedia(sourceId: string | null, withAudio: boolean): Promise<MediaStream> {
-  if (withAudio) {
-    return captureDisplayMedia(true, sourceId);
-  }
-
-  if (sourceId) {
-    try {
-      return await captureDesktopSourceVideoOnly(sourceId);
-    } catch (err) {
-      if (isUserMediaCancelError(err)) throw err;
-      return captureDisplayMedia(false, sourceId);
-    }
-  }
-
-  return captureDisplayMedia(false, null);
+  const stream = withAudio
+    ? await captureDisplayMedia(true, sourceId)
+    : sourceId
+      ? await (async () => {
+          try {
+            return await captureDesktopSourceVideoOnly(sourceId);
+          } catch (err) {
+            if (isUserMediaCancelError(err)) throw err;
+            return captureDisplayMedia(false, sourceId);
+          }
+        })()
+      : await captureDisplayMedia(false, null);
+  const videoTrack = stream.getVideoTracks()[0];
+  if (videoTrack) configureScreenShareTrack(videoTrack);
+  return stream;
 }

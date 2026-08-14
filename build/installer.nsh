@@ -2,7 +2,7 @@
 
 !macro customHeader
   !define MUI_WELCOMEPAGE_TITLE "Установка LokaMeet"
-  !define MUI_WELCOMEPAGE_TEXT "LokaMeet — десктоп‑приложение для видеосвязи в локальной сети без интернета и без облака.$\r$\n$\r$\n• Личные аудио/видеозвонки и групповые конференции (P2P WebRTC)$\r$\n• Чат, обмен файлами и демонстрация экрана$\r$\n• Автообнаружение пользователей в LAN$\r$\n$\r$\nВы сможете выбрать папку установки на следующем шаге.$\r$\n$\r$\n$_CLICK"
+  !define MUI_WELCOMEPAGE_TEXT "LokaMeet 1.1.0 — десктоп‑приложение для видеосвязи в локальной сети без интернета и без облака.$\r$\n$\r$\n• Личные аудио/видеозвонки и групповые конференции (P2P WebRTC)$\r$\n• Виртуальный фон камеры и запись звонков (MP4 / AVI)$\r$\n• Чат, обмен файлами и демонстрация экрана$\r$\n• Автообнаружение пользователей в LAN$\r$\n$\r$\nВы сможете выбрать папку установки на следующем шаге.$\r$\n$\r$\n$_CLICK"
 !macroend
 
 ; Electron держит несколько процессов — штатный soft-close часто не успевает.
@@ -31,4 +31,11 @@
     Quit
 
   close_done:
+!macroend
+
+; Папка logs рядом с программой должна быть доступна обычному пользователю,
+; даже если LokaMeet установлен в Program Files.
+!macro customInstall
+  CreateDirectory "$INSTDIR\logs"
+  nsExec::ExecToLog `icacls "$INSTDIR\logs" /grant *S-1-5-32-545:(OI)(CI)M /T /C /Q`
 !macroend

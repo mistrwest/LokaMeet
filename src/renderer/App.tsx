@@ -1,20 +1,48 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { AvailabilityStatus, AvatarPosition, ChatAttachment, ChatMessage, ChatScope, PeerInfo, RoomInfo, RtcSignal, UserProfile, WsEnvelope } from "../shared/types";
-import { createPeerConnection, getVideoConstraints, replaceAudioTrack, replaceVideoTrack, replaceMicAudioTrack, addScreenAudioTrack, detachScreenAudioTrack, type LocalMediaConfig } from "./lib/webrtc";
+import { createPeerConnection, getVideoConstraints, replaceAudioTrack, replaceVideoTrack, replaceVideoTrackAsync, replaceMicAudioTrack, addScreenAudioTrack, detachScreenAudioTrack, addSecondaryVideoTrack, detachSecondaryVideoTrack, restoreCameraAfterScreenShare, tuneScreenShareSender, requestScreenShareKeyframe, type LocalMediaConfig, type VideoQuality } from "./lib/webrtc";
+import {
+  applyCameraControlsDebounced,
+  cameraHasManualControls,
+  defaultCameraControls,
+  normalizeCameraControls,
+  readCameraCapabilities,
+  type CameraCapabilityInfo,
+  type CameraControls
+} from "./lib/cameraControls";
+import {
+  bindCameraFx,
+  CAMERA_PRESETS,
+  cameraBgAssetUrl,
+  cameraFxNeedsProcessing,
+  defaultCameraFxOptions,
+  getCameraFxStream,
+  getCameraFxTrack,
+  isRawCameraTrack,
+  markRawCameraTrack,
+  normalizeCameraFxOptions,
+  setCameraFxOptions,
+  stopCameraFx,
+  type CameraFxOptions
+} from "./lib/cameraFx";
 import {
   captureDesktopMedia,
   categorizeScreenSources,
   createScreenShareViewStream,
+  findPresenterCameraTrack,
   findScreenBroadcastAudioTrack,
   getMicAudioTrack,
   isScreenBroadcastAudioTrack,
+  isScreenVideoTrack,
   pruneStaleRemoteStreamTracks,
   type ScreenShareTab
 } from "./lib/screenShare";
 import { createFilePreviewDataUrl, isVideoAttachmentMime } from "./lib/filePreview";
-import { ScreenShareViewer, ScreenShareLocalSidebar, ScreenSharingDot } from "./lib/screenShareViewer";
+import { ScreenShareViewer, ScreenShareLocalSidebar, ScreenSharingDot, PresenterCameraPip } from "./lib/screenShareViewer";
 import { RemotePeerMedia } from "./lib/remotePeerMedia";
+import { CallRecorder, recordingFileName, normalizeRecordingSettings, RECORDING_SIZE, type RecordingBitrate, type RecordingFormat, type RecordingFps, type RecordingQuality, type RecordSource } from "./lib/callRecorder";
+import { speakRecordAnnouncement } from "./lib/recordVoice";
 import { Select } from "./lib/Select";
 import {
   MAX_CONFERENCE_PARTICIPANTS,
@@ -27,6 +55,18 @@ import {
   isDirectCall,
   resolveConferenceRoom
 } from "./lib/conference";
+
+const isSettingsWindow =
+  typeof window !== "undefined" && new URLSearchParams(window.location.search).get("window") === "settings";
+
+const VIDEO_QUALITY_OPTIONS: Array<{ value: VideoQuality; labelKey: string }> = [
+  { value: "low", labelKey: "videoQ_low" },
+  { value: "medium", labelKey: "videoQ_medium" },
+  { value: "high", labelKey: "videoQ_high" },
+  { value: "fullhd", labelKey: "videoQ_fullhd" },
+  { value: "qhd", labelKey: "videoQ_qhd" },
+  { value: "uhd", labelKey: "videoQ_uhd" }
+];
 
 type FileTransferItem = {
   key: string;
@@ -179,6 +219,13 @@ function ProfileAvatar({
   );
 }
 
+function parentDirOf(filePath: string) {
+  const trimmed = filePath.trim();
+  if (!trimmed) return "";
+  const cut = Math.max(trimmed.lastIndexOf("\\"), trimmed.lastIndexOf("/"));
+  return cut > 0 ? trimmed.slice(0, cut) : trimmed;
+}
+
 export function App() {
   const { t, i18n } = useTranslation();
   const statusLabel = (s: AvailabilityStatus) => t(`status_${s}`);
@@ -189,7 +236,7 @@ export function App() {
   const [bootLabel, setBootLabel] = useState("loading");
   const [bootReady, setBootReady] = useState(false);
   const [signalingPort, setSignalingPort] = useState<number>(0);
-  const [appVersion, setAppVersion] = useState("1.0.2");
+  const [appVersion, setAppVersion] = useState("1.1.0");
   const [localIps, setLocalIps] = useState<string[]>([]);
   const [logFilePath, setLogFilePath] = useState<string | null>(null);
   const [peers, setPeers] = useState<PeerInfo[]>([]);
@@ -236,10 +283,23 @@ export function App() {
   const [search, setSearch] = useState("");
   const [isSharing, setIsSharing] = useState(false);
   const isSharingRef = useRef(false);
+  const [recordingActive, setRecordingActive] = useState(false);
+  const recordingActiveRef = useRef(false);
+  const [remoteRecordings, setRemoteRecordings] = useState<Array<{ peerId: string; userName: string }>>([]);
+  const [recordingDir, setRecordingDir] = useState("");
+  const [lastRecordingPath, setLastRecordingPath] = useState("");
+  const [recordingFormat, setRecordingFormat] = useState<RecordingFormat>("mp4");
+  const [recordingQuality, setRecordingQuality] = useState<RecordingQuality>("1080p");
+  const [recordingFps, setRecordingFps] = useState<RecordingFps>(30);
+  const [recordingBitrate, setRecordingBitrate] = useState<RecordingBitrate>("high");
+  const callRecorderRef = useRef<CallRecorder | null>(null);
+  const recordingSessionRef = useRef<string | null>(null);
+  const appWindowCaptureRef = useRef<MediaStream | null>(null);
   const [remoteScreenShare, setRemoteScreenShare] = useState<{
     peerId: string;
     userName: string;
     screenAudioTrackId?: string;
+    screenVideoTrackId?: string;
   } | null>(null);
   const [screenViewControlsHidden, setScreenViewControlsHidden] = useState(false);
   const [screenShareViewCollapsed, setScreenShareViewCollapsed] = useState(false);
@@ -254,7 +314,7 @@ export function App() {
   const [manualPort, setManualPort] = useState("");
   const [manualPeers, setManualPeers] = useState<PeerInfo[]>([]);
   const [smilesFiles, setSmilesFiles] = useState<string[]>([]);
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(isSettingsWindow);
   const [chatHeight, setChatHeight] = useState(380);
   const [sidebarWidth, setSidebarWidth] = useState(380);
   const [fontScale, setFontScale] = useState(0.95);
@@ -285,14 +345,25 @@ export function App() {
   const [messageSoundFile, setMessageSoundFile] = useState("snds/sms.mp3");
   const [callerSoundFile, setCallerSoundFile] = useState("snds/call_1.mp3");
   const [connectionSoundFile, setConnectionSoundFile] = useState("snds/int.mp3");
+  const [recordingSoundFile, setRecordingSoundFile] = useState("");
   const [callSoundVolume, setCallSoundVolume] = useState(50);
   const [messageSoundVolume, setMessageSoundVolume] = useState(50);
   const [callerSoundVolume, setCallerSoundVolume] = useState(50);
   const [connectionSoundVolume, setConnectionSoundVolume] = useState(50);
-  const [settingsTab, setSettingsTab] = useState<"media" | "camera" | "audio" | "ui" | "chat" | "connection" | "other" | "help">("media");
-  const [exitConfirmOpen, setExitConfirmOpen] = useState(false);
+  const [recordingSoundVolume, setRecordingSoundVolume] = useState(50);
+  const [settingsTab, setSettingsTab] = useState<"media" | "camera" | "audio" | "ui" | "connection" | "help">("media");
+  const [cameraControls, setCameraControls] = useState<CameraControls>(defaultCameraControls);
+  const [cameraCaps, setCameraCaps] = useState<CameraCapabilityInfo | null>(null);
+  const cameraControlsRef = useRef<CameraControls>(defaultCameraControls);
+  const [cameraFx, setCameraFx] = useState<CameraFxOptions>(defaultCameraFxOptions);
+  const cameraFxRef = useRef<CameraFxOptions>(defaultCameraFxOptions);
+  const cameraFxNeedRef = useRef(false);
+  const cameraRawStreamRef = useRef<MediaStream | null>(null);
+  const [exitConfirmKind, setExitConfirmKind] = useState<"quit" | "leave" | null>(null);
   const cameraPreviewRef = useRef<HTMLVideoElement | null>(null);
-  const cameraPreviewStreamRef = useRef<MediaStream | null>(null);
+  const [customCameraBgs, setCustomCameraBgs] = useState<Array<{ id: string; dataUrl: string }>>([]);
+  const [previewDragging, setPreviewDragging] = useState(false);
+  const previewDragRef = useRef<{ x: number; y: number; panX: number; panY: number; width: number; height: number } | null>(null);
   const testSoundAudioRef = useRef<HTMLAudioElement | null>(null);
   const audioNotificationRef = useRef<HTMLAudioElement | null>(null);
 
@@ -335,12 +406,95 @@ export function App() {
     audioEnabled: true,
     videoQuality: "medium"
   });
+  const videoEnabledRef = useRef(false);
+  videoEnabledRef.current = mediaCfg.videoEnabled;
 
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
   const localTileRef = useRef<HTMLDivElement | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
   const shareTrackRef = useRef<MediaStreamTrack | null>(null);
   const shareScreenAudioTrackRef = useRef<MediaStreamTrack | null>(null);
+
+  const applyCameraToTrack = (track: MediaStreamTrack | null | undefined) => {
+    if (!track || track.kind !== "video") return;
+    if (shareTrackRef.current && (track === shareTrackRef.current || track.id === shareTrackRef.current.id)) return;
+    if (!isRawCameraTrack(track) && !track.getSettings()?.deviceId) return;
+    void applyCameraControlsDebounced(track, cameraControlsRef.current);
+  };
+
+  const applyCameraToStream = (stream: MediaStream | null | undefined) => {
+    if (!stream) return;
+    for (const track of stream.getVideoTracks()) applyCameraToTrack(track);
+  };
+
+  const stopRawCamera = () => {
+    const raw = cameraRawStreamRef.current;
+    cameraRawStreamRef.current = null;
+    raw?.getTracks().forEach((t) => {
+      try {
+        t.stop();
+      } catch {
+        // игнор
+      }
+    });
+    stopCameraFx({ stopOutput: true });
+  };
+
+  const prepareCameraTrack = async (raw: MediaStreamTrack | null): Promise<MediaStreamTrack | null> => {
+    if (!raw) return null;
+    markRawCameraTrack(raw);
+    const prevRaw = cameraRawStreamRef.current;
+    const rawStream = new MediaStream([raw]);
+    cameraRawStreamRef.current = rawStream;
+    applyCameraToTrack(raw);
+    const fx = cameraFxRef.current;
+    setCameraFxOptions(fx);
+    cameraFxNeedRef.current = cameraFxNeedsProcessing(fx);
+    if (!cameraFxNeedsProcessing(fx)) {
+      stopCameraFx({ stopOutput: true });
+      if (prevRaw && prevRaw !== rawStream) {
+        for (const t of prevRaw.getTracks()) {
+          if (t !== raw) {
+            try {
+              t.stop();
+            } catch {
+              // игнор
+            }
+          }
+        }
+      }
+      return raw;
+    }
+    await bindCameraFx(rawStream);
+    if (prevRaw && prevRaw !== rawStream) {
+      for (const t of prevRaw.getTracks()) {
+        if (t !== raw) {
+          try {
+            t.stop();
+          } catch {
+            // игнор
+          }
+        }
+      }
+    }
+    return getCameraFxTrack() ?? raw;
+  };
+
+  const installProcessedCamera = (local: MediaStream, processed: MediaStreamTrack | null) => {
+    if (!processed) return;
+    const oldCams = local.getVideoTracks().filter((t) => t !== shareTrackRef.current && t !== processed);
+    for (const old of oldCams) {
+      local.removeTrack(old);
+      if (!isRawCameraTrack(old)) {
+        try {
+          old.stop();
+        } catch {
+          // игнор
+        }
+      }
+    }
+    if (!local.getVideoTracks().includes(processed)) local.addTrack(processed);
+  };
   /** sourceId текущей демонстрации (screen:/window:). */
   const shareSourceIdRef = useRef<string | null>(null);
   const pendingRenegotiateRef = useRef<Map<string, string | undefined>>(new Map());
@@ -423,6 +577,14 @@ export function App() {
     } catch {
       // Игнорируем ошибки
     }
+  }
+
+  function playRecordingAnnouncement(kind: "start" | "stop") {
+    if (recordingSoundFile) {
+      playNotificationSound(recordingSoundFile, recordingSoundVolume);
+      return;
+    }
+    speakRecordAnnouncement(kind);
   }
 
   function statusBadgeClass(s: AvailabilityStatus) {
@@ -625,23 +787,252 @@ export function App() {
   }, [settingsOpen, selectedAudioInputId, noiseSuppression, noiseSuppressionSensitivity, localStreamVer]);
 
   useEffect(() => {
-    if (!settingsOpen || settingsTab !== "camera") {
-      const prev = cameraPreviewStreamRef.current;
-      cameraPreviewStreamRef.current = null;
-      if (cameraPreviewRef.current) cameraPreviewRef.current.srcObject = null;
-      prev?.getTracks().forEach((t) => {
-        try {
-          t.stop();
-        } catch {
-          // игнор
-        }
+    cameraControlsRef.current = cameraControls;
+    applyCameraToStream(cameraRawStreamRef.current);
+  }, [cameraControls]);
+
+  useEffect(() => {
+    cameraFxRef.current = cameraFx;
+    setCameraFxOptions(cameraFx);
+    const need = cameraFxNeedsProcessing(cameraFx);
+    if (need === cameraFxNeedRef.current) return;
+    cameraFxNeedRef.current = need;
+    if (!videoEnabledRef.current) return;
+    const raw = cameraRawStreamRef.current?.getVideoTracks().find((t) => t.readyState === "live") ?? null;
+    if (!raw) return;
+    void (async () => {
+      const processed = await prepareCameraTrack(raw);
+      const local = localStreamRef.current;
+      if (!local || !processed) return;
+      await publishLocalCameraTrack(processed, local);
+      syncLocalVideoPreview();
+    })().catch(() => undefined);
+  }, [cameraFx]);
+
+  useEffect(() => {
+    if (isSettingsWindow) document.documentElement.dataset.settingsWindow = "1";
+    else delete document.documentElement.dataset.settingsWindow;
+  }, []);
+
+  useEffect(() => {
+    return window.lokameet.chat.onCleared(() => setChats([]));
+  }, []);
+
+  const settingsDraftReadyRef = useRef(!isSettingsWindow);
+  const settingsLiveRef = useRef({
+    cameraFx,
+    cameraControls,
+    videoQuality: mediaCfg.videoQuality,
+    selectedVideoDeviceId,
+    selectedAudioInputId,
+    selectedAudioOutputId,
+    microphoneVolume,
+    remoteMicVolume,
+    remoteScreenShareVolume,
+    noiseSuppression,
+    noiseSuppressionSensitivity,
+    chatHeight,
+    sidebarWidth,
+    fontScale,
+    compactUi,
+    showSeconds,
+    autoAwayMinutes,
+    autoSwitchToChat,
+    chatAutoScroll,
+    chatSmileSizePx,
+    chatFontSize,
+    chatDisplayLimit,
+    speakingIndicator,
+    tileAspect,
+    tileObjectFit,
+    tileRadius,
+    tileGap,
+    recordingFormat,
+    recordingQuality,
+    recordingFps,
+    recordingBitrate,
+    recordingDir,
+    lastRecordingPath
+  });
+  settingsLiveRef.current = {
+    cameraFx,
+    cameraControls,
+    videoQuality: mediaCfg.videoQuality,
+    selectedVideoDeviceId,
+    selectedAudioInputId,
+    selectedAudioOutputId,
+    microphoneVolume,
+    remoteMicVolume,
+    remoteScreenShareVolume,
+    noiseSuppression,
+    noiseSuppressionSensitivity,
+    chatHeight,
+    sidebarWidth,
+    fontScale,
+    compactUi,
+    showSeconds,
+    autoAwayMinutes,
+    autoSwitchToChat,
+    chatAutoScroll,
+    chatSmileSizePx,
+    chatFontSize,
+    chatDisplayLimit,
+    speakingIndicator,
+    tileAspect,
+    tileObjectFit,
+    tileRadius,
+    tileGap,
+    recordingFormat,
+    recordingQuality,
+    recordingFps,
+    recordingBitrate,
+    recordingDir,
+    lastRecordingPath
+  };
+
+  useEffect(() => {
+    const bc = new BroadcastChannel("lokameet-settings-sync");
+    const applyLive = (payload: Partial<typeof settingsLiveRef.current>) => {
+      if (payload.cameraFx) setCameraFx(payload.cameraFx);
+      if (payload.cameraControls) setCameraControls(payload.cameraControls);
+      if (payload.videoQuality) setMediaCfg((c) => ({ ...c, videoQuality: payload.videoQuality! }));
+      if (typeof payload.selectedVideoDeviceId === "string") setSelectedVideoDeviceId(payload.selectedVideoDeviceId);
+      if (typeof payload.selectedAudioInputId === "string") setSelectedAudioInputId(payload.selectedAudioInputId);
+      if (typeof payload.selectedAudioOutputId === "string") setSelectedAudioOutputId(payload.selectedAudioOutputId);
+      if (typeof payload.microphoneVolume === "number") setMicrophoneVolume(payload.microphoneVolume);
+      if (typeof payload.remoteMicVolume === "number") setRemoteMicVolume(payload.remoteMicVolume);
+      if (typeof payload.remoteScreenShareVolume === "number") setRemoteScreenShareVolume(payload.remoteScreenShareVolume);
+      if (typeof payload.noiseSuppression === "boolean") setNoiseSuppression(payload.noiseSuppression);
+      if (typeof payload.noiseSuppressionSensitivity === "number") setNoiseSuppressionSensitivity(payload.noiseSuppressionSensitivity);
+      if (typeof payload.chatHeight === "number") setChatHeight(payload.chatHeight);
+      if (typeof payload.sidebarWidth === "number") setSidebarWidth(payload.sidebarWidth);
+      if (typeof payload.fontScale === "number") setFontScale(payload.fontScale);
+      if (typeof payload.compactUi === "boolean") setCompactUi(payload.compactUi);
+      if (typeof payload.showSeconds === "boolean") setShowSeconds(payload.showSeconds);
+      if (typeof payload.autoAwayMinutes === "number") setAutoAwayMinutes(payload.autoAwayMinutes);
+      if (typeof payload.autoSwitchToChat === "boolean") setAutoSwitchToChat(payload.autoSwitchToChat);
+      if (typeof payload.chatAutoScroll === "boolean") setChatAutoScroll(payload.chatAutoScroll);
+      if (typeof payload.chatSmileSizePx === "number") setChatSmileSizePx(payload.chatSmileSizePx);
+      if (typeof payload.chatFontSize === "number") setChatFontSize(payload.chatFontSize);
+      if (typeof payload.chatDisplayLimit === "number") setChatDisplayLimit(payload.chatDisplayLimit);
+      if (typeof payload.speakingIndicator === "boolean") setSpeakingIndicator(payload.speakingIndicator);
+      if (payload.tileAspect) setTileAspect(payload.tileAspect);
+      if (payload.tileObjectFit) setTileObjectFit(payload.tileObjectFit);
+      if (typeof payload.tileRadius === "number") setTileRadius(payload.tileRadius);
+      if (typeof payload.tileGap === "number") setTileGap(payload.tileGap);
+      if (payload.recordingFormat === "avi" || payload.recordingFormat === "mp4") setRecordingFormat(payload.recordingFormat);
+      if (payload.recordingQuality === "480p" || payload.recordingQuality === "720p" || payload.recordingQuality === "1080p" || payload.recordingQuality === "1440p") {
+        setRecordingQuality(payload.recordingQuality);
+      }
+      if (payload.recordingFps === 15 || payload.recordingFps === 24 || payload.recordingFps === 30) setRecordingFps(payload.recordingFps);
+      if (payload.recordingBitrate === "low" || payload.recordingBitrate === "medium" || payload.recordingBitrate === "high" || payload.recordingBitrate === "max") {
+        setRecordingBitrate(payload.recordingBitrate);
+      }
+      if (typeof payload.recordingDir === "string") setRecordingDir(payload.recordingDir);
+      if (typeof payload.lastRecordingPath === "string") setLastRecordingPath(payload.lastRecordingPath);
+    };
+    bc.onmessage = (ev) => {
+      const data = ev.data as { type?: string; payload?: Partial<typeof settingsLiveRef.current> } | undefined;
+      if (!data) return;
+      if (isSettingsWindow && data.type === "draft" && data.payload) {
+        settingsDraftReadyRef.current = true;
+        applyLive(data.payload);
+      }
+      if (!isSettingsWindow && data.type === "live" && data.payload) applyLive(data.payload);
+      if (!isSettingsWindow && data.type === "requestDraft") {
+        bc.postMessage({ type: "draft", payload: settingsLiveRef.current });
+      }
+    };
+    if (isSettingsWindow && bootReady) bc.postMessage({ type: "requestDraft" });
+    return () => bc.close();
+  }, [bootReady]);
+
+  useEffect(() => {
+    if (!isSettingsWindow || !bootReady || !settingsDraftReadyRef.current) return;
+    const bc = new BroadcastChannel("lokameet-settings-sync");
+    bc.postMessage({ type: "live", payload: settingsLiveRef.current });
+    bc.close();
+  }, [
+    cameraFx,
+    cameraControls,
+    mediaCfg.videoQuality,
+    selectedVideoDeviceId,
+    selectedAudioInputId,
+    selectedAudioOutputId,
+    microphoneVolume,
+    remoteMicVolume,
+    remoteScreenShareVolume,
+    noiseSuppression,
+    noiseSuppressionSensitivity,
+    chatHeight,
+    sidebarWidth,
+    fontScale,
+    compactUi,
+    showSeconds,
+    autoAwayMinutes,
+    autoSwitchToChat,
+    chatAutoScroll,
+    chatSmileSizePx,
+    chatFontSize,
+    chatDisplayLimit,
+    speakingIndicator,
+    tileAspect,
+    tileObjectFit,
+    tileRadius,
+    tileGap,
+    recordingFormat,
+    recordingQuality,
+    recordingFps,
+    recordingBitrate,
+    recordingDir,
+    bootReady
+  ]);
+
+  async function addCustomCameraBackground() {
+    try {
+      const sourcePath = await window.lokameet.app.showOpenDialog({
+        filters: [{ name: "Images", extensions: ["jpg", "jpeg", "png", "webp"] }]
       });
+      if (!sourcePath) return;
+      const saved = await window.lokameet.cameraBg.saveFromPath(sourcePath);
+      setCustomCameraBgs((list) => [...list, saved]);
+      setCameraFx((c) => ({ ...c, backgroundMode: "custom", customId: saved.id, customDataUrl: saved.dataUrl }));
+    } catch {
+      setError(t("errPickFile"));
+    }
+  }
+
+  async function deleteCustomCameraBackground(id: string) {
+    await window.lokameet.cameraBg.remove(id).catch(() => undefined);
+    setCustomCameraBgs((list) => list.filter((item) => item.id !== id));
+    setCameraFx((c) => (c.customId === id ? { ...c, backgroundMode: "none", customId: null, customDataUrl: null } : c));
+  }
+
+  useEffect(() => {
+    if (!settingsOpen || settingsTab !== "camera") {
+      setCameraCaps(null);
+      if (cameraPreviewRef.current) cameraPreviewRef.current.srcObject = null;
+      if (!videoEnabledRef.current) stopRawCamera();
       return;
     }
 
     let cancelled = false;
     (async () => {
       try {
+        const liveRaw =
+          cameraRawStreamRef.current?.getVideoTracks().find((t) => t.readyState === "live") ?? null;
+        if (liveRaw && cameraRawStreamRef.current) {
+          setCameraCaps(readCameraCapabilities(liveRaw));
+          setCameraFxOptions(cameraFxRef.current);
+          await bindCameraFx(cameraRawStreamRef.current);
+          if (cancelled) return;
+          if (cameraPreviewRef.current) {
+            cameraPreviewRef.current.srcObject = getCameraFxStream();
+            await cameraPreviewRef.current.play().catch(() => undefined);
+          }
+          return;
+        }
+
         const vc = getVideoConstraints(mediaCfg.videoQuality);
         if (selectedVideoDeviceId) (vc as MediaTrackConstraints & { deviceId?: ConstrainDOMString }).deviceId = { ideal: selectedVideoDeviceId };
         const stream = await navigator.mediaDevices.getUserMedia({ video: vc, audio: false });
@@ -649,17 +1040,35 @@ export function App() {
           stream.getTracks().forEach((t) => t.stop());
           return;
         }
-        const old = cameraPreviewStreamRef.current;
-        cameraPreviewStreamRef.current = stream;
-        old?.getTracks().forEach((t) => {
-          try {
-            t.stop();
-          } catch {
-            // игнор
+        const camTrack = stream.getVideoTracks()[0] ?? null;
+        if (camTrack) {
+          markRawCameraTrack(camTrack);
+          cameraRawStreamRef.current = stream;
+          applyCameraToTrack(camTrack);
+          setCameraFxOptions(cameraFxRef.current);
+          await bindCameraFx(stream);
+          setCameraCaps(readCameraCapabilities(camTrack));
+          if (typeof camTrack.getSettings === "function") {
+            const settings = camTrack.getSettings() as MediaTrackSettings & Record<string, number | string | undefined>;
+            setCameraControls((current) => ({
+              ...current,
+              focusDistance: current.focusDistance ?? (typeof settings.focusDistance === "number" ? settings.focusDistance : undefined),
+              zoom: current.zoom ?? (typeof settings.zoom === "number" ? settings.zoom : undefined),
+              brightness: current.brightness ?? (typeof settings.brightness === "number" ? settings.brightness : undefined),
+              contrast: current.contrast ?? (typeof settings.contrast === "number" ? settings.contrast : undefined),
+              saturation: current.saturation ?? (typeof settings.saturation === "number" ? settings.saturation : undefined),
+              sharpness: current.sharpness ?? (typeof settings.sharpness === "number" ? settings.sharpness : undefined),
+              exposureCompensation:
+                current.exposureCompensation ??
+                (typeof settings.exposureCompensation === "number" ? settings.exposureCompensation : undefined),
+              colorTemperature:
+                current.colorTemperature ?? (typeof settings.colorTemperature === "number" ? settings.colorTemperature : undefined)
+            }));
           }
-        });
+        }
+        if (cancelled) return;
         if (cameraPreviewRef.current) {
-          cameraPreviewRef.current.srcObject = stream;
+          cameraPreviewRef.current.srcObject = getCameraFxStream();
           await cameraPreviewRef.current.play().catch(() => undefined);
         }
       } catch {
@@ -669,16 +1078,8 @@ export function App() {
 
     return () => {
       cancelled = true;
-      const prev = cameraPreviewStreamRef.current;
-      cameraPreviewStreamRef.current = null;
       if (cameraPreviewRef.current) cameraPreviewRef.current.srcObject = null;
-      prev?.getTracks().forEach((t) => {
-        try {
-          t.stop();
-        } catch {
-          // игнор
-        }
-      });
+      if (!videoEnabledRef.current) stopRawCamera();
     };
   }, [settingsOpen, settingsTab, selectedVideoDeviceId, mediaCfg.videoQuality]);
 
@@ -880,7 +1281,7 @@ export function App() {
 
   async function broadcastScreenShareSignal(
     payload:
-      | { type: "screen-share-start"; userName: string; screenAudioTrackId?: string }
+      | { type: "screen-share-start"; userName: string; screenAudioTrackId?: string; screenVideoTrackId?: string }
       | { type: "screen-share-stop" }
   ) {
     const activeCall = callRef.current;
@@ -907,6 +1308,381 @@ export function App() {
         });
       }
     }
+  }
+
+  async function broadcastRecordingSignal(
+    payload: { type: "recording-start"; userName: string } | { type: "recording-stop" }
+  ) {
+    const activeCall = callRef.current;
+    if (!activeCall || !profile) return;
+    if (isDirectCall(activeCall)) {
+      await sendRtc({
+        ...payload,
+        fromPeerId: profile.peerId,
+        toPeerId: activeCall.peerId
+      });
+      return;
+    }
+    if (isConferenceCall(activeCall)) {
+      const roomId = activeCall.roomId;
+      for (const participant of activeCall.participants) {
+        if (participant.peerId === profile.peerId) continue;
+        await sendRtc({
+          ...payload,
+          roomId,
+          fromPeerId: profile.peerId,
+          toPeerId: participant.peerId
+        });
+      }
+    }
+  }
+
+  async function chooseRecordingFolder() {
+    const dir = await window.lokameet.app.showOpenDialog({
+      properties: ["openDirectory", "createDirectory"],
+      defaultPath: recordingDir || undefined
+    });
+    if (!dir) return null;
+    setRecordingDir(dir);
+    void window.lokameet.app.updateProfile({ recordingDir: dir }).catch(() => undefined);
+    return dir;
+  }
+
+  function getLocalCameraTrack() {
+    const local = localStreamRef.current;
+    if (!local) return null;
+    const screenId = shareTrackRef.current?.id;
+    return (
+      local.getVideoTracks().find(
+        (t) => t !== shareTrackRef.current && t.readyState === "live" && !isScreenVideoTrack(t, screenId)
+      ) ?? null
+    );
+  }
+
+  async function ensurePresenterCamera() {
+    if (!isSharingRef.current || !videoEnabledRef.current) return;
+    const local = localStreamRef.current;
+    if (!local) return;
+    let cam = getLocalCameraTrack();
+    if (!cam) {
+      try {
+        const liveRaw = cameraRawStreamRef.current?.getVideoTracks().find((t) => t.readyState === "live") ?? null;
+        if (liveRaw) {
+          cam = await prepareCameraTrack(liveRaw);
+        } else {
+          const vc = getVideoConstraints(mediaCfg.videoQuality);
+          if (selectedVideoDeviceId) (vc as any).deviceId = { ideal: selectedVideoDeviceId };
+          const captured = await navigator.mediaDevices.getUserMedia({ video: vc, audio: false });
+          cam = await prepareCameraTrack(captured.getVideoTracks()[0] ?? null);
+        }
+      } catch (err) {
+        void window.lokameet.log.write({
+          level: "WARN",
+          scope: "renderer/screen",
+          msg: "Failed to reacquire presenter camera",
+          data: { error: String(err) }
+        });
+        return;
+      }
+    }
+    if (!cam || !isSharingRef.current) return;
+    installProcessedCamera(local, cam);
+    setLocalStreamVer((v) => v + 1);
+    const screenId = shareTrackRef.current?.id ?? "";
+    const roomId = callRef.current && isConferenceCall(callRef.current) ? callRef.current.roomId : undefined;
+    const peersNeedingRenegotiation = new Set<string>();
+    for (const [peerId, pc] of pcsRef.current.entries()) {
+      if (addSecondaryVideoTrack(pc, cam, local, screenId)) peersNeedingRenegotiation.add(peerId);
+    }
+    for (const peerId of peersNeedingRenegotiation) {
+      await renegotiatePeerConnection(peerId, roomId);
+    }
+    cam.onended = () => {
+      if (!isSharingRef.current || !videoEnabledRef.current) return;
+      window.setTimeout(() => {
+        void ensurePresenterCamera();
+      }, 400);
+    };
+  }
+
+  async function publishLocalCameraTrack(processed: MediaStreamTrack, local: MediaStream) {
+    installProcessedCamera(local, processed);
+    setLocalStreamVer((v) => v + 1);
+    const screenId = shareTrackRef.current?.id;
+    const roomId = callRef.current && isConferenceCall(callRef.current) ? callRef.current.roomId : undefined;
+    const peersNeedingRenegotiation = new Set<string>();
+    for (const [peerId, pc] of pcsRef.current.entries()) {
+      const needsRenegotiate = screenId
+        ? addSecondaryVideoTrack(pc, processed, local, screenId)
+        : replaceVideoTrack(pc, processed, local);
+      if (needsRenegotiate) peersNeedingRenegotiation.add(peerId);
+    }
+    for (const peerId of peersNeedingRenegotiation) {
+      await renegotiatePeerConnection(peerId, roomId);
+    }
+  }
+
+  function stopAppWindowCapture() {
+    const stream = appWindowCaptureRef.current;
+    appWindowCaptureRef.current = null;
+    if (!stream) return;
+    for (const track of stream.getTracks()) {
+      try {
+        track.stop();
+      } catch {
+        // игнор
+      }
+    }
+  }
+
+  async function ensureAppWindowCapture() {
+    const live = appWindowCaptureRef.current?.getVideoTracks().some((t) => t.readyState === "live");
+    if (live && appWindowCaptureRef.current) return appWindowCaptureRef.current;
+    stopAppWindowCapture();
+    try {
+      const sourceId = await window.lokameet.screen.getAppWindowSourceId();
+      if (!sourceId) return null;
+      const stream = await captureDesktopMedia(sourceId, false);
+      const track = stream.getVideoTracks()[0];
+      if (!track || track.readyState !== "live") {
+        for (const t of stream.getTracks()) t.stop();
+        return null;
+      }
+      track.onended = () => {
+        if (appWindowCaptureRef.current === stream) appWindowCaptureRef.current = null;
+      };
+      appWindowCaptureRef.current = stream;
+      return stream;
+    } catch (err) {
+      void window.lokameet.log.write({
+        level: "WARN",
+        scope: "renderer/media",
+        msg: "App window capture failed",
+        data: { error: String(err) }
+      });
+      return null;
+    }
+  }
+
+  function collectRecordingInputs(): { sources: RecordSource[]; audio: MediaStream[] } {
+    const sources: RecordSource[] = [];
+    const audio: MediaStream[] = [];
+    const local = localStreamRef.current;
+    if (local) audio.push(local);
+    for (const remote of remoteRef.current.values()) audio.push(remote.stream);
+
+    const localShare = shareTrackRef.current?.readyState === "live" ? shareTrackRef.current : null;
+    const remoteShare = remoteScreenShare;
+
+    if (localShare) {
+      const screenTracks: MediaStreamTrack[] = [localShare];
+      if (shareScreenAudioTrackRef.current?.readyState === "live") {
+        screenTracks.push(shareScreenAudioTrackRef.current);
+      }
+      sources.push({
+        id: `local-screen-${localShare.id}`,
+        label: `${profile?.userName ?? "You"} · screen`,
+        stream: new MediaStream(screenTracks),
+        role: "screen"
+      });
+      const cam = getLocalCameraTrack();
+      if (cam) {
+        sources.push({
+          id: `local-cam-${cam.id}`,
+          label: profile?.userName ?? "You",
+          stream: new MediaStream([cam]),
+          role: "camera"
+        });
+      }
+      for (const remote of remoteRef.current.values()) {
+        const camVideo = remote.stream.getVideoTracks().find((t) => t.readyState === "live");
+        if (camVideo) {
+          sources.push({
+            id: `remote-cam-${remote.peerId}-${camVideo.id}`,
+            label: remote.userName,
+            stream: new MediaStream([camVideo]),
+            role: "camera"
+          });
+        }
+      }
+      return { sources, audio };
+    }
+
+    if (remoteShare) {
+      const remote = remoteRef.current.get(remoteShare.peerId);
+      if (remote) {
+        sources.push({
+          id: `remote-screen-${remote.peerId}`,
+          label: `${remote.userName} · screen`,
+          stream: createScreenShareViewStream(remote.stream, remoteShare.screenAudioTrackId, remoteShare.screenVideoTrackId),
+          role: "screen"
+        });
+      }
+      const localCam = getLocalCameraTrack();
+      if (localCam) {
+        sources.push({
+          id: `local-cam-${localCam.id}`,
+          label: profile?.userName ?? "You",
+          stream: new MediaStream([localCam]),
+          role: "camera"
+        });
+      }
+      for (const other of remoteRef.current.values()) {
+        const camVideo =
+          other.peerId === remoteShare.peerId
+            ? findPresenterCameraTrack(other.stream, remoteShare.screenVideoTrackId)
+            : other.stream.getVideoTracks().find((t) => t.readyState === "live") ?? null;
+        if (camVideo) {
+          sources.push({
+            id: `remote-cam-${other.peerId}-${camVideo.id}`,
+            label: other.userName,
+            stream: new MediaStream([camVideo]),
+            role: "camera"
+          });
+        }
+      }
+      return { sources, audio };
+    }
+
+    const appWindow = appWindowCaptureRef.current;
+    const appTrack = appWindow?.getVideoTracks().find((t) => t.readyState === "live");
+    if (appTrack && appWindow) {
+      sources.push({
+        id: `app-window-${appTrack.id}`,
+        label: "LokaMeet",
+        stream: appWindow,
+        role: "screen"
+      });
+    }
+    return { sources, audio };
+  }
+
+  async function stopCallRecording(opts?: { silent?: boolean }) {
+    if (!recordingActiveRef.current && !callRecorderRef.current) return;
+    recordingActiveRef.current = false;
+    setRecordingActive(false);
+    const recorder = callRecorderRef.current;
+    callRecorderRef.current = null;
+    const sessionId = recordingSessionRef.current;
+    let wrote = false;
+    try {
+      wrote = (await recorder?.stop()) === true;
+    } catch {
+      // останавливаем даже если кадр не успел записаться
+    }
+    recordingSessionRef.current = null;
+    stopAppWindowCapture();
+    if (sessionId) {
+      const filePath = await window.lokameet.recording.finish(sessionId).catch(() => null);
+      if (filePath) {
+        setLastRecordingPath(filePath);
+        void window.lokameet.app.updateProfile({ lastRecordingPath: filePath }).catch(() => undefined);
+        void window.lokameet.log.write({ level: "INFO", scope: "renderer/media", msg: "Recording saved", data: { filePath } });
+      }
+      if (!wrote && !opts?.silent) setError(t("errRecordingEmpty"));
+    }
+    if (!opts?.silent) {
+      playRecordingAnnouncement("stop");
+      await broadcastRecordingSignal({ type: "recording-stop" }).catch(() => undefined);
+      await sendRecordingChatStatus("stop").catch(() => undefined);
+    }
+  }
+
+  async function sendRecordingChatStatus(kind: "start" | "stop") {
+    const activeCall = callRef.current;
+    if (!activeCall || !profile) return;
+    const text = kind === "start" ? t("chatStatusRecordingStart") : t("chatStatusRecordingStop");
+    if (isDirectCall(activeCall)) {
+      await sendChatStatus({ type: "direct", peerId: activeCall.peerId }, text);
+      return;
+    }
+    if (isConferenceCall(activeCall)) {
+      await sendChatStatus({ type: "room", roomId: activeCall.roomId }, text);
+    }
+  }
+
+  async function startCallRecording() {
+    if (!callRef.current || recordingActiveRef.current) return;
+    let dir = recordingDir;
+    if (!dir) dir = (await chooseRecordingFolder()) ?? "";
+    if (!dir) return;
+    const settings = normalizeRecordingSettings({
+      format: recordingFormat,
+      quality: recordingQuality,
+      fps: recordingFps,
+      bitrate: recordingBitrate
+    });
+    const size = RECORDING_SIZE[settings.quality];
+    const begun = await window.lokameet.recording.begin(
+      dir,
+      recordingFileName(new Date(), settings.format),
+      settings.format === "avi"
+        ? { format: "avi", width: size.width, height: size.height, fps: settings.fps, sampleRate: 48000 }
+        : undefined
+    );
+    if (!begun) {
+      setError(t("errRecording"));
+      return;
+    }
+    const sharingNow = Boolean(shareTrackRef.current) || Boolean(remoteScreenShare);
+    if (!sharingNow) await ensureAppWindowCapture();
+    const { sources, audio } = collectRecordingInputs();
+    void window.lokameet.log.write({
+      level: "INFO",
+      scope: "renderer/media",
+      msg: "Recording begin",
+      data: {
+        dir,
+        format: settings.format,
+        quality: settings.quality,
+        fps: settings.fps,
+        bitrate: settings.bitrate,
+        width: size.width,
+        height: size.height,
+        sources: sources.length,
+        audioStreams: audio.length,
+        sourceLabels: sources.map((s) => `${s.role}:${s.label}`),
+        filePath: begun.filePath
+      }
+    });
+    const recorder = new CallRecorder();
+    recorder.setInputs(sources, audio);
+    const sessionId = begun.id;
+    recordingSessionRef.current = sessionId;
+    callRecorderRef.current = recorder;
+    recordingActiveRef.current = true;
+    setRecordingActive(true);
+    try {
+      await recorder.start(
+        {
+          writeBytes: (data) => window.lokameet.recording.append(sessionId, data),
+          writeJpeg: (data) => window.lokameet.recording.aviJpeg(sessionId, data),
+          writePcm: (data) => window.lokameet.recording.aviPcm(sessionId, data)
+        },
+        settings,
+        (level, msg, data) => {
+          void window.lokameet.log.write({ level, scope: "renderer/media", msg, data });
+        }
+      );
+    } catch {
+      recordingActiveRef.current = false;
+      setRecordingActive(false);
+      callRecorderRef.current = null;
+      const sessionId = recordingSessionRef.current;
+      recordingSessionRef.current = null;
+      stopAppWindowCapture();
+      if (sessionId) await window.lokameet.recording.finish(sessionId).catch(() => null);
+      setError(t("errRecording"));
+      return;
+    }
+    playRecordingAnnouncement("start");
+    await broadcastRecordingSignal({ type: "recording-start", userName: profile?.userName ?? "User" }).catch(() => undefined);
+    await sendRecordingChatStatus("start").catch(() => undefined);
+  }
+
+  async function toggleCallRecording() {
+    if (recordingActiveRef.current) await stopCallRecording();
+    else await startCallRecording();
   }
 
   async function renegotiatePeerConnection(peerId: string, roomId?: string) {
@@ -1014,6 +1790,7 @@ export function App() {
 
   // Авто-статус «Отошел» при отсутствии активности
   useEffect(() => {
+    if (isSettingsWindow) return;
     const markActivity = () => {
       lastActivityRef.current = Date.now();
       if (autoAwayAppliedRef.current && profileStatusRef.current === "away" && !callRef.current) {
@@ -1065,7 +1842,7 @@ export function App() {
       if (cancelled) return;
 
       markBoot(28, "bootProfile");
-      if (s.profile.status === "in_call" || s.profile.status === "in_conference") {
+      if (!isSettingsWindow && (s.profile.status === "in_call" || s.profile.status === "in_conference")) {
         const normalized = await window.lokameet.app.updateProfile({ status: "online" });
         if (cancelled) return;
         setProfile(normalized);
@@ -1101,6 +1878,31 @@ export function App() {
       setSelectedAudioInputId(s.profile.audioInputDeviceId ?? "");
       setSelectedAudioOutputId(s.profile.audioOutputDeviceId ?? "");
       setSelectedVideoDeviceId(s.profile.videoInputDeviceId ?? "");
+      const loadedCameraControls = normalizeCameraControls(s.profile.cameraControls);
+      cameraControlsRef.current = loadedCameraControls;
+      setCameraControls(loadedCameraControls);
+      const listed = await window.lokameet.cameraBg.list().catch(() => []);
+      if (cancelled) return;
+      setCustomCameraBgs(listed);
+      const loadedFx = normalizeCameraFxOptions({
+        cropZoom: s.profile.cameraFx?.cropZoom,
+        cropPanX: s.profile.cameraFx?.cropPanX,
+        cropPanY: s.profile.cameraFx?.cropPanY,
+        backgroundMode: s.profile.cameraFx?.backgroundMode,
+        presetId: s.profile.cameraFx?.backgroundPreset,
+        customId: s.profile.cameraFx?.backgroundCustomId,
+        blurAmount: s.profile.cameraFx?.blurAmount
+      });
+      if (loadedFx.backgroundMode === "custom") {
+        const chosen = listed.find((item) => item.id === loadedFx.customId) ?? listed[0];
+        loadedFx.customId = chosen?.id ?? null;
+        loadedFx.customDataUrl = chosen?.dataUrl ?? null;
+        if (!loadedFx.customDataUrl) loadedFx.backgroundMode = "none";
+      }
+      cameraFxRef.current = loadedFx;
+      cameraFxNeedRef.current = cameraFxNeedsProcessing(loadedFx);
+      setCameraFx(loadedFx);
+      setCameraFxOptions(loadedFx);
       setChatAutoScroll(s.profile.chatAutoScroll ?? true);
       setChatSmileSizePx(Math.max(16, Math.min(128, Number(s.profile.chatSmileSizePx ?? 24) || 24)));
       setChatFontSize(Math.max(10, Math.min(24, Number(s.profile.chatFontSize ?? 14) || 14)));
@@ -1152,10 +1954,24 @@ export function App() {
       setMessageSoundFile(s.profile.messageSoundFile ?? "snds/sms.mp3");
       setCallerSoundFile(s.profile.callerSoundFile ?? "snds/call_1.mp3");
       setConnectionSoundFile(s.profile.connectionSoundFile ?? "snds/int.mp3");
+      setRecordingSoundFile(typeof s.profile.recordingSoundFile === "string" ? s.profile.recordingSoundFile : "");
       setCallSoundVolume(Math.max(0, Math.min(100, Number(s.profile.callSoundVolume ?? 50) || 50)));
       setMessageSoundVolume(Math.max(0, Math.min(100, Number(s.profile.messageSoundVolume ?? 50) || 50)));
       setCallerSoundVolume(Math.max(0, Math.min(100, Number(s.profile.callerSoundVolume ?? 50) || 50)));
       setConnectionSoundVolume(Math.max(0, Math.min(100, Number(s.profile.connectionSoundVolume ?? 50) || 50)));
+      setRecordingSoundVolume(Math.max(0, Math.min(100, Number(s.profile.recordingSoundVolume ?? 50) || 50)));
+      setRecordingDir(typeof s.profile.recordingDir === "string" ? s.profile.recordingDir : "");
+      setLastRecordingPath(typeof s.profile.lastRecordingPath === "string" ? s.profile.lastRecordingPath : "");
+      const rec = normalizeRecordingSettings({
+        format: s.profile.recordingFormat === "avi" ? "avi" : "mp4",
+        quality: s.profile.recordingQuality,
+        fps: s.profile.recordingFps,
+        bitrate: s.profile.recordingBitrate
+      });
+      setRecordingFormat(rec.format);
+      setRecordingQuality(rec.quality);
+      setRecordingFps(rec.fps);
+      setRecordingBitrate(rec.bitrate);
       if (s.profile.defaultVideoQuality) {
         setMediaCfg((c) => ({ ...c, videoQuality: s.profile.defaultVideoQuality! }));
       }
@@ -1181,6 +1997,13 @@ export function App() {
       setPendingStatus(
         s.profile.status === "in_call" || s.profile.status === "in_conference" ? "online" : s.profile.status
       );
+
+      if (isSettingsWindow) {
+        markBoot(100, "bootReady");
+        setSettingsOpen(true);
+        setBootReady(true);
+        return;
+      }
 
       markBoot(88, "bootDiscovery");
       const snap = await window.lokameet.discovery.getSnapshot();
@@ -1266,14 +2089,24 @@ export function App() {
     const el = localVideoRef.current;
     if (!el) return;
     const local = localStreamRef.current;
+    const share = shareTrackRef.current;
+    if (share && share.readyState === "live") {
+      const current = el.srcObject;
+      const already =
+        current instanceof MediaStream && current.getVideoTracks().length === 1 && current.getVideoTracks()[0] === share;
+      if (!already) el.srcObject = new MediaStream([share]);
+      void el.play().catch(() => undefined);
+      return;
+    }
     const videoOn = opts?.videoEnabled ?? mediaCfg.videoEnabled;
     const hasLiveVideo =
       videoOn && local && local.getVideoTracks().some((t) => t.readyState === "live");
-    el.srcObject = null;
     if (hasLiveVideo && local) {
-      el.srcObject = local;
+      if (el.srcObject !== local) el.srcObject = local;
       void el.play().catch(() => undefined);
+      return;
     }
+    el.srcObject = null;
   }
 
   async function ensureLocalMedia() {
@@ -1309,6 +2142,14 @@ export function App() {
 
     try {
       const stream = await tryGet(selectedAudioInputId, selectedVideoDeviceId);
+      const rawVideo = stream.getVideoTracks()[0] ?? null;
+      if (rawVideo) {
+        const processed = await prepareCameraTrack(rawVideo);
+        if (processed && processed !== rawVideo) {
+          stream.removeTrack(rawVideo);
+          stream.addTrack(processed);
+        }
+      }
       localStreamRef.current = stream;
       setLocalStreamVer((v) => v + 1);
       if (localVideoRef.current) {
@@ -1329,6 +2170,14 @@ export function App() {
         clearStaleMediaDeviceIds("both");
         try {
           const stream = await tryGet("", "");
+          const rawVideo = stream.getVideoTracks()[0] ?? null;
+          if (rawVideo) {
+            const processed = await prepareCameraTrack(rawVideo);
+            if (processed && processed !== rawVideo) {
+              stream.removeTrack(rawVideo);
+              stream.addTrack(processed);
+            }
+          }
           localStreamRef.current = stream;
           setLocalStreamVer((v) => v + 1);
           if (localVideoRef.current) {
@@ -1401,11 +2250,12 @@ export function App() {
       const cam = await navigator.mediaDevices.getUserMedia({ video: vc, audio: false });
       const camTrack = cam.getVideoTracks()[0] ?? null;
       if (!camTrack) return;
-      local.addTrack(camTrack);
+      const processed = await prepareCameraTrack(camTrack);
+      installProcessedCamera(local, processed);
       setLocalStreamVer((v) => v + 1);
       const roomId = callRef.current && isConferenceCall(callRef.current) ? callRef.current.roomId : undefined;
       for (const [peerId, pc] of pcsRef.current.entries()) {
-        const needsRenegotiate = replaceVideoTrack(pc, camTrack, local);
+        const needsRenegotiate = replaceVideoTrack(pc, processed, local);
         if (needsRenegotiate) await renegotiatePeerConnection(peerId, roomId);
       }
       if (localVideoRef.current) {
@@ -1517,9 +2367,40 @@ export function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [microphoneVolume, noiseSuppression, noiseSuppressionSensitivity]);
 
+  useEffect(() => {
+    if (!recordingActive || !callRecorderRef.current) return;
+    let cancelled = false;
+    void (async () => {
+      const sharingNow = Boolean(isSharing) || Boolean(remoteScreenShare);
+      if (sharingNow) stopAppWindowCapture();
+      else await ensureAppWindowCapture();
+      if (cancelled || !callRecorderRef.current) return;
+      const { sources, audio } = collectRecordingInputs();
+      callRecorderRef.current.setInputs(sources, audio);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [recordingActive, localStreamVer, remoteTracks, isSharing, remoteScreenShare]);
+
+  useEffect(() => {
+    if (!isSharing) return;
+    const tick = () => {
+      void window.lokameet.screen.keepCapturerAlive().catch(() => undefined);
+      const share = shareTrackRef.current;
+      if (!share || share.readyState !== "live") return;
+      for (const pc of pcsRef.current.values()) {
+        tuneScreenShareSender(pc, share);
+        requestScreenShareKeyframe(pc, share);
+      }
+    };
+    tick();
+    const id = window.setInterval(tick, 2500);
+    return () => window.clearInterval(id);
+  }, [isSharing]);
+
   async function switchCamera(deviceId: string) {
     setSelectedVideoDeviceId(deviceId);
-    if (isSharing) return;
     if (!mediaCfg.videoEnabled) return;
 
     const cam = await navigator.mediaDevices.getUserMedia({
@@ -1527,26 +2408,31 @@ export function App() {
       audio: false
     });
     const camTrack = cam.getVideoTracks()[0] ?? null;
+    const processed = await prepareCameraTrack(camTrack);
     const local = await ensureLocalMedia();
-    const old = local.getVideoTracks()[0] ?? null;
-    if (old) {
-      local.removeTrack(old);
-      try {
-        old.stop();
-      } catch {
-        // игнор
-      }
-    }
-    if (camTrack) local.addTrack(camTrack);
-    setLocalStreamVer((v) => v + 1);
-    const roomId = callRef.current && isConferenceCall(callRef.current) ? callRef.current.roomId : undefined;
-    for (const [peerId, pc] of pcsRef.current.entries()) {
-      const needsRenegotiate = replaceVideoTrack(pc, camTrack, local);
-      if (needsRenegotiate) await renegotiatePeerConnection(peerId, roomId);
-    }
-    if (localVideoRef.current) {
-      localVideoRef.current.srcObject = local;
-      await localVideoRef.current.play().catch(() => undefined);
+    if (processed) await publishLocalCameraTrack(processed, local);
+    syncLocalVideoPreview({ videoEnabled: true });
+  }
+
+  async function applyVideoQuality(quality: VideoQuality) {
+    setMediaCfg((c) => ({ ...c, videoQuality: quality }));
+    if (!videoEnabledRef.current) return;
+    try {
+      const vc = getVideoConstraints(quality);
+      if (selectedVideoDeviceId) (vc as MediaTrackConstraints & { deviceId?: ConstrainDOMString }).deviceId = { ideal: selectedVideoDeviceId };
+      const cam = await navigator.mediaDevices.getUserMedia({ video: vc, audio: false });
+      const camTrack = cam.getVideoTracks()[0] ?? null;
+      const processed = await prepareCameraTrack(camTrack);
+      const local = await ensureLocalMedia();
+      if (processed) await publishLocalCameraTrack(processed, local);
+      syncLocalVideoPreview({ videoEnabled: true });
+    } catch (err) {
+      void window.lokameet.log.write({
+        level: "WARN",
+        scope: "renderer/media",
+        msg: "Failed to apply camera resolution",
+        data: { quality, error: String(err) }
+      });
     }
   }
 
@@ -1684,6 +2570,9 @@ export function App() {
       videoTrack.onended = () => {
         void stopScreenShare();
       };
+      videoTrack.addEventListener("mute", () => {
+        void window.lokameet.screen.keepCapturerAlive().catch(() => undefined);
+      });
 
       // Аудио трек экрана (не заменяет микрофон — голос остаётся)
       const audioTracks = display.getAudioTracks();
@@ -1716,23 +2605,14 @@ export function App() {
       if (screenAudioTrack && !local.getAudioTracks().includes(screenAudioTrack)) {
         local.addTrack(screenAudioTrack);
       }
-      const old = local.getVideoTracks().find((t) => t !== videoTrack && t !== shareTrackRef.current) ?? null;
-      if (old && old !== shareTrackRef.current) {
-        local.removeTrack(old);
-        try {
-          old.stop();
-        } catch {
-          // игнор
-        }
-      }
+      const existingCam = mediaCfg.videoEnabled
+        ? local.getVideoTracks().find((t) => t !== videoTrack && t.readyState === "live" && !isScreenVideoTrack(t, videoTrack.id)) ?? null
+        : null;
       if (!local.getVideoTracks().includes(videoTrack)) {
         local.addTrack(videoTrack);
       }
       setLocalStreamVer((v) => v + 1);
-      if (localVideoRef.current) {
-        localVideoRef.current.srcObject = local;
-        await localVideoRef.current.play().catch(() => undefined);
-      }
+      syncLocalVideoPreview();
 
       const isScreenAudio = (track: MediaStreamTrack) =>
         isScreenBroadcastAudioTrack(track, local, screenAudioTrack?.id);
@@ -1744,7 +2624,11 @@ export function App() {
       const activeCall = callRef.current;
       const peersNeedingRenegotiation = new Set<string>();
       for (const [peerId, peerPc] of pcsRef.current.entries()) {
-        if (replaceVideoTrack(peerPc, videoTrack, local)) {
+        if (await replaceVideoTrackAsync(peerPc, videoTrack, local)) {
+          peersNeedingRenegotiation.add(peerId);
+        }
+        tuneScreenShareSender(peerPc, videoTrack);
+        if (existingCam && addSecondaryVideoTrack(peerPc, existingCam, local, videoTrack.id)) {
           peersNeedingRenegotiation.add(peerId);
         }
         if (!mediaCfg.audioEnabled) {
@@ -1772,7 +2656,8 @@ export function App() {
         await broadcastScreenShareSignal({
           type: "screen-share-start",
           userName: profile.userName,
-          screenAudioTrackId: screenAudioTrack?.id
+          screenAudioTrackId: screenAudioTrack?.id,
+          screenVideoTrackId: videoTrack.id
         });
       }
       try {
@@ -1790,6 +2675,10 @@ export function App() {
         }
       } catch {
         // Игнорируем ошибки логирования
+      }
+      if (mediaCfg.videoEnabled) {
+        await new Promise((resolve) => window.setTimeout(resolve, 250));
+        await ensurePresenterCamera();
       }
     } catch (err) {
       // В случае ошибки сбрасываем все состояния
@@ -1900,23 +2789,25 @@ export function App() {
     const peersNeedingRenegotiation = new Set<string>();
     const roomId = activeCall && isConferenceCall(activeCall) ? activeCall.roomId : undefined;
 
-    // Reacquire camera track (respecting current quality setting) если видео включено
+    // Камера могла остаться на local stream во время демонстрации — не перезахватываем зря.
     if (mediaCfg.videoEnabled) {
       try {
-        const vc = getVideoConstraints(mediaCfg.videoQuality);
-        if (selectedVideoDeviceId) (vc as any).deviceId = { ideal: selectedVideoDeviceId };
-        const cam = await navigator.mediaDevices.getUserMedia({ video: vc, audio: false });
-        const camTrack = cam.getVideoTracks()[0] ?? null;
-        if (camTrack && local) {
-          // Проверяем что камеры еще нет
-          const existingCamTrack = local.getVideoTracks().find((t) => t.kind === "video" && t !== share);
-          if (!existingCamTrack) {
-            local.addTrack(camTrack);
-            setLocalStreamVer((v) => v + 1);
-          }
+        let processed =
+          local?.getVideoTracks().find((t) => t !== share && t.readyState === "live") ?? null;
+        if (!processed) {
+          const vc = getVideoConstraints(mediaCfg.videoQuality);
+          if (selectedVideoDeviceId) (vc as any).deviceId = { ideal: selectedVideoDeviceId };
+          const cam = await navigator.mediaDevices.getUserMedia({ video: vc, audio: false });
+          const camTrack = cam.getVideoTracks()[0] ?? null;
+          processed = await prepareCameraTrack(camTrack);
+        }
+        if (processed && local) {
+          installProcessedCamera(local, processed);
+          setLocalStreamVer((v) => v + 1);
           for (const [peerId, pc] of pcsRef.current.entries()) {
-            replaceVideoTrack(pc, camTrack, local);
-            peersNeedingRenegotiation.add(peerId);
+            if (restoreCameraAfterScreenShare(pc, processed, share?.id ?? "", local)) {
+              peersNeedingRenegotiation.add(peerId);
+            }
           }
         }
       } catch (err) {
@@ -2008,11 +2899,13 @@ export function App() {
     if (s) {
       for (const t of s.getTracks()) t.stop();
     }
+    stopRawCamera();
     shareTrackRef.current = null;
     shareScreenAudioTrackRef.current = null;
     shareSourceIdRef.current = null;
     isSharingRef.current = false;
     setIsSharing(false);
+    stopAppWindowCapture();
     if (localVideoRef.current) localVideoRef.current.srcObject = null;
   }
 
@@ -2112,7 +3005,7 @@ export function App() {
   }
 
   async function onEnvelope(env: WsEnvelope) {
-    if (env.type === "direct-call-request" || env.type === "direct-call-accept" || env.type === "room-invite" || env.type === "room-invite-reject" || env.type === "room-join" || env.type === "room-welcome" || env.type === "room-peer-joined" || env.type === "room-peer-left" || env.type === "rtc-signal") {
+    if (env.type === "direct-call-request" || env.type === "direct-call-accept" || env.type === "direct-call-reject" || env.type === "room-invite" || env.type === "room-invite-reject" || env.type === "room-join" || env.type === "room-welcome" || env.type === "room-peer-joined" || env.type === "room-peer-left" || env.type === "rtc-signal" || env.type === "chat-message") {
       void window.lokameet.log.write({ level: "INFO", scope: "renderer/envelope", msg: env.type, data: env });
     } else {
       void window.lokameet.log.write({ level: "DEBUG", scope: "renderer/envelope", msg: env.type, data: env });
@@ -2595,7 +3488,8 @@ export function App() {
         setRemoteScreenShare({
           peerId: sig.fromPeerId,
           userName: sig.userName,
-          screenAudioTrackId: sig.screenAudioTrackId
+          screenAudioTrackId: sig.screenAudioTrackId,
+          screenVideoTrackId: sig.screenVideoTrackId
         });
         setScreenViewControlsHidden(false);
         setScreenBroadcastMuted(false);
@@ -2610,6 +3504,16 @@ export function App() {
         if (document.fullscreenElement) {
           void document.exitFullscreen().catch(() => undefined);
         }
+      } else if (sig.type === "recording-start") {
+        setRemoteRecordings((list) =>
+          list.some((item) => item.peerId === sig.fromPeerId)
+            ? list
+            : [...list, { peerId: sig.fromPeerId, userName: sig.userName }]
+        );
+        playRecordingAnnouncement("start");
+      } else if (sig.type === "recording-stop") {
+        setRemoteRecordings((list) => list.filter((item) => item.peerId !== sig.fromPeerId));
+        playRecordingAnnouncement("stop");
       }
       return;
     }
@@ -2692,6 +3596,22 @@ export function App() {
 
     const pc = createPeerConnection();
     pcsRef.current.set(remotePeerId, pc);
+    pc.addEventListener("iceconnectionstatechange", () => {
+      void window.lokameet.log.write({
+        level: pc.iceConnectionState === "failed" || pc.iceConnectionState === "disconnected" ? "WARN" : "INFO",
+        scope: "renderer/webrtc",
+        msg: "ICE connection state",
+        data: { remotePeerId, remoteUserName, iceConnectionState: pc.iceConnectionState, connectionState: pc.connectionState, signalingState: pc.signalingState }
+      });
+    });
+    pc.addEventListener("connectionstatechange", () => {
+      void window.lokameet.log.write({
+        level: pc.connectionState === "failed" || pc.connectionState === "disconnected" ? "WARN" : "INFO",
+        scope: "renderer/webrtc",
+        msg: "Peer connection state",
+        data: { remotePeerId, remoteUserName, connectionState: pc.connectionState, iceConnectionState: pc.iceConnectionState }
+      });
+    });
     pc.addEventListener("signalingstatechange", () => {
       if (pc.signalingState === "stable") {
         flushPendingRenegotiation(remotePeerId);
@@ -2802,6 +3722,17 @@ export function App() {
             });
           }
         }
+      }
+      const camTrack = updatedLocal.getVideoTracks().find(
+        (t) => t !== screenTrack && t.readyState === "live" && mediaCfg.videoEnabled
+      );
+      if (camTrack && addSecondaryVideoTrack(pc, camTrack, updatedLocal, screenTrack.id)) {
+        void window.lokameet.log.write({
+          level: "INFO",
+          scope: "renderer/webrtc",
+          msg: "Presenter camera track added to peer connection",
+          data: { remotePeerId, trackId: camTrack.id }
+        });
       }
     }
 
@@ -3005,6 +3936,9 @@ export function App() {
         }
         refreshRemotePeerVideo(remotePeerId);
       };
+      track.onmute = () => {
+        refreshRemotePeerVideo(remotePeerId);
+      };
       
       // Отслеживать изменения состояния треков для обновления UI
       const updateRemoteTracks = () => {
@@ -3055,7 +3989,7 @@ export function App() {
         } else {
           if (track.kind === "video") {
             for (const old of prev.stream.getVideoTracks()) {
-              if (old.id !== track.id) {
+              if (old.id !== track.id && old.readyState === "ended") {
                 try {
                   prev.stream.removeTrack(old);
                 } catch {
@@ -3084,7 +4018,7 @@ export function App() {
       if (prev) {
         if (track.kind === "video") {
           for (const old of prev.stream.getVideoTracks()) {
-            if (old.id !== track.id) {
+            if (old.id !== track.id && old.readyState === "ended") {
               try {
                 prev.stream.removeTrack(old);
               } catch {
@@ -3676,6 +4610,16 @@ export function App() {
 
   async function leaveCall() {
     const activeCall = callRef.current;
+    void window.lokameet.log.write({
+      level: "INFO",
+      scope: "renderer/call",
+      msg: "leaveCall",
+      data: activeCall
+        ? { mode: activeCall.mode, peerId: "peerId" in activeCall ? activeCall.peerId : undefined, roomId: "roomId" in activeCall ? activeCall.roomId : undefined }
+        : { mode: "none" }
+    });
+    await stopCallRecording().catch(() => undefined);
+    setRemoteRecordings([]);
     if (activeCall?.mode === "direct") {
       clearPendingCall(activeCall.peerId);
       intentionalPeerDisconnectsRef.current.add(activeCall.peerId);
@@ -4099,18 +5043,47 @@ export function App() {
   const remoteScreenTrackSig = remoteScreenRawStream
     ? remoteScreenRawStream
         .getTracks()
-        .map((t) => `${t.id}:${t.readyState}`)
+        .map((t) => `${t.id}:${t.readyState}:${t.muted}:${t.enabled}`)
         .join("|")
     : "";
   const remoteScreenStream = useMemo(() => {
     if (!remoteScreenRawStream || !remoteScreenShare) return null;
-    return createScreenShareViewStream(remoteScreenRawStream, remoteScreenShare.screenAudioTrackId);
+    return createScreenShareViewStream(
+      remoteScreenRawStream,
+      remoteScreenShare.screenAudioTrackId,
+      remoteScreenShare.screenVideoTrackId
+    );
   }, [
     remoteScreenRawStream,
     remoteScreenShare?.peerId,
     remoteScreenShare?.screenAudioTrackId,
+    remoteScreenShare?.screenVideoTrackId,
     remoteScreenTrackSig
   ]);
+  const remotePresenterCameraStream = useMemo(() => {
+    if (!remoteScreenRawStream || !remoteScreenShare) return null;
+    const cam = findPresenterCameraTrack(remoteScreenRawStream, remoteScreenShare.screenVideoTrackId);
+    return cam ? new MediaStream([cam]) : null;
+  }, [
+    remoteScreenRawStream,
+    remoteScreenShare?.peerId,
+    remoteScreenShare?.screenVideoTrackId,
+    remoteScreenTrackSig
+  ]);
+  const localPresenterCameraStream = useMemo(() => {
+    if (!isSharing || !mediaCfg.videoEnabled) return null;
+    const local = localStreamRef.current;
+    const screenId = shareTrackRef.current?.id;
+    const cam = local?.getVideoTracks().find(
+      (t) =>
+        t !== shareTrackRef.current &&
+        t.readyState === "live" &&
+        t.enabled &&
+        !t.muted &&
+        !isScreenVideoTrack(t, screenId)
+    );
+    return cam ? new MediaStream([cam]) : null;
+  }, [isSharing, mediaCfg.videoEnabled, localStreamVer]);
 
   if (!bootReady || !profile) {
     const pct = bootProgress;
@@ -4144,7 +5117,7 @@ export function App() {
       : [];
 
   return (
-    <div className="app">
+    <div className={`app${isSettingsWindow ? " is-settings-window" : ""}`}>
       {nameDialogOpen && (
         <Modal title={t("promptYourName")} onClose={closeNameDialog}>
           <div className="row" style={{ flexWrap: "wrap" }}>
@@ -4434,19 +5407,22 @@ export function App() {
                   { value: "soft-light", label: t("theme_soft-light") },
                   { value: "ocean-blue", label: t("theme_ocean-blue") },
                   { value: "ocean-dusk", label: t("theme_ocean-dusk") },
-                  { value: "ipad-slate", label: t("theme_ipad-slate") },
-                  { value: "ipad-lagoon", label: t("theme_ipad-lagoon") },
-                  { value: "ipad-midnight", label: t("theme_ipad-midnight") }
+                  { value: "ipd-slate", label: t("theme_ipd-slate") },
+                  { value: "ipd-lagoon", label: t("theme_ipd-lagoon") },
+                  { value: "ipd-midnight", label: t("theme_ipd-midnight") }
                 ]}
               />
-              <button className="btn" onClick={() => setSettingsOpen(true)} title={t("settings")}>
+              <button
+                className="btn"
+                onClick={() => {
+                  void window.lokameet.settings.open().catch(() => setSettingsOpen(true));
+                }}
+                title={t("settings")}
+              >
                 ⚙
               </button>
               <button className="btn" onClick={() => void toggleLanguage()}>
                 {profile.language.toUpperCase()}
-              </button>
-              <button className="btn btnDanger" onClick={() => setExitConfirmOpen(true)} title={t("exitApp")}>
-                {t("exit")}
               </button>
             </div>
           </div>
@@ -4479,10 +5455,9 @@ export function App() {
             <div className="panelSectionDivider" aria-hidden="true" />
             <div className="sidebarMediaRow">
               <Select
-                disabled={isSharing || videoDevices.length === 0}
+                disabled={videoDevices.length === 0}
                 value={selectedVideoDeviceId}
                 onChange={(v) => void switchCamera(v)}
-                title={isSharing ? "Disabled while screen sharing" : undefined}
                 options={
                   videoDevices.length === 0
                     ? [{ value: "", label: t("video") }]
@@ -4494,38 +5469,25 @@ export function App() {
               />
               <Select
                 value={mediaCfg.videoQuality}
-                onChange={(v) => setMediaCfg((c) => ({ ...c, videoQuality: v as any }))}
-                style={{ flex: "0 0 auto", minWidth: 72 }}
-                options={[
-                  { value: "low", label: t("low") },
-                  { value: "medium", label: t("medium") },
-                  { value: "high", label: t("high") }
-                ]}
+                onChange={(v) => void applyVideoQuality(v as VideoQuality)}
+                style={{ flex: "0 0 auto", minWidth: 86 }}
+                options={VIDEO_QUALITY_OPTIONS.map((q) => ({ value: q.value, label: t(q.labelKey) }))}
               />
               <button
                 className={`btn btnToggle ${mediaCfg.videoEnabled ? "is-on" : "is-off"}`}
                 onClick={async () => {
                   const next = !mediaCfg.videoEnabled;
-                  if (next && isSharing) {
-                    // Включение камеры останавливает демонстрацию экрана
-                    try {
-                      await stopScreenShare();
-                    } catch (err) {
-                      console.error("Error stopping screen share before enabling camera:", err);
-                    }
-                  }
                   setMediaCfg((c) => ({ ...c, videoEnabled: next }));
                   if (!next) {
-                    // Выключение камеры → стандартная плитка
                     const local = localStreamRef.current;
                     const stillSharing = Boolean(shareTrackRef.current);
-                    if (local && !stillSharing) {
-                      // Сначала detach от PC, потом stop — иначе remote получает ended
-                      // и prune выкидывает трек до того, как screen share сможет его unmute'нуть.
+                    if (local && stillSharing) {
+                      const screenId = shareTrackRef.current?.id ?? "";
                       for (const pc of pcsRef.current.values()) {
-                        replaceVideoTrack(pc, null);
+                        detachSecondaryVideoTrack(pc, screenId);
                       }
                       for (const t of [...local.getVideoTracks()]) {
+                        if (t === shareTrackRef.current) continue;
                         local.removeTrack(t);
                         try {
                           t.stop();
@@ -4533,16 +5495,28 @@ export function App() {
                           // игнор
                         }
                       }
+                      stopRawCamera();
                       setLocalStreamVer((v) => v + 1);
-                    } else if (local) {
-                      for (const t of local.getVideoTracks()) {
-                        if (t !== shareTrackRef.current) t.enabled = false;
+                    } else if (local && !stillSharing) {
+                      for (const pc of pcsRef.current.values()) {
+                        replaceVideoTrack(pc, null);
                       }
+                      for (const t of [...local.getVideoTracks()]) {
+                        local.removeTrack(t);
+                        if (isRawCameraTrack(t)) {
+                          try {
+                            t.stop();
+                          } catch {
+                            // игнор
+                          }
+                        }
+                      }
+                      if (settingsTab !== "camera" || !settingsOpen) stopRawCamera();
+                      setLocalStreamVer((v) => v + 1);
                     }
                     syncLocalVideoPreview({ videoEnabled: false });
                     return;
                   }
-                  // Включение камеры (не опираемся на stale mediaCfg после setState)
                   try {
                     let local = localStreamRef.current;
                     if (!local) {
@@ -4551,27 +5525,21 @@ export function App() {
                     let camTrack =
                       local.getVideoTracks().find((t) => t !== shareTrackRef.current && t.readyState === "live") ?? null;
                     if (!camTrack) {
-                      const vc = getVideoConstraints(mediaCfg.videoQuality);
-                      if (selectedVideoDeviceId) (vc as any).deviceId = { ideal: selectedVideoDeviceId };
-                      const cam = await navigator.mediaDevices.getUserMedia({ video: vc, audio: false });
-                      camTrack = cam.getVideoTracks()[0] ?? null;
-                      if (camTrack) {
-                        local.addTrack(camTrack);
-                        setLocalStreamVer((v) => v + 1);
+                      const liveRaw =
+                        cameraRawStreamRef.current?.getVideoTracks().find((t) => t.readyState === "live") ?? null;
+                      if (liveRaw) {
+                        camTrack = await prepareCameraTrack(liveRaw);
+                      } else {
+                        const vc = getVideoConstraints(mediaCfg.videoQuality);
+                        if (selectedVideoDeviceId) (vc as any).deviceId = { ideal: selectedVideoDeviceId };
+                        const cam = await navigator.mediaDevices.getUserMedia({ video: vc, audio: false });
+                        camTrack = await prepareCameraTrack(cam.getVideoTracks()[0] ?? null);
                       }
                     } else {
                       camTrack.enabled = true;
                     }
                     if (camTrack) {
-                      const roomId = call && isConferenceCall(call) ? call.roomId : undefined;
-                      const peersNeedingRenegotiation = new Set<string>();
-                      for (const [peerId, pc] of pcsRef.current.entries()) {
-                        const needsRenegotiate = replaceVideoTrack(pc, camTrack, local);
-                        if (needsRenegotiate) peersNeedingRenegotiation.add(peerId);
-                      }
-                      for (const peerId of peersNeedingRenegotiation) {
-                        await renegotiatePeerConnection(peerId, roomId);
-                      }
+                      await publishLocalCameraTrack(camTrack, local);
                     }
                     syncLocalVideoPreview({ videoEnabled: true });
                   } catch (err) {
@@ -4669,6 +5637,14 @@ export function App() {
                 }}
               >
                 {isSharing ? t("screenOn") : t("screenOff")}
+              </button>
+              <button
+                className={`btn btnToggle ${recordingActive ? "is-on is-recording" : "is-off"}`}
+                disabled={!call}
+                onClick={() => void toggleCallRecording()}
+                title={!call ? t("recordInCallOnly") : recordingActive ? t("stopRecord") : t("startRecord")}
+              >
+                {recordingActive ? t("stopRecord") : t("startRecord")}
               </button>
             </div>
           </div>
@@ -4955,10 +5931,19 @@ export function App() {
 
       <div className="main-wrap">
         <div className="main-center" style={{ position: "relative", flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
+        {(recordingActive || remoteRecordings.length > 0) && (
+          <div className="recordingBanner" role="status">
+            <span className="recordingDot" />
+            {recordingActive
+              ? t("recordingLocal")
+              : t("recordingBy", { name: remoteRecordings.map((item) => item.userName).join(", ") })}
+          </div>
+        )}
         {showRemoteScreenShareView && remoteScreenShare ? (
           remoteScreenStream ? (
           <ScreenShareViewer
             stream={remoteScreenStream}
+            cameraStream={remotePresenterCameraStream}
             broadcasterName={remoteScreenShare.userName}
             controlsHidden={screenViewControlsHidden}
             broadcastMuted={screenBroadcastMuted}
@@ -5019,6 +6004,7 @@ export function App() {
             style={speakingIndicator ? speakingVars(speakerLevelByPeerId["self"] ?? 0) : speakingVars(0)}
           >
             <video ref={localVideoRef} muted playsInline />
+            {isSharing && <PresenterCameraPip stream={localPresenterCameraStream} />}
             {isSharing && (
               <ScreenShareLocalSidebar
                 containerRef={localTileRef}
@@ -5049,6 +6035,7 @@ export function App() {
             <div className="tileLabel">
               <span className="tileSpeakMark" aria-hidden="true" />
               {t("youPrefix", { name: profile.userName })}
+              {recordingActive && <span className="recordingTileMark" title={t("recordingLocal")}>REC</span>}
               {screenSharingPeerId === profile.peerId && <ScreenSharingDot title={t("screenShareIndicator")} />}
             </div>
           </div>
@@ -5093,6 +6080,9 @@ export function App() {
                 <div className="tileLabel">
                   <span className="tileSpeakMark" aria-hidden="true" />
                   {r.userName}
+                  {remoteRecordings.some((item) => item.peerId === r.peerId) && (
+                    <span className="recordingTileMark" title={t("recordingBy", { name: r.userName })}>REC</span>
+                  )}
                   {screenSharingPeerId === r.peerId && <ScreenSharingDot title={t("screenShareIndicator")} />}
                 </div>
               </div>
@@ -5153,16 +6143,18 @@ export function App() {
                 )}
               <input
                 className="btn"
-                style={{ width: 220 }}
+                style={{ width: 180 }}
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 placeholder={t("search")}
               />
-              {call && (
-                <button className="btn btnDanger" onClick={() => void leaveCall()}>
-                  {t("leave")}
-                </button>
-              )}
+              <button
+                className="btn btnDanger"
+                onClick={() => setExitConfirmKind(call ? "leave" : "quit")}
+                title={call ? t("leave") : t("exitApp")}
+              >
+                {t("exit")}
+              </button>
             </div>
           </div>
 
@@ -5414,27 +6406,46 @@ export function App() {
         </Modal>
       )}
 
-      {exitConfirmOpen && (
-        <Modal title={t("exitConfirmTitle")} onClose={() => setExitConfirmOpen(false)}>
+      {exitConfirmKind && (
+        <Modal
+          title={exitConfirmKind === "leave" ? t("leaveCallConfirmTitle") : t("exitConfirmTitle")}
+          onClose={() => setExitConfirmKind(null)}
+        >
           <div className="muted" style={{ marginBottom: 16 }}>
-            {t("exitConfirmBody")}
+            {exitConfirmKind === "leave" ? t("leaveCallConfirmBody") : t("exitConfirmBody")}
           </div>
           <div className="row" style={{ justifyContent: "flex-end", flexWrap: "wrap", gap: 8 }}>
-            <button className="btn" onClick={() => setExitConfirmOpen(false)}>
+            <button className="btn" onClick={() => setExitConfirmKind(null)}>
               {t("cancel")}
             </button>
             <button
               className="btn btnDanger"
-              onClick={quitApp}
+              onClick={() => {
+                const kind = exitConfirmKind;
+                setExitConfirmKind(null);
+                if (kind === "leave") void leaveCall();
+                else quitApp();
+              }}
             >
-              {t("exitApp")}
+              {exitConfirmKind === "leave" ? t("leaveCallConfirmAction") : t("exitApp")}
             </button>
           </div>
         </Modal>
       )}
 
       {settingsOpen && (
-        <Modal title={t("settings")} onClose={() => setSettingsOpen(false)} size="settings">
+        <Modal
+          title={t("settings")}
+          native={isSettingsWindow}
+          onClose={() => {
+            if (isSettingsWindow) {
+              void window.lokameet.settings.close();
+              return;
+            }
+            setSettingsOpen(false);
+          }}
+          size="settings"
+        >
           <div className="settingsProjectLink">
             <span>{t("projectLink")}</span>
             <button
@@ -5494,34 +6505,12 @@ export function App() {
               className="btn"
               style={{
                 borderRadius: "4px 4px 0 0",
-                borderBottom: settingsTab === "chat" ? "2px solid var(--primary)" : "2px solid transparent",
-                background: settingsTab === "chat" ? "rgba(255,255,255,0.1)" : undefined
-              }}
-              onClick={() => setSettingsTab("chat")}
-            >
-              {t("settingsChat")}
-            </button>
-            <button
-              className="btn"
-              style={{
-                borderRadius: "4px 4px 0 0",
                 borderBottom: settingsTab === "connection" ? "2px solid var(--primary)" : "2px solid transparent",
                 background: settingsTab === "connection" ? "rgba(255,255,255,0.1)" : undefined
               }}
               onClick={() => setSettingsTab("connection")}
             >
               {t("settingsConnection")}
-            </button>
-            <button
-              className="btn"
-              style={{
-                borderRadius: "4px 4px 0 0",
-                borderBottom: settingsTab === "other" ? "2px solid var(--primary)" : "2px solid transparent",
-                background: settingsTab === "other" ? "rgba(255,255,255,0.1)" : undefined
-              }}
-              onClick={() => setSettingsTab("other")}
-            >
-              {t("settingsOther")}
             </button>
             <button
               className="btn"
@@ -5535,7 +6524,7 @@ export function App() {
               {t("help")}
             </button>
           </div>
-          <div className="settingsTabBody">
+          <div className={`settingsTabBody${settingsTab === "camera" ? " is-camera" : ""}`}>
           
           {settingsTab === "media" && (
           <>
@@ -5588,11 +6577,103 @@ export function App() {
               ]}
             />
           </div>
+          <div className="panelSectionDivider" />
+          <div className="settingsGroupTitle">{t("settingsRecordings")}</div>
+          <div className="muted settingsHint">{t("recordingFolderHint")}</div>
+          <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
+            <div className="muted" style={{ width: 160 }}>
+              {t("recordingFormat")}
+            </div>
+            <Select
+              value={recordingFormat}
+              onChange={(v) => setRecordingFormat(v === "avi" ? "avi" : "mp4")}
+              options={[
+                { value: "mp4", label: t("recordingFormatMp4") },
+                { value: "avi", label: t("recordingFormatAvi") }
+              ]}
+            />
+          </div>
+          <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
+            <div className="muted" style={{ width: 160 }}>
+              {t("recordingQuality")}
+            </div>
+            <Select
+              value={recordingQuality}
+              onChange={(v) =>
+                setRecordingQuality(
+                  v === "480p" || v === "720p" || v === "1440p" || v === "1080p" ? v : "1080p"
+                )
+              }
+              options={[
+                { value: "480p", label: "480p" },
+                { value: "720p", label: "720p" },
+                { value: "1080p", label: "1080p" },
+                { value: "1440p", label: "1440p" }
+              ]}
+            />
+          </div>
+          <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
+            <div className="muted" style={{ width: 160 }}>
+              {t("recordingFps")}
+            </div>
+            <Select
+              value={String(recordingFps)}
+              onChange={(v) => setRecordingFps(v === "15" ? 15 : v === "24" ? 24 : 30)}
+              options={[
+                { value: "15", label: "15" },
+                { value: "24", label: "24" },
+                { value: "30", label: "30" }
+              ]}
+            />
+          </div>
+          <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
+            <div className="muted" style={{ width: 160 }}>
+              {t("recordingBitrate")}
+            </div>
+            <Select
+              value={recordingBitrate}
+              onChange={(v) =>
+                setRecordingBitrate(
+                  v === "low" || v === "medium" || v === "max" || v === "high" ? v : "high"
+                )
+              }
+              options={[
+                { value: "low", label: t("recordingBitrateLow") },
+                { value: "medium", label: t("recordingBitrateMedium") },
+                { value: "high", label: t("recordingBitrateHigh") },
+                { value: "max", label: t("recordingBitrateMax") }
+              ]}
+            />
+          </div>
+          <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
+            <div className="muted" style={{ width: 160 }}>
+              {t("recordingFolder")}
+            </div>
+            <div style={{ display: "flex", gap: 8, flex: "1 1 240px", minWidth: 0 }}>
+              <input className="btn grow" value={recordingDir} readOnly placeholder={t("recordingFolderPlaceholder")} />
+              <button className="btn" onClick={() => void chooseRecordingFolder()}>
+                {t("chooseRecordingFolder")}
+              </button>
+              <button
+                className="btn"
+                disabled={!lastRecordingPath && !recordingDir}
+                title={lastRecordingPath || recordingDir || undefined}
+                onClick={() => {
+                  const folder = parentDirOf(lastRecordingPath) || recordingDir;
+                  if (!folder) return;
+                  void window.lokameet.app.openPath(folder);
+                }}
+              >
+                {t("openRecordingFolder")}
+              </button>
+            </div>
+          </div>
           </>
           )}
 
           {settingsTab === "camera" && (
           <>
+          <div className="settingsCameraSticky">
           <div className="row" style={{ flexWrap: "wrap" }}>
             <div className="muted" style={{ width: 160 }}>
               {t("cameraDevice")}
@@ -5617,15 +6698,8 @@ export function App() {
             </div>
             <Select
               value={mediaCfg.videoQuality}
-              onChange={(v) => {
-                const q = v as LocalMediaConfig["videoQuality"];
-                setMediaCfg((c) => ({ ...c, videoQuality: q }));
-              }}
-              options={[
-                { value: "low", label: t("low") },
-                { value: "medium", label: t("medium") },
-                { value: "high", label: t("high") }
-              ]}
+              onChange={(v) => void applyVideoQuality(v as VideoQuality)}
+              options={VIDEO_QUALITY_OPTIONS.map((q) => ({ value: q.value, label: t(q.labelKey) }))}
             />
           </div>
 
@@ -5634,11 +6708,375 @@ export function App() {
               {t("cameraPreview")}
             </div>
             <div style={{ flex: "1 1 240px" }}>
-              <video ref={cameraPreviewRef} className="cameraSettingsPreview" playsInline muted autoPlay />
+              <div
+                className={`tile cameraSettingsPreviewWrap${previewDragging ? " is-dragging" : ""}`}
+                style={{
+                  aspectRatio: tileAspect === "auto" ? "16 / 9" : tileAspectCss(tileAspect),
+                  ["--tile-fit" as string]: tileObjectFit,
+                  ["--tile-radius" as string]: `${tileRadius}px`
+                } as React.CSSProperties}
+                onPointerDown={(e) => {
+                  if (e.button !== 0) return;
+                  const rect = e.currentTarget.getBoundingClientRect();
+                  previewDragRef.current = {
+                    x: e.clientX,
+                    y: e.clientY,
+                    panX: cameraFx.cropPanX,
+                    panY: cameraFx.cropPanY,
+                    width: rect.width,
+                    height: rect.height
+                  };
+                  setPreviewDragging(true);
+                  e.currentTarget.setPointerCapture(e.pointerId);
+                }}
+                onPointerMove={(e) => {
+                  const drag = previewDragRef.current;
+                  if (!drag) return;
+                  const panX = Math.max(-1, Math.min(1, drag.panX - ((e.clientX - drag.x) / Math.max(1, drag.width)) * 2));
+                  const panY = Math.max(-1, Math.min(1, drag.panY - ((e.clientY - drag.y) / Math.max(1, drag.height)) * 2));
+                  setCameraFx((c) => (c.cropPanX === panX && c.cropPanY === panY ? c : { ...c, cropPanX: panX, cropPanY: panY }));
+                }}
+                onPointerUp={() => {
+                  previewDragRef.current = null;
+                  setPreviewDragging(false);
+                }}
+                onPointerCancel={() => {
+                  previewDragRef.current = null;
+                  setPreviewDragging(false);
+                }}
+              >
+                <video ref={cameraPreviewRef} className="cameraSettingsPreview" playsInline muted autoPlay />
+              </div>
               <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
                 {t("cameraPreviewHint")}
               </div>
             </div>
+          </div>
+          </div>
+
+          <div className="settingsCameraScroll">
+          <div className="settingsGroupTitle">{t("cameraFraming")}</div>
+          <div className="row" style={{ marginTop: 8, flexWrap: "wrap" }}>
+            <div className="muted" style={{ width: 160 }}>
+              {t("cameraCropZoom")}
+            </div>
+            <input
+              type="range"
+              min={100}
+              max={250}
+              step={5}
+              value={Math.round(cameraFx.cropZoom * 100)}
+              onChange={(e) => setCameraFx((c) => ({ ...c, cropZoom: Number(e.target.value) / 100 }))}
+              style={{ flex: "1 1 240px" }}
+            />
+            <span className="muted" style={{ width: 54, textAlign: "right" }}>
+              {Math.round(cameraFx.cropZoom * 100)}%
+            </span>
+          </div>
+          <div className="row" style={{ marginTop: 8, flexWrap: "wrap" }}>
+            <div className="muted" style={{ width: 160 }}>
+              {t("cameraCropPanX")}
+            </div>
+            <input
+              type="range"
+              min={-100}
+              max={100}
+              step={1}
+              value={Math.round(-cameraFx.cropPanX * 100)}
+              onChange={(e) => setCameraFx((c) => ({ ...c, cropPanX: -Number(e.target.value) / 100 }))}
+              style={{ flex: "1 1 240px" }}
+            />
+            <span className="muted" style={{ width: 54, textAlign: "right" }}>
+              {Math.round(-cameraFx.cropPanX * 100)}
+            </span>
+          </div>
+          <div className="row" style={{ marginTop: 8, flexWrap: "wrap" }}>
+            <div className="muted" style={{ width: 160 }}>
+              {t("cameraCropPanY")}
+            </div>
+            <input
+              type="range"
+              min={-100}
+              max={100}
+              step={1}
+              value={Math.round(cameraFx.cropPanY * 100)}
+              onChange={(e) => setCameraFx((c) => ({ ...c, cropPanY: Number(e.target.value) / 100 }))}
+              style={{ flex: "1 1 240px" }}
+            />
+            <span className="muted" style={{ width: 54, textAlign: "right" }}>
+              {Math.round(cameraFx.cropPanY * 100)}
+            </span>
+          </div>
+          <div className="row" style={{ marginTop: 8, flexWrap: "wrap" }}>
+            <div className="muted" style={{ width: 160 }}>
+              {t("cameraBlurAmount")}
+            </div>
+            <input
+              type="range"
+              min={10}
+              max={100}
+              value={cameraFx.blurAmount}
+              onChange={(e) => setCameraFx((c) => ({ ...c, blurAmount: Number(e.target.value) }))}
+              style={{ flex: "1 1 240px" }}
+            />
+            <span className="muted" style={{ width: 54, textAlign: "right" }}>
+              {cameraFx.blurAmount}%
+            </span>
+          </div>
+          <div className="muted settingsHint">{t("cameraCropZoomHint")}</div>
+
+          <div className="panelSectionDivider" />
+          <div className="settingsGroupTitle">{t("cameraManual")}</div>
+          <div className="muted settingsHint">{t("cameraManualHint")}</div>
+          {!cameraHasManualControls(cameraCaps) && (
+            <div className="muted" style={{ fontSize: 12 }}>
+              {t("cameraManualUnsupported")}
+            </div>
+          )}
+
+          {cameraCaps?.focusMode && (
+            <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
+              <div className="muted" style={{ width: 160 }}>
+                {t("cameraFocusMode")}
+              </div>
+              <Select
+                value={cameraControls.focusMode}
+                onChange={(v) => setCameraControls((c) => ({ ...c, focusMode: v === "manual" ? "manual" : "continuous" }))}
+                options={[
+                  { value: "continuous", label: t("cameraFocusAuto") },
+                  { value: "manual", label: t("cameraFocusManual") }
+                ]}
+              />
+            </div>
+          )}
+          {cameraCaps?.focusDistance && cameraControls.focusMode === "manual" && (
+            <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
+              <div className="muted" style={{ width: 160 }}>
+                {t("cameraFocusDistance")}
+              </div>
+              <input
+                type="range"
+                min={cameraCaps.focusDistance.min}
+                max={cameraCaps.focusDistance.max}
+                step={cameraCaps.focusDistance.step ?? (cameraCaps.focusDistance.max - cameraCaps.focusDistance.min) / 100}
+                value={cameraControls.focusDistance ?? cameraCaps.focusDistance.min}
+                onChange={(e) => setCameraControls((c) => ({ ...c, focusDistance: Number(e.target.value) }))}
+                style={{ flex: "1 1 240px" }}
+              />
+            </div>
+          )}
+          {cameraCaps?.zoom && (
+            <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
+              <div className="muted" style={{ width: 160 }}>
+                {t("cameraZoom")}
+              </div>
+              <input
+                type="range"
+                min={cameraCaps.zoom.min}
+                max={cameraCaps.zoom.max}
+                step={cameraCaps.zoom.step ?? (cameraCaps.zoom.max - cameraCaps.zoom.min) / 100}
+                value={cameraControls.zoom ?? cameraCaps.zoom.min}
+                onChange={(e) => setCameraControls((c) => ({ ...c, zoom: Number(e.target.value) }))}
+                style={{ flex: "1 1 240px" }}
+              />
+            </div>
+          )}
+          {cameraCaps?.exposureMode && (
+            <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
+              <div className="muted" style={{ width: 160 }}>
+                {t("cameraExposureMode")}
+              </div>
+              <Select
+                value={cameraControls.exposureMode}
+                onChange={(v) => setCameraControls((c) => ({ ...c, exposureMode: v === "manual" ? "manual" : "continuous" }))}
+                options={[
+                  { value: "continuous", label: t("cameraExposureAuto") },
+                  { value: "manual", label: t("cameraExposureManual") }
+                ]}
+              />
+            </div>
+          )}
+          {cameraCaps?.exposureCompensation && (
+            <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
+              <div className="muted" style={{ width: 160 }}>
+                {t("cameraExposureCompensation")}
+              </div>
+              <input
+                type="range"
+                min={cameraCaps.exposureCompensation.min}
+                max={cameraCaps.exposureCompensation.max}
+                step={cameraCaps.exposureCompensation.step ?? 0.1}
+                value={cameraControls.exposureCompensation ?? 0}
+                onChange={(e) => setCameraControls((c) => ({ ...c, exposureCompensation: Number(e.target.value) }))}
+                style={{ flex: "1 1 240px" }}
+              />
+            </div>
+          )}
+          {cameraCaps?.brightness && (
+            <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
+              <div className="muted" style={{ width: 160 }}>
+                {t("cameraBrightness")}
+              </div>
+              <input
+                type="range"
+                min={cameraCaps.brightness.min}
+                max={cameraCaps.brightness.max}
+                step={cameraCaps.brightness.step ?? 1}
+                value={cameraControls.brightness ?? Math.round((cameraCaps.brightness.min + cameraCaps.brightness.max) / 2)}
+                onChange={(e) => setCameraControls((c) => ({ ...c, brightness: Number(e.target.value) }))}
+                style={{ flex: "1 1 240px" }}
+              />
+            </div>
+          )}
+          {cameraCaps?.contrast && (
+            <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
+              <div className="muted" style={{ width: 160 }}>
+                {t("cameraContrast")}
+              </div>
+              <input
+                type="range"
+                min={cameraCaps.contrast.min}
+                max={cameraCaps.contrast.max}
+                step={cameraCaps.contrast.step ?? 1}
+                value={cameraControls.contrast ?? Math.round((cameraCaps.contrast.min + cameraCaps.contrast.max) / 2)}
+                onChange={(e) => setCameraControls((c) => ({ ...c, contrast: Number(e.target.value) }))}
+                style={{ flex: "1 1 240px" }}
+              />
+            </div>
+          )}
+          {cameraCaps?.saturation && (
+            <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
+              <div className="muted" style={{ width: 160 }}>
+                {t("cameraSaturation")}
+              </div>
+              <input
+                type="range"
+                min={cameraCaps.saturation.min}
+                max={cameraCaps.saturation.max}
+                step={cameraCaps.saturation.step ?? 1}
+                value={cameraControls.saturation ?? Math.round((cameraCaps.saturation.min + cameraCaps.saturation.max) / 2)}
+                onChange={(e) => setCameraControls((c) => ({ ...c, saturation: Number(e.target.value) }))}
+                style={{ flex: "1 1 240px" }}
+              />
+            </div>
+          )}
+          {cameraCaps?.sharpness && (
+            <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
+              <div className="muted" style={{ width: 160 }}>
+                {t("cameraSharpness")}
+              </div>
+              <input
+                type="range"
+                min={cameraCaps.sharpness.min}
+                max={cameraCaps.sharpness.max}
+                step={cameraCaps.sharpness.step ?? 1}
+                value={cameraControls.sharpness ?? Math.round((cameraCaps.sharpness.min + cameraCaps.sharpness.max) / 2)}
+                onChange={(e) => setCameraControls((c) => ({ ...c, sharpness: Number(e.target.value) }))}
+                style={{ flex: "1 1 240px" }}
+              />
+            </div>
+          )}
+          {cameraCaps?.whiteBalanceMode && (
+            <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
+              <div className="muted" style={{ width: 160 }}>
+                {t("cameraWhiteBalance")}
+              </div>
+              <Select
+                value={cameraControls.whiteBalanceMode}
+                onChange={(v) => setCameraControls((c) => ({ ...c, whiteBalanceMode: v === "manual" ? "manual" : "continuous" }))}
+                options={[
+                  { value: "continuous", label: t("cameraWbAuto") },
+                  { value: "manual", label: t("cameraWbManual") }
+                ]}
+              />
+            </div>
+          )}
+          {cameraCaps?.colorTemperature && cameraControls.whiteBalanceMode === "manual" && (
+            <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
+              <div className="muted" style={{ width: 160 }}>
+                {t("cameraColorTemperature")}
+              </div>
+              <input
+                type="range"
+                min={cameraCaps.colorTemperature.min}
+                max={cameraCaps.colorTemperature.max}
+                step={cameraCaps.colorTemperature.step ?? 50}
+                value={cameraControls.colorTemperature ?? cameraCaps.colorTemperature.min}
+                onChange={(e) => setCameraControls((c) => ({ ...c, colorTemperature: Number(e.target.value) }))}
+                style={{ flex: "1 1 240px" }}
+              />
+              <span className="muted" style={{ width: 54, textAlign: "right" }}>
+                {Math.round(cameraControls.colorTemperature ?? cameraCaps.colorTemperature.min)}K
+              </span>
+            </div>
+          )}
+
+          <div className="panelSectionDivider" />
+          <div className="settingsGroupTitle">{t("cameraBackground")}</div>
+          <div className="muted settingsHint">{t("cameraBackgroundHint")}</div>
+          <div className="cameraBgGrid">
+            <button
+              type="button"
+              className={`cameraBgTile ${cameraFx.backgroundMode === "none" ? "is-active" : ""}`}
+              onClick={() => setCameraFx((c) => ({ ...c, backgroundMode: "none" }))}
+            >
+              <span className="cameraBgTileLabel">{t("cameraBgNone")}</span>
+            </button>
+            <button
+              type="button"
+              className={`cameraBgTile ${cameraFx.backgroundMode === "blur" ? "is-active" : ""}`}
+              onClick={() => setCameraFx((c) => ({ ...c, backgroundMode: "blur" }))}
+            >
+              <span className="cameraBgTileLabel">{t("cameraBgBlur")}</span>
+            </button>
+            {CAMERA_PRESETS.map((preset) => (
+              <button
+                key={preset.id}
+                type="button"
+                className={`cameraBgTile ${cameraFx.backgroundMode === "preset" && cameraFx.presetId === preset.id ? "is-active" : ""}`}
+                onClick={() => setCameraFx((c) => ({ ...c, backgroundMode: "preset", presetId: preset.id }))}
+                title={t(`cameraBg_${preset.id}`)}
+              >
+                <img src={cameraBgAssetUrl(preset.file)} alt={t(`cameraBg_${preset.id}`)} />
+                <span className="cameraBgTileCaption">{t(`cameraBg_${preset.id}`)}</span>
+              </button>
+            ))}
+            {customCameraBgs.map((bg) => (
+              <div
+                key={bg.id}
+                className={`cameraBgTile ${cameraFx.backgroundMode === "custom" && cameraFx.customId === bg.id ? "is-active" : ""}`}
+              >
+                <button
+                  type="button"
+                  className="cameraBgTileHit"
+                  onClick={() => setCameraFx((c) => ({ ...c, backgroundMode: "custom", customId: bg.id, customDataUrl: bg.dataUrl }))}
+                >
+                  <img src={bg.dataUrl} alt={t("cameraBgCustom")} />
+                  <span className="cameraBgTileCaption">{t("cameraBgCustom")}</span>
+                </button>
+                <button
+                  type="button"
+                  className="cameraBgTileRemove"
+                  title={t("cameraBgDelete")}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    void deleteCustomCameraBackground(bg.id);
+                  }}
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+            <button
+              type="button"
+              className="cameraBgTile cameraBgTileAdd"
+              onClick={() => void addCustomCameraBackground()}
+            >
+              <span className="cameraBgTileLabel">+</span>
+              <span className="cameraBgTileCaption">{t("cameraBgAdd")}</span>
+            </button>
+          </div>
           </div>
           </>
           )}
@@ -6059,6 +7497,81 @@ export function App() {
                   {messageSoundVolume}%
                 </span>
               </div>
+              <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
+                <div className="muted" style={{ width: 160 }}>
+                  {t("soundRecord")}
+                </div>
+                <div style={{ display: "flex", gap: 8, flex: "1 1 240px", alignItems: "center" }}>
+                  <input
+                    className="btn"
+                    type="text"
+                    value={recordingSoundFile}
+                    onChange={(e) => setRecordingSoundFile(e.target.value)}
+                    placeholder="snds/record.mp3"
+                    style={{ flex: "1 1 auto" }}
+                  />
+                  <button
+                    className="btn"
+                    onClick={async () => {
+                      try {
+                        const result = await window.lokameet.app.showOpenDialog({
+                          filters: [{ name: "Audio Files", extensions: ["mp3", "wav", "ogg", "m4a"] }]
+                        });
+                        if (result) {
+                          setRecordingSoundFile(result);
+                        }
+                      } catch (e) {
+                        setError(t("errPickFile"));
+                      }
+                    }}
+                    title={t("chooseFile")}
+                  >
+                    📁
+                  </button>
+                  <button
+                    className="btn"
+                    onClick={() => {
+                      if (testSoundAudioRef.current) {
+                        testSoundAudioRef.current.pause();
+                        testSoundAudioRef.current = null;
+                      }
+                      try {
+                        const fileUrl = getSoundFileUrl(recordingSoundFile);
+                        const audio = new Audio(fileUrl);
+                        audio.volume = recordingSoundVolume / 100;
+                        testSoundAudioRef.current = audio;
+                        audio.play().catch(() => {
+                          setError(t("errPlaySound"));
+                        });
+                        audio.onended = () => {
+                          testSoundAudioRef.current = null;
+                        };
+                      } catch (e) {
+                        setError(t("errPlaySound"));
+                      }
+                    }}
+                    title={t("previewSound")}
+                  >
+                    ▶️
+                  </button>
+                </div>
+              </div>
+              <div className="row" style={{ marginTop: 8, flexWrap: "wrap", marginLeft: 168 }}>
+                <div className="muted" style={{ fontSize: 12, width: 80 }}>
+                  {t("volume")}
+                </div>
+                <input
+                  type="range"
+                  min={0}
+                  max={100}
+                  value={recordingSoundVolume}
+                  onChange={(e) => setRecordingSoundVolume(Number(e.target.value))}
+                  style={{ flex: "1 1 200px" }}
+                />
+                <span className="muted" style={{ width: 54, textAlign: "right", fontSize: 12 }}>
+                  {recordingSoundVolume}%
+                </span>
+              </div>
             </>
           )}
           </>
@@ -6066,6 +7579,7 @@ export function App() {
 
           {settingsTab === "ui" && (
           <>
+          <div className="settingsGroupTitle">{t("uiLayout")}</div>
           <div className="row" style={{ flexWrap: "wrap" }}>
             <div className="muted" style={{ width: 160 }}>
               {t("chatWidth")}
@@ -6122,9 +7636,77 @@ export function App() {
           </div>
 
           <div className="panelSectionDivider" />
-          <div className="muted" style={{ marginTop: 12, marginBottom: 8, fontWeight: 600 }}>
-            {t("videoTiles")}
+          <div className="settingsGroupTitle">{t("uiChat")}</div>
+
+          <div className="row" style={{ flexWrap: "wrap" }}>
+            <div className="muted" style={{ width: 160 }}>
+              {t("smileSize")}
+            </div>
+            <input
+              type="range"
+              min={16}
+              max={128}
+              value={chatSmileSizePx}
+              onChange={(e) => setChatSmileSizePx(Number(e.target.value))}
+              style={{ flex: "1 1 240px" }}
+            />
+            <span className="muted" style={{ width: 54, textAlign: "right" }}>
+              {chatSmileSizePx}px
+            </span>
           </div>
+
+          <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
+            <div className="muted" style={{ width: 160 }}>
+              {t("chatFontSize")}
+            </div>
+            <input
+              type="range"
+              min={10}
+              max={24}
+              value={chatFontSize}
+              onChange={(e) => setChatFontSize(Number(e.target.value))}
+              style={{ flex: "1 1 240px" }}
+            />
+            <span className="muted" style={{ width: 54, textAlign: "right" }}>
+              {chatFontSize}px
+            </span>
+          </div>
+
+          <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
+            <div className="muted" style={{ width: 160 }}>
+              {t("chatDisplayLimit")}
+            </div>
+            <Select
+              value={String(chatDisplayLimit)}
+              onChange={(v) => setChatDisplayLimit(Number(v) || 0)}
+              style={{ flex: "1 1 240px" }}
+              options={[
+                { value: "0", label: t("chatShowAll") },
+                { value: "200", label: t("chatLastN", { n: 200 }) },
+                { value: "500", label: t("chatLastN", { n: 500 }) },
+                { value: "1000", label: t("chatLastN", { n: 1000 }) }
+              ]}
+            />
+            <span className="muted" style={{ width: 54, textAlign: "right" }}>
+              {chatDisplayLimit ? `≤${chatDisplayLimit}` : "∞"}
+            </span>
+          </div>
+
+          <label className="row" style={{ marginTop: 12, gap: 8 }}>
+            <input type="checkbox" checked={compactUi} onChange={(e) => setCompactUi(e.target.checked)} />
+            <span>{t("compactChat")}</span>
+          </label>
+          <label className="row" style={{ marginTop: 8, gap: 8 }}>
+            <input type="checkbox" checked={chatAutoScroll} onChange={(e) => setChatAutoScroll(e.target.checked)} />
+            <span>{t("chatAutoScroll")}</span>
+          </label>
+          <label className="row" style={{ marginTop: 8, gap: 8 }}>
+            <input type="checkbox" checked={autoSwitchToChat} onChange={(e) => setAutoSwitchToChat(e.target.checked)} />
+            <span>{t("autoSwitchToChat")}</span>
+          </label>
+
+          <div className="panelSectionDivider" />
+          <div className="settingsGroupTitle">{t("videoTiles")}</div>
 
           <div className="row" style={{ flexWrap: "wrap" }}>
             <div className="muted" style={{ width: 160 }}>
@@ -6194,63 +7776,43 @@ export function App() {
             <input type="checkbox" checked={speakingIndicator} onChange={(e) => setSpeakingIndicator(e.target.checked)} />
             <span>{t("speakingIndicator")}</span>
           </label>
-          </>
-          )}
 
-          {settingsTab === "chat" && (
-          <>
-          <div className="row" style={{ flexWrap: "wrap" }}>
+          <div className="panelSectionDivider" />
+          <div className="settingsGroupTitle">{t("uiGeneral")}</div>
+          <div className="row" style={{ flexWrap: "wrap", alignItems: "flex-start" }}>
             <div className="muted" style={{ width: 160 }}>
-              {t("smileSize")}
+              {t("options")}
             </div>
-            <input
-              type="range"
-              min={16}
-              max={128}
-              value={chatSmileSizePx}
-              onChange={(e) => setChatSmileSizePx(Number(e.target.value))}
-              style={{ flex: "1 1 240px" }}
-            />
-            <span className="muted" style={{ width: 54, textAlign: "right" }}>
-              {chatSmileSizePx}px
-            </span>
-          </div>
-
-          <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
-            <div className="muted" style={{ width: 160 }}>
-              {t("chatFontSize")}
+            <div style={{ display: "flex", flexDirection: "column", gap: 8, flex: "1 1 240px" }}>
+              <label className="row" style={{ gap: 8 }}>
+                <input type="checkbox" checked={showSeconds} onChange={(e) => setShowSeconds(e.target.checked)} />
+                <span>{t("showSeconds")}</span>
+              </label>
+              <label className="row" style={{ gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                <input
+                  type="checkbox"
+                  checked={autoAwayMinutes > 0}
+                  onChange={(e) => setAutoAwayMinutes(e.target.checked ? 5 : 0)}
+                />
+                <span>{t("autoAway")}</span>
+                {autoAwayMinutes > 0 && (
+                  <>
+                    <span className="muted" style={{ marginLeft: 4 }}>
+                      {t("autoAwayMinutes")}:
+                    </span>
+                    <input
+                      className="btn"
+                      type="number"
+                      min={1}
+                      max={120}
+                      value={autoAwayMinutes}
+                      onChange={(e) => setAutoAwayMinutes(Math.max(1, Math.min(120, Number(e.target.value) || 5)))}
+                      style={{ width: 72, padding: "4px 8px" }}
+                    />
+                  </>
+                )}
+              </label>
             </div>
-            <input
-              type="range"
-              min={10}
-              max={24}
-              value={chatFontSize}
-              onChange={(e) => setChatFontSize(Number(e.target.value))}
-              style={{ flex: "1 1 240px" }}
-            />
-            <span className="muted" style={{ width: 54, textAlign: "right" }}>
-              {chatFontSize}px
-            </span>
-          </div>
-
-          <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
-            <div className="muted" style={{ width: 160 }}>
-              {t("chatDisplayLimit")}
-            </div>
-            <Select
-              value={String(chatDisplayLimit)}
-              onChange={(v) => setChatDisplayLimit(Number(v) || 0)}
-              style={{ flex: "1 1 240px" }}
-              options={[
-                { value: "0", label: t("chatShowAll") },
-                { value: "200", label: t("chatLastN", { n: 200 }) },
-                { value: "500", label: t("chatLastN", { n: 500 }) },
-                { value: "1000", label: t("chatLastN", { n: 1000 }) }
-              ]}
-            />
-            <span className="muted" style={{ width: 54, textAlign: "right" }}>
-              {chatDisplayLimit ? `≤${chatDisplayLimit}` : "∞"}
-            </span>
           </div>
           </>
           )}
@@ -6309,59 +7871,6 @@ export function App() {
           </>
           )}
 
-          {settingsTab === "other" && (
-          <>
-          <div className="row" style={{ flexWrap: "wrap", alignItems: "flex-start" }}>
-            <div className="muted" style={{ width: 160 }}>
-              {t("options")}
-            </div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 8, flex: "1 1 240px" }}>
-              <label className="row" style={{ gap: 8 }}>
-                <input type="checkbox" checked={compactUi} onChange={(e) => setCompactUi(e.target.checked)} />
-                <span>{t("compactChat")}</span>
-              </label>
-              <label className="row" style={{ gap: 8 }}>
-                <input type="checkbox" checked={chatAutoScroll} onChange={(e) => setChatAutoScroll(e.target.checked)} />
-                <span>{t("chatAutoScroll")}</span>
-              </label>
-              <label className="row" style={{ gap: 8 }}>
-                <input type="checkbox" checked={showSeconds} onChange={(e) => setShowSeconds(e.target.checked)} />
-                <span>{t("showSeconds")}</span>
-              </label>
-              <label className="row" style={{ gap: 8 }}>
-                <input type="checkbox" checked={autoSwitchToChat} onChange={(e) => setAutoSwitchToChat(e.target.checked)} />
-                <span>{t("autoSwitchToChat")}</span>
-              </label>
-              <label className="row" style={{ gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-                <input
-                  type="checkbox"
-                  checked={autoAwayMinutes > 0}
-                  onChange={(e) => setAutoAwayMinutes(e.target.checked ? 5 : 0)}
-                />
-                <span>{t("autoAway")}</span>
-                {autoAwayMinutes > 0 && (
-                  <>
-                    <span className="muted" style={{ marginLeft: 4 }}>
-                      {t("autoAwayMinutes")}:
-                    </span>
-                    <input
-                      className="btn"
-                      type="number"
-                      min={1}
-                      max={120}
-                      value={autoAwayMinutes}
-                      onChange={(e) => setAutoAwayMinutes(Math.max(1, Math.min(120, Number(e.target.value) || 5)))}
-                      style={{ width: 72, padding: "4px 8px" }}
-                    />
-                  </>
-                )}
-              </label>
-            </div>
-          </div>
-
-          </>
-          )}
-
           {settingsTab === "help" && <SettingsHelpPanel language={profile?.language ?? "ru"} version={appVersion} />}
           </div>
 
@@ -6411,6 +7920,16 @@ export function App() {
                   defaultVideoQuality: mediaCfg.videoQuality,
                   autoSwitchToChatOnAccept: autoSwitchToChat,
                   videoInputDeviceId: selectedVideoDeviceId,
+                  cameraControls,
+                  cameraFx: {
+                    cropZoom: cameraFx.cropZoom,
+                    cropPanX: cameraFx.cropPanX,
+                    cropPanY: cameraFx.cropPanY,
+                    backgroundMode: cameraFx.backgroundMode,
+                    backgroundPreset: cameraFx.presetId,
+                    backgroundCustomId: cameraFx.customId ?? undefined,
+                    blurAmount: cameraFx.blurAmount
+                  },
                   audioInputDeviceId: selectedAudioInputId,
                   audioOutputDeviceId: selectedAudioOutputId,
                   chatAutoScroll,
@@ -6435,13 +7954,27 @@ export function App() {
                   messageSoundFile,
                   callerSoundFile,
                   connectionSoundFile,
+                  recordingSoundFile,
                   callSoundVolume,
                   messageSoundVolume,
                   callerSoundVolume,
-                  connectionSoundVolume
+                  connectionSoundVolume,
+                  recordingSoundVolume,
+                  recordingDir,
+                  lastRecordingPath,
+                  recordingFormat,
+                  recordingQuality,
+                  recordingFps,
+                  recordingBitrate
                 };
-                window.lokameet.app.updateProfile(patch).then(setProfile).catch(() => undefined);
-                setSettingsOpen(false);
+                window.lokameet.app
+                  .updateProfile(patch)
+                  .then((p) => {
+                    setProfile(p);
+                    if (isSettingsWindow) void window.lokameet.settings.close();
+                    else setSettingsOpen(false);
+                  })
+                  .catch(() => undefined);
               }}
             >
               Сохранить
@@ -6620,14 +8153,16 @@ function SettingsHelpPanel(props: { language: "ru" | "en"; version: string }) {
           "Интернет, Zoom, браузер, отдельный медиа‑сервер или облачный аккаунт — для работы звонков в LAN не нужны.",
         linksTitle: "Полезные ссылки и программы",
         tip: "Если пользователи не видны друг друга: проверьте сеть, брандмауэр и попробуйте ручное подключение по IP/порту во вкладке «Подключение».",
-        changesTitle: "Что нового в 1.0.2",
+        changesTitle: "Что нового в 1.1.0",
         changesItems: [
-          "Установщик: по умолчанию C:\\Program Files с выбором папки; принудительное закрытие LokaMeet перед копированием файлов.",
-          "Диалог имени при входе: «Отмена» и × закрывают программу.",
-          "Полный перевод интерфейса при переключении RU ↔ EN (меню, настройки, чат, статусы).",
-          "Индикаторы речи в звонке стали заметнее (кольцо у аватара и маркер у ника).",
-          "Цветовая рамка статуса вокруг аватара в списке LAN (онлайн / отошёл / в звонке / конференция / DND / офлайн).",
-          "Бейджи статусов «В звонке» и «На конференции» стали читаемее на тёмных темах."
+          "Камера: виртуальный фон (размытие, 11 пресетов, свои картинки), кадрирование и зум без перезапуска камеры.",
+          "Ручные параметры камеры: фокус, экспозиция, баланс белого, яркость и другие, если устройство их умеет.",
+          "Качество исходящего видео: 360p, 480p, 720p, 1080p, 1440p и 4K.",
+          "Запись звонков и конференций в MP4 или AVI (разрешение, FPS, битрейт, папка сохранения), в том числе во время демонстрации экрана.",
+          "Индикатор записи у участников, системные сообщения в чате и звук старта/остановки.",
+          "Демонстрация экрана: камера докладчика поверх трансляции.",
+          "Подтверждение выхода из звонка и отмена передачи файла.",
+          "Исправлены чёрные пятна вокруг рук и движущихся объектов при пресете фона."
         ]
       }
     : {
@@ -6674,14 +8209,16 @@ function SettingsHelpPanel(props: { language: "ru" | "en"; version: string }) {
           "Internet, Zoom, a browser, a separate media server, or a cloud account are not needed for LAN calls.",
         linksTitle: "Useful links & software",
         tip: "If peers do not appear: check the network and firewall, then try manual connect by IP/port in the Connection tab.",
-        changesTitle: "What's new in 1.0.2",
+        changesTitle: "What's new in 1.1.0",
         changesItems: [
-          "Installer: defaults to C:\\Program Files with folder choice; force-closes LokaMeet before copying files.",
-          "Startup name dialog: Cancel and × quit the application.",
-          "Full UI translation when switching RU ↔ EN (menus, settings, chat, statuses).",
-          "Speaking indicators in calls are clearer (avatar ring and nick marker).",
-          "Color status ring around avatars in the LAN list (online / away / in call / conference / DND / offline).",
-          "“In call” and “In conference” status badges are easier to read on dark themes."
+          "Camera: virtual background (blur, 11 presets, custom images), framing and zoom without restarting the camera.",
+          "Manual camera controls: focus, exposure, white balance, brightness and more when the device supports them.",
+          "Outgoing video quality: 360p, 480p, 720p, 1080p, 1440p and 4K.",
+          "Record calls and conferences to MP4 or AVI (resolution, FPS, bitrate, output folder), including during screen share.",
+          "Recording indicator for participants, chat system messages, and start/stop sound.",
+          "Screen share: presenter’s camera overlay.",
+          "Confirm before leaving a call, and cancel an in-progress file transfer.",
+          "Fixed black spots around hands and moving objects when a preset background is on."
         ]
       };
 
@@ -6825,24 +8362,83 @@ function Modal(props: {
   children: React.ReactNode;
   onClose: () => void;
   size?: "default" | "settings";
+  native?: boolean;
 }) {
   const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
   const dragRef = useRef<{ dx: number; dy: number } | null>(null);
   const isSettings = props.size === "settings";
-  const modalWidth = isSettings ? 720 : 640;
+  const native = Boolean(props.native);
+  const defaultW = 720;
+  const defaultH = 780;
+  const minSizeRef = useRef({
+    w: Math.min(defaultW, window.innerWidth - 16),
+    h: Math.min(defaultH, Math.floor(window.innerHeight * 0.88), window.innerHeight - 16)
+  });
+  const [box, setBox] = useState(minSizeRef.current);
+  const boxRef = useRef(box);
+  boxRef.current = box;
+  const posRef = useRef(pos);
+  posRef.current = pos;
+  const resizeRef = useRef<{
+    edge: string;
+    startX: number;
+    startY: number;
+    startW: number;
+    startH: number;
+    startLeft: number;
+    startTop: number;
+  } | null>(null);
 
   useEffect(() => {
+    if (native) return;
+    const clampPos = (x: number, y: number, w: number, h: number) => ({
+      x: Math.max(8, Math.min(window.innerWidth - w - 8, x)),
+      y: Math.max(8, Math.min(window.innerHeight - h - 8, y))
+    });
+
     const onMove = (e: MouseEvent) => {
+      const resize = resizeRef.current;
+      if (resize) {
+        const minW = minSizeRef.current.w;
+        const minH = minSizeRef.current.h;
+        const maxW = window.innerWidth - 16;
+        const maxH = window.innerHeight - 16;
+        const dx = e.clientX - resize.startX;
+        const dy = e.clientY - resize.startY;
+        let w = resize.startW;
+        let h = resize.startH;
+        let x = resize.startLeft;
+        let y = resize.startTop;
+        if (resize.edge.includes("e")) w = resize.startW + dx;
+        if (resize.edge.includes("s")) h = resize.startH + dy;
+        if (resize.edge.includes("w")) {
+          w = resize.startW - dx;
+          w = Math.max(minW, Math.min(maxW, w));
+          x = resize.startLeft + resize.startW - w;
+        } else {
+          w = Math.max(minW, Math.min(maxW, w));
+        }
+        if (resize.edge.includes("n")) {
+          h = resize.startH - dy;
+          h = Math.max(minH, Math.min(maxH, h));
+          y = resize.startTop + resize.startH - h;
+        } else {
+          h = Math.max(minH, Math.min(maxH, h));
+        }
+        const nextPos = clampPos(x, y, w, h);
+        setBox({ w, h });
+        setPos(nextPos);
+        return;
+      }
       const d = dragRef.current;
       if (!d) return;
-      const w = Math.min(modalWidth, window.innerWidth - 16);
-      const h = Math.min(isSettings ? 780 : window.innerHeight * 0.82, window.innerHeight - 16);
-      const x = Math.max(8, Math.min(window.innerWidth - w - 8, e.clientX - d.dx));
-      const y = Math.max(8, Math.min(window.innerHeight - h - 8, e.clientY - d.dy));
-      setPos({ x, y });
+      const w = boxRef.current.w;
+      const h = boxRef.current.h;
+      setPos(clampPos(e.clientX - d.dx, e.clientY - d.dy, w, h));
     };
     const onUp = () => {
       dragRef.current = null;
+      resizeRef.current = null;
     };
     document.addEventListener("mousemove", onMove);
     document.addEventListener("mouseup", onUp);
@@ -6850,31 +8446,59 @@ function Modal(props: {
       document.removeEventListener("mousemove", onMove);
       document.removeEventListener("mouseup", onUp);
     };
-  }, [isSettings, modalWidth]);
+  }, [native]);
+
+  const beginResize = (edge: string, e: React.MouseEvent) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const panel = e.currentTarget.parentElement as HTMLElement;
+    const rect = panel.getBoundingClientRect();
+    resizeRef.current = {
+      edge,
+      startX: e.clientX,
+      startY: e.clientY,
+      startW: rect.width,
+      startH: rect.height,
+      startLeft: rect.left,
+      startTop: rect.top
+    };
+    setPos({ x: rect.left, y: rect.top });
+    setBox({ w: rect.width, h: rect.height });
+  };
 
   return (
     <div
-      className="modalOverlay"
-      onMouseDown={props.onClose}
+      className={`modalOverlay${native ? " is-native" : ""}`}
+      onMouseDown={native ? undefined : props.onClose}
     >
       <div
-        className={`panel modalPanel${isSettings ? " modalPanelSettings" : ""}`}
-        style={{
-          left: pos ? pos.x : "50%",
-          top: pos ? pos.y : "50%",
-          transform: pos ? "none" : "translate(-50%, -50%)"
-        }}
+        className={`panel modalPanel${isSettings ? " modalPanelSettings" : ""}${native ? " is-native" : ""}`}
+        style={
+          native
+            ? undefined
+            : {
+                left: pos ? pos.x : "50%",
+                top: pos ? pos.y : "50%",
+                transform: pos ? "none" : "translate(-50%, -50%)",
+                ...(isSettings ? { width: box.w, height: box.h, maxHeight: box.h } : {})
+              }
+        }
         onMouseDown={(e) => e.stopPropagation()}
       >
         <div
-          className="panelHeader"
+          className={`panelHeader${native ? " is-nativeDrag" : ""}`}
           style={{ cursor: "move", userSelect: "none" }}
-          onMouseDown={(e) => {
-            if (e.button !== 0) return;
-            const rect = (e.currentTarget.parentElement as HTMLElement).getBoundingClientRect();
-            dragRef.current = { dx: e.clientX - rect.left, dy: e.clientY - rect.top };
-            setPos({ x: rect.left, y: rect.top });
-          }}
+          onMouseDown={
+            native
+              ? undefined
+              : (e) => {
+                  if (e.button !== 0) return;
+                  const rect = (e.currentTarget.parentElement as HTMLElement).getBoundingClientRect();
+                  dragRef.current = { dx: e.clientX - rect.left, dy: e.clientY - rect.top };
+                  setPos({ x: rect.left, y: rect.top });
+                }
+          }
         >
           <div className="truncate" title={props.title}>
             {props.title}
@@ -6884,6 +8508,18 @@ function Modal(props: {
           </button>
         </div>
         <div className={`panelBody modalBody${isSettings ? " modalBodySettings" : ""}`}>{props.children}</div>
+        {isSettings && !native && (
+          <>
+            <div className="modalResizeHandle modalResizeHandle-n" onMouseDown={(e) => beginResize("n", e)} />
+            <div className="modalResizeHandle modalResizeHandle-s" onMouseDown={(e) => beginResize("s", e)} />
+            <div className="modalResizeHandle modalResizeHandle-e" onMouseDown={(e) => beginResize("e", e)} />
+            <div className="modalResizeHandle modalResizeHandle-w" onMouseDown={(e) => beginResize("w", e)} />
+            <div className="modalResizeHandle modalResizeHandle-ne" onMouseDown={(e) => beginResize("ne", e)} />
+            <div className="modalResizeHandle modalResizeHandle-nw" onMouseDown={(e) => beginResize("nw", e)} />
+            <div className="modalResizeHandle modalResizeHandle-se" onMouseDown={(e) => beginResize("se", e)} />
+            <div className="modalResizeHandle modalResizeHandle-sw" onMouseDown={(e) => beginResize("sw", e)} />
+          </>
+        )}
       </div>
     </div>
   );

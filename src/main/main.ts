@@ -13,6 +13,7 @@ import { logInfo, logError } from "./log";
 import { initLogger } from "./logger";
 
 let mainWindow: BrowserWindow | null = null;
+let settingsWindow: BrowserWindow | null = null;
 
 // Только LAN: ICE-кандидаты с реальными локальными IP, а не mDNS-именами.
 // Существенно повышает надёжность WebRTC там, где mDNS нестабилен или заблокирован.
@@ -24,7 +25,7 @@ const defaultProfile: UserProfile = {
   status: "online",
   statusText: "",
   language: "ru",
-  theme: "ipad-lagoon",
+  theme: "ipd-lagoon",
   uiChatHeight: 380,
   uiSidebarWidth: 360,
   uiFontScale: 0.95,
@@ -111,6 +112,70 @@ const discovery = new LanDiscovery(
   }
 );
 
+async function loadRenderer(win: BrowserWindow, query?: Record<string, string>) {
+  const devUrl = process.env.VITE_DEV_SERVER_URL;
+  if (devUrl) {
+    const url = new URL(devUrl);
+    if (query) {
+      for (const [key, value] of Object.entries(query)) url.searchParams.set(key, value);
+    }
+    await win.loadURL(url.toString());
+    return;
+  }
+  const indexHtml = path.join(__dirname, "..", "renderer", "index.html");
+  await win.loadFile(indexHtml, query ? { query } : undefined);
+}
+
+function openSettingsWindow() {
+  if (settingsWindow && !settingsWindow.isDestroyed()) {
+    if (settingsWindow.isMinimized()) settingsWindow.restore();
+    settingsWindow.show();
+    settingsWindow.focus();
+    return true;
+  }
+  const preload = path.join(__dirname, "..", "preload", "preload.js");
+  const mainBounds = mainWindow?.getBounds();
+  settingsWindow = new BrowserWindow({
+    width: 720,
+    height: 780,
+    minWidth: 720,
+    minHeight: 780,
+    x: mainBounds ? mainBounds.x + Math.max(24, Math.round((mainBounds.width - 720) / 2)) : undefined,
+    y: mainBounds ? mainBounds.y + 48 : undefined,
+    frame: false,
+    show: false,
+    backgroundColor: "#111827",
+    autoHideMenuBar: true,
+    skipTaskbar: false,
+    resizable: true,
+    minimizable: true,
+    maximizable: true,
+    fullscreenable: false,
+    webPreferences: {
+      preload,
+      contextIsolation: true,
+      nodeIntegration: false
+    }
+  });
+  settingsWindow.setMenuBarVisibility(false);
+  settingsWindow.on("page-title-updated", (e) => e.preventDefault());
+  settingsWindow.setTitle("LokaMeet");
+  settingsWindow.once("ready-to-show", () => {
+    settingsWindow?.show();
+    settingsWindow?.focus();
+  });
+  settingsWindow.on("closed", () => {
+    settingsWindow = null;
+  });
+  void loadRenderer(settingsWindow, { window: "settings" });
+  return true;
+}
+
+function closeSettingsWindow() {
+  if (settingsWindow && !settingsWindow.isDestroyed()) settingsWindow.close();
+  return true;
+}
+
 async function createMainWindow() {
   Menu.setApplicationMenu(null);
   const appTitle = `LokaMeet ${app.getVersion()}`;
@@ -152,6 +217,7 @@ async function createMainWindow() {
 
   mainWindow.on("closed", () => {
     mainWindow = null;
+    if (settingsWindow && !settingsWindow.isDestroyed()) settingsWindow.close();
   });
 
   // Screen share в Electron: desktopCapturer + setDisplayMediaRequestHandler
@@ -296,7 +362,9 @@ app.whenReady().then(async () => {
     signaling,
     getDiscovery: () => discoverySnapshot,
     onCreateRoom: createRoom,
-    onCloseRoom: closeRoom
+    onCloseRoom: closeRoom,
+    openSettingsWindow,
+    closeSettingsWindow
   });
 
   logInfo("App ready", { peerId: state.profile.peerId });

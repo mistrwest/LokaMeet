@@ -51,9 +51,9 @@ export type UserProfile = {
     | "soft-light"
     | "ocean-blue"
     | "ocean-dusk"
-    | "ipad-slate"
-    | "ipad-lagoon"
-    | "ipad-midnight";
+    | "ipd-slate"
+    | "ipd-lagoon"
+    | "ipd-midnight";
   avatarHash?: string;
   avatarPosition?: AvatarPosition;
   hasChosenName?: boolean;
@@ -62,11 +62,35 @@ export type UserProfile = {
   uiFontScale?: number; // Значение 1.0 сохраняет базовый масштаб интерфейса.
   uiCompact?: boolean;
   uiShowSeconds?: boolean;
-  defaultVideoQuality?: "low" | "medium" | "high";
+  defaultVideoQuality?: "low" | "medium" | "high" | "fullhd" | "qhd" | "uhd";
   autoSwitchToChatOnAccept?: boolean;
   audioInputDeviceId?: string;
   audioOutputDeviceId?: string;
   videoInputDeviceId?: string;
+  /** Ручные параметры камеры (фокус, экспозиция и т.д.), если устройство их поддерживает. */
+  cameraControls?: {
+    focusMode?: "continuous" | "manual";
+    focusDistance?: number;
+    exposureMode?: "continuous" | "manual";
+    exposureCompensation?: number;
+    brightness?: number;
+    contrast?: number;
+    saturation?: number;
+    sharpness?: number;
+    zoom?: number;
+    whiteBalanceMode?: "continuous" | "manual";
+    colorTemperature?: number;
+  };
+  /** Цифровое приближение и виртуальный фон обрабатываются на холсте, без перезапуска камеры. */
+  cameraFx?: {
+    cropZoom?: number;
+    cropPanX?: number;
+    cropPanY?: number;
+    backgroundMode?: "none" | "blur" | "preset" | "custom";
+    backgroundPreset?: "room" | "office" | "beach" | "nature" | "mountain" | "loft" | "cafe" | "bookshelf" | "studio" | "conference" | "brick";
+    backgroundCustomId?: string;
+    blurAmount?: number;
+  };
   chatAutoScroll?: boolean;
   chatSmileSizePx?: number; // Допустимый диапазон нужен, чтобы смайлы не нарушали вёрстку.
   chatFontSize?: number; // Ограничение диапазона сохраняет читаемость чата.
@@ -100,6 +124,17 @@ export type UserProfile = {
   messageSoundVolume?: number; // Шкала 0–100 соответствует значению регулятора интерфейса.
   callerSoundVolume?: number; // Шкала 0–100 соответствует значению регулятора интерфейса.
   connectionSoundVolume?: number; // Шкала 0–100 соответствует значению регулятора интерфейса.
+  /** Папка, куда сохраняются записи звонков и конференций. */
+  recordingDir?: string;
+  /** Полный путь последней сохранённой записи, чтобы открыть её папку из настроек. */
+  lastRecordingPath?: string;
+  /** Контейнер файла записи. */
+  recordingFormat?: "mp4" | "avi";
+  recordingQuality?: "480p" | "720p" | "1080p" | "1440p";
+  recordingFps?: 15 | 24 | 30;
+  recordingBitrate?: "low" | "medium" | "high" | "max";
+  recordingSoundFile?: string;
+  recordingSoundVolume?: number;
   /** Ноль отключает авто-статус, чтобы пользователь мог сохранить ручное присутствие. */
   autoAwayMinutes?: number;
 };
@@ -190,9 +225,23 @@ export type RtcSignal =
       toPeerId: string;
       userName: string;
       screenAudioTrackId?: string;
+      screenVideoTrackId?: string;
     }
   | {
       type: "screen-share-stop";
+      roomId?: string;
+      fromPeerId: string;
+      toPeerId: string;
+    }
+  | {
+      type: "recording-start";
+      roomId?: string;
+      fromPeerId: string;
+      toPeerId: string;
+      userName: string;
+    }
+  | {
+      type: "recording-stop";
       roomId?: string;
       fromPeerId: string;
       toPeerId: string;

@@ -24,3 +24,6 @@ Desktop.ini
 # Accidental compile artifacts in src
 src/**/*.js
 !src/**/*.cjs
+
+# MediaPipe wasm копируется из node_modules при сборке
+public/mediapipe/wasm/

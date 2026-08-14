@@ -20,7 +20,11 @@ const api = {
     openDevTools: () => ipcRenderer.invoke("app:openDevTools") as Promise<boolean>,
     openPath: (pathToOpen: string) => ipcRenderer.invoke("app:openPath", pathToOpen) as Promise<boolean>,
     openExternal: (url: string) => ipcRenderer.invoke("app:openExternal", url) as Promise<boolean>,
-    showOpenDialog: (options: { filters?: Array<{ name: string; extensions: string[] }> }) => ipcRenderer.invoke("app:showOpenDialog", options) as Promise<string | null>,
+    showOpenDialog: (options: {
+      filters?: Array<{ name: string; extensions: string[] }>;
+      properties?: Array<"openFile" | "openDirectory" | "createDirectory">;
+      defaultPath?: string;
+    }) => ipcRenderer.invoke("app:showOpenDialog", options) as Promise<string | null>,
     quit: () => ipcRenderer.invoke("app:quit") as Promise<boolean>
   },
   avatar: {
@@ -60,7 +64,12 @@ const api = {
   },
   chat: {
     append: (message: ChatMessage) => ipcRenderer.invoke("chat:append", message) as Promise<boolean>,
-    clearHistory: () => ipcRenderer.invoke("chat:clearHistory") as Promise<boolean>
+    clearHistory: () => ipcRenderer.invoke("chat:clearHistory") as Promise<boolean>,
+    onCleared: (cb: () => void): Unsub => {
+      const listener = () => cb();
+      ipcRenderer.on("chat:cleared", listener);
+      return () => ipcRenderer.removeListener("chat:cleared", listener);
+    }
   },
   log: {
     getInfo: () => ipcRenderer.invoke("log:getInfo") as Promise<{ logFilePath: string | null; logDirPath: string | null }>,
@@ -72,7 +81,32 @@ const api = {
   },
   screen: {
     getSources: () => ipcRenderer.invoke("screen:getSources") as Promise<Array<{ id: string; name: string; thumbnail: string }>>,
-    setPreferredSource: (sourceId: string | null) => ipcRenderer.invoke("screen:setPreferredSource", sourceId) as Promise<boolean>
+    setPreferredSource: (sourceId: string | null) => ipcRenderer.invoke("screen:setPreferredSource", sourceId) as Promise<boolean>,
+    getAppWindowSourceId: () => ipcRenderer.invoke("screen:getAppWindowSourceId") as Promise<string | null>,
+    keepCapturerAlive: () => ipcRenderer.invoke("screen:keepCapturerAlive") as Promise<boolean>
+  },
+  cameraBg: {
+    saveFromPath: (sourcePath: string) =>
+      ipcRenderer.invoke("cameraBg:saveFromPath", sourcePath) as Promise<{ id: string; dataUrl: string }>,
+    list: () => ipcRenderer.invoke("cameraBg:list") as Promise<Array<{ id: string; dataUrl: string }>>,
+    get: (id?: string) => ipcRenderer.invoke("cameraBg:get", id) as Promise<{ id: string; dataUrl: string } | null>,
+    remove: (id: string) => ipcRenderer.invoke("cameraBg:remove", id) as Promise<boolean>
+  },
+  settings: {
+    open: () => ipcRenderer.invoke("settings:open") as Promise<boolean>,
+    close: () => ipcRenderer.invoke("settings:close") as Promise<boolean>
+  },
+  recording: {
+    begin: (
+      dir: string,
+      fileName: string,
+      avi?: { format: "avi"; width: number; height: number; fps: number; sampleRate: number }
+    ) =>
+      ipcRenderer.invoke("recording:begin", dir, fileName, avi) as Promise<{ id: string; filePath: string } | null>,
+    append: (id: string, data: string) => ipcRenderer.invoke("recording:append", id, data) as Promise<boolean>,
+    aviJpeg: (id: string, data: string) => ipcRenderer.invoke("recording:aviJpeg", id, data) as Promise<boolean>,
+    aviPcm: (id: string, data: string) => ipcRenderer.invoke("recording:aviPcm", id, data) as Promise<boolean>,
+    finish: (id: string) => ipcRenderer.invoke("recording:finish", id) as Promise<string | null>
   }
 };
 

@@ -66,6 +66,7 @@ export function ScreenShareLocalSidebar({ containerRef, onStop }: ScreenShareLoc
 
 type ScreenShareViewerProps = {
   stream: MediaStream;
+  cameraStream?: MediaStream | null;
   broadcasterName: string;
   controlsHidden: boolean;
   broadcastMuted: boolean;
@@ -77,8 +78,58 @@ type ScreenShareViewerProps = {
   onExitToTiles: () => void;
 };
 
+export function PresenterCameraPip({ stream }: { stream: MediaStream | null | undefined }) {
+  const { t } = useTranslation();
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const [, setTrackEpoch] = useState(0);
+  const track = stream?.getVideoTracks().find((t) => t.readyState !== "ended") ?? null;
+  const show = Boolean(track && track.enabled && track.readyState === "live" && !track.muted);
+
+  useEffect(() => {
+    if (!track) return;
+    const bump = () => setTrackEpoch((n) => n + 1);
+    track.addEventListener("mute", bump);
+    track.addEventListener("unmute", bump);
+    track.addEventListener("ended", bump);
+    return () => {
+      track.removeEventListener("mute", bump);
+      track.removeEventListener("unmute", bump);
+      track.removeEventListener("ended", bump);
+    };
+  }, [track]);
+
+  useEffect(() => {
+    const el = videoRef.current;
+    if (!el) return;
+    if (!show || !stream || !track) {
+      el.srcObject = null;
+      return;
+    }
+    if (el.srcObject !== stream) el.srcObject = stream;
+    el.muted = true;
+    const play = () => {
+      if (el.paused) void el.play().catch(() => undefined);
+    };
+    play();
+    track.addEventListener("unmute", play);
+    el.addEventListener("pause", play);
+    return () => {
+      track.removeEventListener("unmute", play);
+      el.removeEventListener("pause", play);
+    };
+  }, [stream, track, show]);
+
+  if (!show || !stream || !track) return null;
+  return (
+    <div className="presenterCameraPip" aria-label={t("screenSharePresenterCamera")}>
+      <video ref={videoRef} playsInline autoPlay muted />
+    </div>
+  );
+}
+
 export function ScreenShareViewer({
   stream,
+  cameraStream,
   broadcasterName,
   controlsHidden,
   broadcastMuted,
@@ -103,26 +154,53 @@ export function ScreenShareViewer({
     el.muted = false;
     el.volume = Math.max(0, Math.min(1, volume));
     if (el.paused) {
-      void el.play().catch((err) => {
-      });
+      void el.play().catch(() => undefined);
     }
   }, [stream, volume]);
 
   useEffect(() => {
+    const el = videoRef.current;
+    if (!el) return;
+    let lastTime = 0;
+    let stalledTicks = 0;
+    const id = window.setInterval(() => {
+      if (el.paused) void el.play().catch(() => undefined);
+      const t = el.currentTime;
+      if (t === lastTime && !el.paused && el.readyState >= 2) {
+        stalledTicks += 1;
+        if (stalledTicks >= 3) {
+          const src = el.srcObject;
+          el.srcObject = null;
+          el.srcObject = src;
+          void el.play().catch(() => undefined);
+          stalledTicks = 0;
+        }
+      } else {
+        stalledTicks = 0;
+        lastTime = t;
+      }
+    }, 2000);
+    return () => window.clearInterval(id);
+  }, [stream]);
+
+  useEffect(() => {
     const onFullscreenChange = () => {
-      const target = videoRef.current ?? containerRef.current;
-      setIsFullscreen(document.fullscreenElement === target);
+      setIsFullscreen(document.fullscreenElement === containerRef.current);
     };
     document.addEventListener("fullscreenchange", onFullscreenChange);
+    onFullscreenChange();
     return () => document.removeEventListener("fullscreenchange", onFullscreenChange);
   }, []);
 
   async function handleFullscreenClick() {
-    const target = videoRef.current ?? containerRef.current;
+    const target = containerRef.current;
     if (!target) return;
     try {
-      if (document.fullscreenElement) {
+      if (document.fullscreenElement === target) {
         await document.exitFullscreen();
+      } else if (document.fullscreenElement) {
+        await document.exitFullscreen();
+        await target.requestFullscreen();
       } else {
         await target.requestFullscreen();
       }
@@ -136,6 +214,7 @@ export function ScreenShareViewer({
   return (
     <div ref={containerRef} className="screenShareView">
       <video ref={videoRef} playsInline autoPlay />
+      <PresenterCameraPip stream={cameraStream} />
 
       {!controlsHidden && (
         <>

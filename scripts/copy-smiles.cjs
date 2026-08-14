@@ -36,3 +36,23 @@ if (fs.existsSync(srcSnds)) {
   console.log("[copy-smiles] copied sounds to", dstSnds);
 }
 
+const srcWasm = path.join(root, "node_modules", "@mediapipe", "tasks-vision", "wasm");
+const dstWasm = path.join(root, "dist", "renderer", "mediapipe", "wasm");
+if (fs.existsSync(srcWasm)) {
+  copyDir(srcWasm, dstWasm);
+  console.log("[copy-smiles] copied mediapipe wasm to", dstWasm);
+}
+
+const srcModel = path.join(root, "public", "mediapipe", "selfie_segmenter_landscape.tflite");
+const dstModel = path.join(root, "dist", "renderer", "mediapipe", "selfie_segmenter_landscape.tflite");
+if (fs.existsSync(srcModel)) {
+  ensureDir(path.dirname(dstModel));
+  fs.copyFileSync(srcModel, dstModel);
+}
+
+const srcBg = path.join(root, "public", "camera-bg");
+const dstBg = path.join(root, "dist", "renderer", "camera-bg");
+if (fs.existsSync(srcBg)) {
+  copyDir(srcBg, dstBg);
+}
+
