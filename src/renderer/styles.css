@@ -1191,7 +1191,8 @@ select optgroup {
   border: 1px solid var(--border);
 }
 
-.screenShareView > video {
+.screenShareView > video.shareStageMain,
+.screenShareView .shareStageCameraMain {
   width: 100%;
   height: 100%;
   object-fit: contain;
@@ -1210,9 +1211,9 @@ select optgroup {
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(96, 165, 250, 0.25);
   color: #f8fafc;
   font-size: 13px;
+  z-index: 4;
   font-weight: 600;
   pointer-events: none;
-  z-index: 2;
   display: inline-flex;
   align-items: center;
   gap: 8px;
@@ -1234,7 +1235,7 @@ select optgroup {
   border: 1px solid rgba(255, 255, 255, 0.38);
   box-shadow: 0 10px 28px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(96, 165, 250, 0.2);
   color: #f8fafc;
-  z-index: 2;
+  z-index: 5;
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
 }
@@ -1444,21 +1445,78 @@ select optgroup {
   pointer-events: none;
 }
 
+.presenterCameraPip.is-draggable,
+.presenterCameraPip.is-clickable,
+.shareStagePip.is-clickable {
+  pointer-events: auto;
+  user-select: none;
+  touch-action: none;
+}
+
+.presenterCameraPip.is-draggable {
+  cursor: grab;
+}
+
+.presenterCameraPip.is-draggable:active {
+  cursor: grabbing;
+}
+
+.presenterCameraPip.is-clickable,
+.shareStagePip.is-clickable {
+  cursor: pointer;
+}
+
 .presenterCameraPip video {
   width: 100%;
   height: 100%;
   object-fit: cover;
   display: block;
   background: #0b0f16;
+  pointer-events: none;
 }
 
 .tileScreenSharing .presenterCameraPip {
   left: 10px;
   right: auto;
   top: auto;
-  bottom: 10px;
+  bottom: 14px;
   width: min(36%, 168px);
   min-width: 96px;
+}
+
+.tileScreenSharing .tileLabel {
+  left: auto;
+  right: 10px;
+  bottom: 12px;
+}
+
+.screenShareView > video.shareStagePip {
+  position: absolute;
+  left: 16px;
+  right: auto;
+  top: auto;
+  bottom: 16px;
+  width: min(22%, 240px);
+  min-width: 112px;
+  height: auto;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 2px solid rgba(248, 250, 252, 0.85);
+  background: #0b0f16;
+  z-index: 3;
+}
+
+.screenShareView.is-camera-main .shareStageCameraMain {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  object-fit: cover;
+}
+
+.screenShareView.is-camera-main .shareStagePip {
+  z-index: 3;
 }
 
 .screenShareView:fullscreen,
@@ -1474,7 +1532,9 @@ select optgroup {
 }
 
 .screenShareView:fullscreen .presenterCameraPip,
-.screenShareView:-webkit-full-screen .presenterCameraPip {
+.screenShareView:-webkit-full-screen .presenterCameraPip,
+.screenShareView:fullscreen > video.shareStagePip,
+.screenShareView:-webkit-full-screen > video.shareStagePip {
   left: 24px;
   right: auto;
   top: auto;
@@ -1491,6 +1551,11 @@ select optgroup {
   bottom: 24px;
   width: min(18%, 280px);
   min-width: 140px;
+}
+
+.tile:fullscreen .tileLabel,
+.tile:-webkit-full-screen .tileLabel {
+  bottom: 16px;
 }
 
 .screenShareLocalSidebar {
@@ -1543,6 +1608,53 @@ select optgroup {
 .screenShareLocalSidebarBtnDanger:hover {
   background: rgba(248, 113, 113, 0.38);
   border-color: rgba(252, 165, 165, 0.85);
+}
+
+.peerShareMarks {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  margin-left: 4px;
+  vertical-align: middle;
+}
+
+.peerShareCamera {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #e5e7eb;
+  opacity: 0.95;
+}
+
+.peerShareRec {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  color: #fecaca;
+  line-height: 1;
+}
+
+.peerShareRecDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #ef4444;
+  box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.28);
+  animation: peerShareRecBlink 2.4s ease-in-out infinite;
+}
+
+@keyframes peerShareRecBlink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.18;
+  }
 }
 
 .screenSharingDot {

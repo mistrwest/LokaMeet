@@ -404,7 +404,7 @@ export function initLogger() {
     buffer = [];
   }
 
-  pruneOldLogFiles(logsDir, 20);
+  pruneOldLogFiles(logsDir, 5);
 }
 
 /** Оставляет только последние `keep` лог-файлов LokaMeet (по mtime). */

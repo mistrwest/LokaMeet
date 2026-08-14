@@ -6,6 +6,39 @@ export function ScreenSharingDot({ title }: { title?: string }) {
   return <span className="screenSharingDot" title={title} aria-label={title} />;
 }
 
+/** Камера в карточке при демонстрации экрана; при записи рядом медленно мигает REC. */
+export function PeerShareMarks({
+  sharing,
+  recording,
+  shareTitle,
+  recTitle
+}: {
+  sharing: boolean;
+  recording?: boolean;
+  shareTitle?: string;
+  recTitle?: string;
+}) {
+  if (!sharing) return null;
+  return (
+    <span className="peerShareMarks">
+      <span className="peerShareCamera" title={shareTitle} aria-label={shareTitle}>
+        <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+          <path
+            fill="currentColor"
+            d="M4 7.5A2.5 2.5 0 0 1 6.5 5h7A2.5 2.5 0 0 1 16 7.5v9A2.5 2.5 0 0 1 13.5 19h-7A2.5 2.5 0 0 1 4 16.5v-9Zm13.2 1.7 3.3-1.9c.6-.3 1.3.1 1.3.8v8c0 .7-.7 1.1-1.3.8l-3.3-1.9V9.2Z"
+          />
+        </svg>
+      </span>
+      {recording ? (
+        <span className="peerShareRec" title={recTitle} aria-label={recTitle}>
+          <span className="peerShareRecDot" />
+          REC
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
 type ScreenShareLocalSidebarProps = {
   containerRef: React.RefObject<HTMLElement | null>;
   onStop: () => void;
@@ -78,12 +111,23 @@ type ScreenShareViewerProps = {
   onExitToTiles: () => void;
 };
 
-export function PresenterCameraPip({ stream }: { stream: MediaStream | null | undefined }) {
+type PresenterCameraPipProps = {
+  stream: MediaStream | null | undefined;
+  draggable?: boolean;
+  onActivate?: () => void;
+  className?: string;
+  ariaLabel?: string;
+};
+
+export function PresenterCameraPip({ stream, draggable, onActivate, className, ariaLabel }: PresenterCameraPipProps) {
   const { t } = useTranslation();
+  const rootRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const dragRef = useRef<{ pointerId: number; moved: boolean; grabX: number; grabY: number } | null>(null);
   const [, setTrackEpoch] = useState(0);
+  const [offset, setOffset] = useState<{ x: number; y: number } | null>(null);
   const track = stream?.getVideoTracks().find((t) => t.readyState !== "ended") ?? null;
-  const show = Boolean(track && track.enabled && track.readyState === "live" && !track.muted);
+  const show = Boolean(track && track.enabled && track.readyState === "live");
 
   useEffect(() => {
     if (!track) return;
@@ -119,9 +163,74 @@ export function PresenterCameraPip({ stream }: { stream: MediaStream | null | un
     };
   }, [stream, track, show]);
 
+  function onPointerDown(e: React.PointerEvent<HTMLDivElement>) {
+    if (!draggable || e.button !== 0) return;
+    const node = rootRef.current;
+    const parent = node?.offsetParent as HTMLElement | null;
+    if (!node || !parent) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const nodeRect = node.getBoundingClientRect();
+    node.setPointerCapture(e.pointerId);
+    dragRef.current = {
+      pointerId: e.pointerId,
+      moved: false,
+      grabX: e.clientX - nodeRect.left,
+      grabY: e.clientY - nodeRect.top
+    };
+  }
+
+  function onPointerMove(e: React.PointerEvent<HTMLDivElement>) {
+    const drag = dragRef.current;
+    const node = rootRef.current;
+    const parent = node?.offsetParent as HTMLElement | null;
+    if (!drag || drag.pointerId !== e.pointerId || !node || !parent) return;
+    e.preventDefault();
+    const parentRect = parent.getBoundingClientRect();
+    const maxX = Math.max(0, parent.clientWidth - node.offsetWidth);
+    const maxY = Math.max(0, parent.clientHeight - node.offsetHeight);
+    const x = Math.max(0, Math.min(maxX, e.clientX - parentRect.left - drag.grabX));
+    const y = Math.max(0, Math.min(maxY, e.clientY - parentRect.top - drag.grabY));
+    if (Math.abs(x - node.offsetLeft) > 3 || Math.abs(y - node.offsetTop) > 3) drag.moved = true;
+    setOffset({ x, y });
+  }
+
+  function onPointerUp(e: React.PointerEvent<HTMLDivElement>) {
+    const drag = dragRef.current;
+    if (drag && drag.pointerId === e.pointerId) {
+      const wasClick = !drag.moved;
+      dragRef.current = null;
+      try {
+        rootRef.current?.releasePointerCapture(e.pointerId);
+      } catch {
+        // захват мог уже сняться
+      }
+      if (wasClick && onActivate) {
+        e.preventDefault();
+        e.stopPropagation();
+        onActivate();
+      }
+      return;
+    }
+    if (onActivate && e.button === 0) {
+      e.preventDefault();
+      e.stopPropagation();
+      onActivate();
+    }
+  }
+
   if (!show || !stream || !track) return null;
+  const interactive = Boolean(draggable || onActivate);
   return (
-    <div className="presenterCameraPip" aria-label={t("screenSharePresenterCamera")}>
+    <div
+      ref={rootRef}
+      className={`presenterCameraPip${draggable ? " is-draggable" : ""}${onActivate ? " is-clickable" : ""}${className ? ` ${className}` : ""}`}
+      style={offset ? { left: offset.x, top: offset.y, right: "auto", bottom: "auto" } : undefined}
+      aria-label={ariaLabel ?? t("screenSharePresenterCamera")}
+      onPointerDown={interactive ? onPointerDown : undefined}
+      onPointerMove={draggable ? onPointerMove : undefined}
+      onPointerUp={interactive ? onPointerUp : undefined}
+    >
       <video ref={videoRef} playsInline autoPlay muted />
     </div>
   );
@@ -210,11 +319,44 @@ export function ScreenShareViewer({
   }
 
   const volumePercent = Math.round(Math.max(0, Math.min(1, volume)) * 100);
+  const [swapped, setSwapped] = useState(false);
+  const cameraMainRef = useRef<HTMLVideoElement>(null);
+  const hasCamera = Boolean(
+    cameraStream?.getVideoTracks().some((t) => t.readyState === "live" && t.enabled)
+  );
+
+  useEffect(() => {
+    if (!hasCamera && swapped) setSwapped(false);
+  }, [hasCamera, swapped]);
+
+  useEffect(() => {
+    const el = cameraMainRef.current;
+    if (!el || !cameraStream || !swapped) return;
+    if (el.srcObject !== cameraStream) el.srcObject = cameraStream;
+    el.muted = true;
+    if (el.paused) void el.play().catch(() => undefined);
+  }, [cameraStream, swapped]);
 
   return (
-    <div ref={containerRef} className="screenShareView">
-      <video ref={videoRef} playsInline autoPlay />
-      <PresenterCameraPip stream={cameraStream} />
+    <div ref={containerRef} className={`screenShareView${swapped ? " is-camera-main" : ""}`}>
+      <video
+        ref={videoRef}
+        className={swapped ? "shareStagePip is-clickable" : "shareStageMain"}
+        playsInline
+        autoPlay
+        title={swapped ? t("screenShareSwapToScreen") : undefined}
+        onClick={swapped ? () => setSwapped(false) : undefined}
+      />
+      {hasCamera && swapped ? (
+        <video ref={cameraMainRef} className="shareStageMain shareStageCameraMain" playsInline autoPlay muted />
+      ) : null}
+      {hasCamera && !swapped ? (
+        <PresenterCameraPip
+          stream={cameraStream}
+          onActivate={() => setSwapped(true)}
+          ariaLabel={t("screenShareSwapToCamera")}
+        />
+      ) : null}
 
       {!controlsHidden && (
         <>

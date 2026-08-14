@@ -155,6 +155,7 @@ export class LanDiscovery {
       return;
     }
     this.publishPeer();
+    this.broadcastUdpBeacon();
   }
 
   unpublishPeer() {
@@ -202,6 +203,18 @@ export class LanDiscovery {
     this.roomAdverts.get(roomId)?.stop?.();
     this.roomAdverts.delete(roomId);
     this.publishedRooms.delete(roomId);
+  }
+
+  private isBusyStatus(status: PeerInfo["status"]) {
+    return status === "in_call" || status === "in_conference";
+  }
+
+  private upsertPeer(peer: PeerInfo, source: "mdns" | "udp") {
+    const existing = this.peersById.get(peer.peerId);
+    if (source === "mdns" && existing && this.isBusyStatus(existing.status) && !this.isBusyStatus(peer.status)) {
+      peer = { ...peer, status: existing.status };
+    }
+    this.peersById.set(peer.peerId, peer);
   }
 
   private publishPeer() {
@@ -273,7 +286,7 @@ export class LanDiscovery {
           port: beacon.signalingPort,
           lastSeenAt: now
         };
-        this.peersById.set(peer.peerId, peer);
+        this.upsertPeer(peer, "udp");
 
         // UDP сохраняет обнаружение комнат в сетях, где mDNS/Bonjour заблокирован.
         if (Array.isArray(beacon.rooms)) {
@@ -378,7 +391,7 @@ export class LanDiscovery {
         port,
         lastSeenAt: now
       };
-      this.peersById.set(peerId, peer);
+      this.upsertPeer(peer, "mdns");
       this.emit();
     } catch (e) {
       logWarn("Peer service parse error:", e);

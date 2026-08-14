@@ -17,7 +17,10 @@ let settingsWindow: BrowserWindow | null = null;
 
 // Только LAN: ICE-кандидаты с реальными локальными IP, а не mDNS-именами.
 // Существенно повышает надёжность WebRTC там, где mDNS нестабилен или заблокирован.
-app.commandLine.appendSwitch("disable-features", "WebRtcHideLocalIpsWithMdns");
+app.commandLine.appendSwitch("disable-features", "WebRtcHideLocalIpsWithMdns,CalculateNativeWinOcclusion");
+app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
+app.commandLine.appendSwitch("disable-renderer-backgrounding");
+app.commandLine.appendSwitch("disable-background-timer-throttling");
 
 const defaultProfile: UserProfile = {
   peerId: uuidv4(),
@@ -191,7 +194,8 @@ async function createMainWindow() {
     webPreferences: {
       preload: path.join(__dirname, "..", "preload", "preload.js"),
       contextIsolation: true,
-      nodeIntegration: false
+      nodeIntegration: false,
+      backgroundThrottling: false
     }
   });
   mainWindow.setMenuBarVisibility(false);
@@ -255,12 +259,29 @@ async function createMainWindow() {
   });
 }
 
+function discoveryFieldsChanged(prev: UserProfile, next: UserProfile) {
+  return (
+    prev.status !== next.status ||
+    prev.userName !== next.userName ||
+    prev.statusText !== next.statusText ||
+    prev.avatarHash !== next.avatarHash ||
+    prev.hasChosenName !== next.hasChosenName ||
+    JSON.stringify(prev.avatarPosition ?? null) !== JSON.stringify(next.avatarPosition ?? null)
+  );
+}
+
 function setProfile(patch: Partial<UserProfile>) {
+  const prev = state.profile;
   state.profile = { ...state.profile, ...patch };
   if (state.profile.hasChosenName) {
-    discovery.republishPeer();
+    if (discoveryFieldsChanged(prev, state.profile)) {
+      discovery.republishPeer();
+    }
   } else {
     discovery.unpublishPeer();
+  }
+  if (prev.status !== state.profile.status) {
+    signaling.broadcastSelfHello();
   }
   saveState({ profile: state.profile, chats: state.chats });
 }

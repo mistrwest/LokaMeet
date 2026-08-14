@@ -90,7 +90,6 @@ export function findPresenterCameraTrack(stream: MediaStream, knownScreenVideoTr
       (t) =>
         t.readyState === "live" &&
         t.enabled &&
-        !t.muted &&
         t.id !== screen?.id &&
         !isScreenVideoTrack(t, knownScreenVideoTrackId)
     ) ?? null

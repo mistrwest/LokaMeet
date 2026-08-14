@@ -29,6 +29,7 @@ import {
 import {
   captureDesktopMedia,
   categorizeScreenSources,
+  createPeerTileStream,
   createScreenShareViewStream,
   findPresenterCameraTrack,
   findScreenBroadcastAudioTrack,
@@ -39,7 +40,7 @@ import {
   type ScreenShareTab
 } from "./lib/screenShare";
 import { createFilePreviewDataUrl, isVideoAttachmentMime } from "./lib/filePreview";
-import { ScreenShareViewer, ScreenShareLocalSidebar, ScreenSharingDot, PresenterCameraPip } from "./lib/screenShareViewer";
+import { ScreenShareViewer, ScreenShareLocalSidebar, ScreenSharingDot, PresenterCameraPip, PeerShareMarks } from "./lib/screenShareViewer";
 import { RemotePeerMedia } from "./lib/remotePeerMedia";
 import { CallRecorder, recordingFileName, normalizeRecordingSettings, RECORDING_SIZE, type RecordingBitrate, type RecordingFormat, type RecordingFps, type RecordingQuality, type RecordSource } from "./lib/callRecorder";
 import { speakRecordAnnouncement } from "./lib/recordVoice";
@@ -408,6 +409,18 @@ export function App() {
   });
   const videoEnabledRef = useRef(false);
   videoEnabledRef.current = mediaCfg.videoEnabled;
+  const audioEnabledRef = useRef(true);
+  audioEnabledRef.current = mediaCfg.audioEnabled;
+  const restoringMicRef = useRef<Promise<void> | null>(null);
+  const helloStatusRef = useRef(new Map<string, AvailabilityStatus>());
+  const applyHelloStatus = (peers: PeerInfo[]) => {
+    const hello = helloStatusRef.current;
+    if (hello.size === 0) return peers;
+    return peers.map((p) => {
+      const status = hello.get(p.peerId);
+      return status && status !== p.status ? { ...p, status } : p;
+    });
+  };
 
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
   const localTileRef = useRef<HTMLDivElement | null>(null);
@@ -1101,9 +1114,10 @@ export function App() {
     const addStream = (id: string, stream: MediaStream | null) => {
       if (!stream) return;
       if (analysers.has(id)) return;
-      if (stream.getAudioTracks().length === 0) return;
+      const liveAudio = stream.getAudioTracks().find((t) => t.readyState === "live" && t.enabled);
+      if (!liveAudio) return;
       try {
-        const src = ctx.createMediaStreamSource(stream);
+        const src = ctx.createMediaStreamSource(new MediaStream([liveAudio]));
         const analyser = ctx.createAnalyser();
         analyser.fftSize = 512;
         analyser.smoothingTimeConstant = 0.35;
@@ -1116,8 +1130,19 @@ export function App() {
       }
     };
 
-    addStream("self", localStreamRef.current);
-    for (const r of remoteTracks) addStream(r.peerId, r.stream);
+    const local = localStreamRef.current;
+    const screenAudioId = shareScreenAudioTrackRef.current?.id;
+    const selfMic = local ? getMicAudioTrack(local, screenAudioId) : null;
+    if (selfMic && selfMic.readyState === "live" && selfMic.enabled) {
+      addStream("self", new MediaStream([selfMic]));
+    }
+    for (const r of remoteTracks) {
+      const tile = createPeerTileStream(
+        r.stream,
+        remoteScreenShare?.peerId === r.peerId ? remoteScreenShare.screenAudioTrackId : undefined
+      );
+      addStream(r.peerId, tile);
+    }
 
     const timer = window.setInterval(() => {
       if (stopped) return;
@@ -1163,6 +1188,8 @@ export function App() {
     call ? (call.mode === "room" ? call.roomId : call.peerId) : "none",
     localStreamVer,
     remoteTracks.map((r) => r.peerId).join("|"),
+    remoteScreenShare?.peerId,
+    remoteScreenShare?.screenAudioTrackId,
     speakingIndicator
   ]);
 
@@ -1743,13 +1770,66 @@ export function App() {
 
   function restoreMicOnPeerConnections(screenAudioTrackId?: string) {
     const local = localStreamRef.current;
-    if (!local || !mediaCfg.audioEnabled) return;
+    if (!local || !audioEnabledRef.current) return;
     const micTrack = getMicAudioTrack(local, screenAudioTrackId);
     if (!micTrack || micTrack.readyState !== "live") return;
     const isScreenAudio = (track: MediaStreamTrack) => isScreenBroadcastAudioTrack(track, local, screenAudioTrackId);
     for (const pc of pcsRef.current.values()) {
       replaceMicAudioTrack(pc, micTrack, isScreenAudio, local);
     }
+  }
+
+  async function restoreMicAfterCameraChange() {
+    if (!audioEnabledRef.current) return;
+    if (restoringMicRef.current) return restoringMicRef.current;
+    const run = (async () => {
+      const local = localStreamRef.current;
+      const screenAudioId = shareScreenAudioTrackRef.current?.id;
+      const mic = local ? getMicAudioTrack(local, screenAudioId) : null;
+      if (mic && mic.readyState === "live") {
+        mic.enabled = true;
+        watchLocalMicTracks(local);
+        restoreMicOnPeerConnections(screenAudioId);
+        return;
+      }
+      if (mic && local) {
+        try {
+          local.removeTrack(mic);
+        } catch {
+          // игнор
+        }
+        try {
+          mic.stop();
+        } catch {
+          // игнор
+        }
+      }
+      void window.lokameet.log.write({
+        level: "WARN",
+        scope: "renderer/media",
+        msg: "Microphone track ended after camera change; reacquiring",
+        data: { hadTrack: Boolean(mic), readyState: mic?.readyState ?? "missing" }
+      });
+      await ensureAudioTrackPresent();
+      restoreMicOnPeerConnections(screenAudioId);
+      watchLocalMicTracks(localStreamRef.current);
+    })();
+    restoringMicRef.current = run;
+    try {
+      await run;
+    } finally {
+      restoringMicRef.current = null;
+    }
+  }
+
+  function watchLocalMicTracks(stream: MediaStream | null | undefined) {
+    if (!stream) return;
+    const mic = getMicAudioTrack(stream, shareScreenAudioTrackRef.current?.id);
+    if (!mic || mic.readyState !== "live") return;
+    mic.onended = () => {
+      if (!audioEnabledRef.current) return;
+      void restoreMicAfterCameraChange();
+    };
   }
 
   function refreshRemotePeerVideo(peerId: string, opts?: { dropMutedVideo?: boolean }) {
@@ -2009,13 +2089,13 @@ export function App() {
       const snap = await window.lokameet.discovery.getSnapshot();
       if (cancelled) return;
       const discoveredPeers = snap.peers.filter((p) => p.peerId !== s.profile.peerId);
-      setPeers(discoveredPeers);
+      setPeers(applyHelloStatus(discoveredPeers));
       setRooms(snap.rooms.filter((r) => r.hostPeerId !== s.profile.peerId));
       void Promise.all(discoveredPeers.map((peer) => refreshPeerAvatar(peer, s.profile.peerId)));
 
       unsubDisc = window.lokameet.discovery.onUpdate((u) => {
         const updatedPeers = u.peers.filter((p) => p.peerId !== s.profile.peerId);
-        setPeers(updatedPeers);
+        setPeers(applyHelloStatus(updatedPeers));
         setRooms(u.rooms.filter((r) => r.hostPeerId !== s.profile.peerId));
         void Promise.all(updatedPeers.map((peer) => refreshPeerAvatar(peer, s.profile.peerId)));
       });
@@ -2151,6 +2231,7 @@ export function App() {
         }
       }
       localStreamRef.current = stream;
+      watchLocalMicTracks(stream);
       setLocalStreamVer((v) => v + 1);
       if (localVideoRef.current) {
         localVideoRef.current.srcObject = stream;
@@ -2179,6 +2260,7 @@ export function App() {
             }
           }
           localStreamRef.current = stream;
+          watchLocalMicTracks(stream);
           setLocalStreamVer((v) => v + 1);
           if (localVideoRef.current) {
             localVideoRef.current.srcObject = stream;
@@ -2198,6 +2280,7 @@ export function App() {
             audio: getAudioConstraintsForMic("")
           });
           localStreamRef.current = stream;
+          watchLocalMicTracks(stream);
           setLocalStreamVer((v) => v + 1);
           if (localVideoRef.current) {
             localVideoRef.current.srcObject = stream;
@@ -2270,10 +2353,25 @@ export function App() {
   }
 
   async function ensureAudioTrackPresent() {
-    if (!mediaCfg.audioEnabled) return;
+    if (!audioEnabledRef.current) return;
     const local = await ensureLocalMedia();
-    const existingTrack = getMicAudioTrack(local);
-    
+    const screenAudioId = shareScreenAudioTrackRef.current?.id;
+    let existingTrack = getMicAudioTrack(local, screenAudioId);
+
+    if (existingTrack && existingTrack.readyState !== "live") {
+      try {
+        local.removeTrack(existingTrack);
+      } catch {
+        // игнор
+      }
+      try {
+        existingTrack.stop();
+      } catch {
+        // игнор
+      }
+      existingTrack = undefined;
+    }
+
     // Проверяем, нужно ли пересоздать трек из-за изменения шумоподавления
     if (existingTrack) {
       const currentNoiseSuppression = existingTrack.getSettings().noiseSuppression ?? true;
@@ -2289,22 +2387,24 @@ export function App() {
       } else {
         // Настройки не изменились — включаем существующий трек и вешаем на PC снова
         existingTrack.enabled = true;
+        watchLocalMicTracks(local);
         await applyMicrophoneVolume();
-        const isScreenAudio = (track: MediaStreamTrack) => isScreenBroadcastAudioTrack(track, local);
+        const isScreenAudio = (track: MediaStreamTrack) => isScreenBroadcastAudioTrack(track, local, screenAudioId);
         for (const pc of pcsRef.current.values()) replaceMicAudioTrack(pc, existingTrack, isScreenAudio, local);
         return;
       }
     }
-    
+
     // Создаем новый трек с текущими настройками (как в v01.1.2)
     const ac = getAudioConstraintsForMic();
     const mic = await navigator.mediaDevices.getUserMedia({ audio: ac, video: false });
     const micTrack = mic.getAudioTracks()[0] ?? null;
     if (!micTrack) return;
     local.addTrack(micTrack);
+    watchLocalMicTracks(local);
     setLocalStreamVer((v) => v + 1);
     await applyMicrophoneVolume();
-    const isScreenAudio = (track: MediaStreamTrack) => isScreenBroadcastAudioTrack(track, local);
+    const isScreenAudio = (track: MediaStreamTrack) => isScreenBroadcastAudioTrack(track, local, screenAudioId);
     for (const pc of pcsRef.current.values()) replaceMicAudioTrack(pc, micTrack, isScreenAudio, local);
   }
 
@@ -2399,6 +2499,32 @@ export function App() {
     return () => window.clearInterval(id);
   }, [isSharing]);
 
+  useEffect(() => {
+    const keepCamera = () => {
+      if (!isSharingRef.current || !videoEnabledRef.current) return;
+      const raw = cameraRawStreamRef.current?.getVideoTracks()[0];
+      if (raw && raw.readyState === "live") {
+        raw.enabled = true;
+      }
+      void ensurePresenterCamera();
+    };
+    const onVis = () => {
+      if (document.visibilityState === "visible") keepCamera();
+    };
+    document.addEventListener("visibilitychange", onVis);
+    window.addEventListener("focus", keepCamera);
+    const id = window.setInterval(() => {
+      if (!isSharingRef.current || !videoEnabledRef.current) return;
+      const cam = getLocalCameraTrack();
+      if (!cam || cam.readyState !== "live") void ensurePresenterCamera();
+    }, 2000);
+    return () => {
+      document.removeEventListener("visibilitychange", onVis);
+      window.removeEventListener("focus", keepCamera);
+      window.clearInterval(id);
+    };
+  }, []);
+
   async function switchCamera(deviceId: string) {
     setSelectedVideoDeviceId(deviceId);
     if (!mediaCfg.videoEnabled) return;
@@ -2411,6 +2537,7 @@ export function App() {
     const processed = await prepareCameraTrack(camTrack);
     const local = await ensureLocalMedia();
     if (processed) await publishLocalCameraTrack(processed, local);
+    await restoreMicAfterCameraChange();
     syncLocalVideoPreview({ videoEnabled: true });
   }
 
@@ -2425,6 +2552,7 @@ export function App() {
       const processed = await prepareCameraTrack(camTrack);
       const local = await ensureLocalMedia();
       if (processed) await publishLocalCameraTrack(processed, local);
+      await restoreMicAfterCameraChange();
       syncLocalVideoPreview({ videoEnabled: true });
     } catch (err) {
       void window.lokameet.log.write({
@@ -2453,6 +2581,7 @@ export function App() {
       }
     }
     if (micTrack) local.addTrack(micTrack);
+    watchLocalMicTracks(local);
     setLocalStreamVer((v) => v + 1);
     await applyMicrophoneVolume();
     const isScreenAudio = (track: MediaStreamTrack) => isScreenBroadcastAudioTrack(track, local);
@@ -3009,6 +3138,24 @@ export function App() {
       void window.lokameet.log.write({ level: "INFO", scope: "renderer/envelope", msg: env.type, data: env });
     } else {
       void window.lokameet.log.write({ level: "DEBUG", scope: "renderer/envelope", msg: env.type, data: env });
+    }
+    if (env.type === "hello") {
+      if (!env.peerId || env.peerId === profile?.peerId) return;
+      if (isBusyStatus(env.status)) helloStatusRef.current.set(env.peerId, env.status);
+      else helloStatusRef.current.delete(env.peerId);
+      const patch = {
+        status: env.status,
+        userName: env.userName,
+        statusText: env.statusText,
+        avatarHash: env.avatarHash,
+        avatarPosition: env.avatarPosition,
+        lastSeenAt: Date.now()
+      };
+      const applyHello = (list: PeerInfo[]) =>
+        list.map((p) => (p.peerId === env.peerId ? { ...p, ...patch } : p));
+      setPeers((prev) => applyHello(prev));
+      setManualPeers((prev) => applyHello(prev));
+      return;
     }
     if (env.type === "avatar-request") {
       if (!profile?.avatarHash) return;
@@ -5079,7 +5226,6 @@ export function App() {
         t !== shareTrackRef.current &&
         t.readyState === "live" &&
         t.enabled &&
-        !t.muted &&
         !isScreenVideoTrack(t, screenId)
     );
     return cam ? new MediaStream([cam]) : null;
@@ -5103,6 +5249,8 @@ export function App() {
   }
 
   const screenSharingPeerId = isSharing ? profile.peerId : remoteScreenShare?.peerId ?? null;
+  const peerIsRecording = (peerId: string) =>
+    peerId === profile.peerId ? recordingActive : remoteRecordings.some((item) => item.peerId === peerId);
   const conferenceParticipants =
     call?.mode === "room"
       ? (() => {
@@ -5376,7 +5524,12 @@ export function App() {
             <div className="profileIdentity">
               <div className="profileIdentityName">
                 {profile.userName}
-                {screenSharingPeerId === profile.peerId && <ScreenSharingDot title={t("screenShareIndicator")} />}
+                <PeerShareMarks
+                  sharing={screenSharingPeerId === profile.peerId}
+                  recording={peerIsRecording(profile.peerId)}
+                  shareTitle={t("screenShareIndicator")}
+                  recTitle={t("recordingLocal")}
+                />
               </div>
               <div className="profileIdentityMeta muted">
                 <span className={`badge ${statusBadgeClass(profile.status)}`}>{statusLabel(profile.status)}</span>
@@ -5496,7 +5649,6 @@ export function App() {
                         }
                       }
                       stopRawCamera();
-                      setLocalStreamVer((v) => v + 1);
                     } else if (local && !stillSharing) {
                       for (const pc of pcsRef.current.values()) {
                         replaceVideoTrack(pc, null);
@@ -5512,8 +5664,9 @@ export function App() {
                         }
                       }
                       if (settingsTab !== "camera" || !settingsOpen) stopRawCamera();
-                      setLocalStreamVer((v) => v + 1);
                     }
+                    await restoreMicAfterCameraChange();
+                    setLocalStreamVer((v) => v + 1);
                     syncLocalVideoPreview({ videoEnabled: false });
                     return;
                   }
@@ -5541,6 +5694,7 @@ export function App() {
                     if (camTrack) {
                       await publishLocalCameraTrack(camTrack, local);
                     }
+                    await restoreMicAfterCameraChange();
                     syncLocalVideoPreview({ videoEnabled: true });
                   } catch (err) {
                     setError(t("errCameraEnable", { msg: String((err as Error)?.message ?? err) }));
@@ -5732,7 +5886,12 @@ export function App() {
                       <span className="truncate">
                         {profile.userName} {t("you")}
                       </span>
-                      {screenSharingPeerId === profile.peerId && <ScreenSharingDot title={t("screenShareIndicator")} />}
+                      <PeerShareMarks
+                        sharing={screenSharingPeerId === profile.peerId}
+                        recording={peerIsRecording(profile.peerId)}
+                        shareTitle={t("screenShareIndicator")}
+                        recTitle={t("recordingLocal")}
+                      />
                     </div>
                     <span className={`badge ${statusBadgeClass(profile.status)}`}>{statusLabel(profile.status)}</span>
                   </div>
@@ -5794,7 +5953,12 @@ export function App() {
                         </span>
                       )}
                       <span className="truncate">{p.userName}</span>
-                      {screenSharingPeerId === p.peerId && <ScreenSharingDot title={t("screenShareIndicator")} />}
+                      <PeerShareMarks
+                        sharing={screenSharingPeerId === p.peerId}
+                        recording={peerIsRecording(p.peerId)}
+                        shareTitle={t("screenShareIndicator")}
+                        recTitle={t("recordingBy", { name: p.userName })}
+                      />
                       {unreadPeerIds.has(p.peerId) && <span className="unreadMessageDot" title={t("newMessage")} aria-label={t("newMessage")} />}
                     </div>
                     <span className={`badge ${statusBadgeClass(p.status)}`}>{statusLabel(p.status)}</span>
@@ -5860,7 +6024,12 @@ export function App() {
                             {p.userName}
                             {isSelf ? ` ${t("you")}` : ""}
                           </span>
-                          {screenSharingPeerId === p.peerId && <ScreenSharingDot title={t("screenShareIndicator")} />}
+                          <PeerShareMarks
+                            sharing={screenSharingPeerId === p.peerId}
+                            recording={peerIsRecording(p.peerId)}
+                            shareTitle={t("screenShareIndicator")}
+                            recTitle={isSelf ? t("recordingLocal") : t("recordingBy", { name: p.userName })}
+                          />
                         </div>
                         {isSelf ? (
                           <span className={`badge ${statusBadgeClass(profile.status)}`}>{statusLabel(profile.status)}</span>
@@ -6004,7 +6173,7 @@ export function App() {
             style={speakingIndicator ? speakingVars(speakerLevelByPeerId["self"] ?? 0) : speakingVars(0)}
           >
             <video ref={localVideoRef} muted playsInline />
-            {isSharing && <PresenterCameraPip stream={localPresenterCameraStream} />}
+            {isSharing && <PresenterCameraPip stream={localPresenterCameraStream} draggable />}
             {isSharing && (
               <ScreenShareLocalSidebar
                 containerRef={localTileRef}
@@ -7848,7 +8017,12 @@ export function App() {
                   <div className="itemTitle">
                     <div style={{ fontWeight: 700, display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
                       <span className="truncate">{p.userName}</span>
-                      {screenSharingPeerId === p.peerId && <ScreenSharingDot title={t("screenShareIndicator")} />}
+                      <PeerShareMarks
+                        sharing={screenSharingPeerId === p.peerId}
+                        recording={peerIsRecording(p.peerId)}
+                        shareTitle={t("screenShareIndicator")}
+                        recTitle={t("recordingBy", { name: p.userName })}
+                      />
                       {unreadPeerIds.has(p.peerId) && <span className="unreadMessageDot" title={t("newMessage")} aria-label={t("newMessage")} />}
                     </div>
                     <span className={`badge ${statusBadgeClass(p.status)}`}>{statusLabel(p.status)}</span>

@@ -211,7 +211,10 @@ export function replaceMicAudioTrack(
   localStream?: MediaStream
 ) {
   const senders = pc.getSenders();
-  let micSender = senders.find((s) => s.track?.kind === "audio" && !isScreenAudio(s.track));
+  let micSender = senders.find((s) => s.track?.kind === "audio" && s.track.readyState === "live" && !isScreenAudio(s.track));
+  if (!micSender) {
+    micSender = senders.find((s) => s.track?.kind === "audio" && !isScreenAudio(s.track));
+  }
   if (!micSender) {
     const audioTransceiver = pc.getTransceivers().find((t) => {
       const kind = t.receiver.track?.kind ?? t.sender.track?.kind;

@@ -155,7 +155,7 @@ class CameraFxEngine {
   private readonly smallCanvas = document.createElement("canvas");
   private readonly smallCtx: CanvasRenderingContext2D;
   private output: MediaStream | null = null;
-  private raf = 0;
+  private loopTimer = 0;
   private options: CameraFxOptions = { ...defaultCameraFxOptions };
   private bgCache = new Map<string, HTMLImageElement>();
   private customImage: HTMLImageElement | null = null;
@@ -227,9 +227,9 @@ class CameraFxEngine {
 
   stop(opts?: { stopOutput?: boolean }) {
     this.running = false;
-    if (this.raf) {
-      cancelAnimationFrame(this.raf);
-      this.raf = 0;
+    if (this.loopTimer) {
+      window.clearTimeout(this.loopTimer);
+      this.loopTimer = 0;
     }
     this.video.srcObject = null;
     this.boundRaw = null;
@@ -285,14 +285,15 @@ class CameraFxEngine {
     this.running = true;
     const tick = () => {
       if (!this.running) return;
-      this.raf = requestAnimationFrame(tick);
+      if (this.video.paused) void this.video.play().catch(() => undefined);
       try {
         this.draw();
       } catch {
         // кадр FX можно пропустить, чтобы превью не останавливалось
       }
+      this.loopTimer = window.setTimeout(tick, 33);
     };
-    this.raf = requestAnimationFrame(tick);
+    tick();
   }
 
   private resize(w: number, h: number) {

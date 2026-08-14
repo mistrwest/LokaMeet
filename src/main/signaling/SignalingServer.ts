@@ -83,6 +83,27 @@ export class SignalingServer {
     return this.port;
   }
 
+  broadcastSelfHello() {
+    const self = this.self();
+    const hello: WsEnvelope = {
+      type: "hello",
+      peerId: self.peerId,
+      userName: self.userName,
+      status: self.status as any,
+      statusText: self.statusText,
+      avatarHash: self.avatarHash,
+      avatarPosition: self.avatarPosition
+    };
+    for (const conn of this.connsByPeerId.values()) {
+      try {
+        if (conn.ws.readyState !== WebSocket.OPEN) continue;
+        conn.ws.send(JSON.stringify(hello));
+      } catch {
+        // обрыв одного сокета не должен мешать рассылке статуса остальным
+      }
+    }
+  }
+
   createHostedRoom(input: { roomName: string; password?: string; maxParticipants: number }): HostedRoom {
     const roomId = uuidv4();
     const room: HostedRoom = {
@@ -270,6 +291,7 @@ export class SignalingServer {
         ws.send(JSON.stringify(back));
         this.helloReplySent.add(ws);
       }
+      this.callbacks.onEnvelope(env, env.peerId);
       return;
     }
 
