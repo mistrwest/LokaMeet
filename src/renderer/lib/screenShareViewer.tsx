@@ -113,21 +113,23 @@ type ScreenShareViewerProps = {
 
 type PresenterCameraPipProps = {
   stream: MediaStream | null | undefined;
-  draggable?: boolean;
   onActivate?: () => void;
   className?: string;
   ariaLabel?: string;
 };
 
-export function PresenterCameraPip({ stream, draggable, onActivate, className, ariaLabel }: PresenterCameraPipProps) {
+export function PresenterCameraPip({ stream, onActivate, className, ariaLabel }: PresenterCameraPipProps) {
   const { t } = useTranslation();
-  const rootRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
-  const dragRef = useRef<{ pointerId: number; moved: boolean; grabX: number; grabY: number } | null>(null);
   const [, setTrackEpoch] = useState(0);
-  const [offset, setOffset] = useState<{ x: number; y: number } | null>(null);
   const track = stream?.getVideoTracks().find((t) => t.readyState !== "ended") ?? null;
-  const show = Boolean(track && track.enabled && track.readyState === "live");
+  const show = Boolean(track && track.enabled && track.readyState === "live" && !track.muted);
+  const [frameSize, setFrameSize] = useState({ w: 0, h: 0 });
+  const placeholder = frameSize.w > 0 && frameSize.h > 0 && frameSize.w <= 16 && frameSize.h <= 16;
+
+  useEffect(() => {
+    setFrameSize({ w: 0, h: 0 });
+  }, [track?.id]);
 
   useEffect(() => {
     if (!track) return;
@@ -151,89 +153,50 @@ export function PresenterCameraPip({ stream, draggable, onActivate, className, a
     }
     if (el.srcObject !== stream) el.srcObject = stream;
     el.muted = true;
+    const readSize = () => setFrameSize({ w: el.videoWidth, h: el.videoHeight });
     const play = () => {
       if (el.paused) void el.play().catch(() => undefined);
+      readSize();
     };
     play();
+    el.addEventListener("resize", readSize);
     track.addEventListener("unmute", play);
     el.addEventListener("pause", play);
     return () => {
+      el.removeEventListener("resize", readSize);
       track.removeEventListener("unmute", play);
       el.removeEventListener("pause", play);
     };
   }, [stream, track, show]);
 
-  function onPointerDown(e: React.PointerEvent<HTMLDivElement>) {
-    if (!draggable || e.button !== 0) return;
-    const node = rootRef.current;
-    const parent = node?.offsetParent as HTMLElement | null;
-    if (!node || !parent) return;
-    e.preventDefault();
-    e.stopPropagation();
-    const nodeRect = node.getBoundingClientRect();
-    node.setPointerCapture(e.pointerId);
-    dragRef.current = {
-      pointerId: e.pointerId,
-      moved: false,
-      grabX: e.clientX - nodeRect.left,
-      grabY: e.clientY - nodeRect.top
-    };
-  }
-
-  function onPointerMove(e: React.PointerEvent<HTMLDivElement>) {
-    const drag = dragRef.current;
-    const node = rootRef.current;
-    const parent = node?.offsetParent as HTMLElement | null;
-    if (!drag || drag.pointerId !== e.pointerId || !node || !parent) return;
-    e.preventDefault();
-    const parentRect = parent.getBoundingClientRect();
-    const maxX = Math.max(0, parent.clientWidth - node.offsetWidth);
-    const maxY = Math.max(0, parent.clientHeight - node.offsetHeight);
-    const x = Math.max(0, Math.min(maxX, e.clientX - parentRect.left - drag.grabX));
-    const y = Math.max(0, Math.min(maxY, e.clientY - parentRect.top - drag.grabY));
-    if (Math.abs(x - node.offsetLeft) > 3 || Math.abs(y - node.offsetTop) > 3) drag.moved = true;
-    setOffset({ x, y });
-  }
-
-  function onPointerUp(e: React.PointerEvent<HTMLDivElement>) {
-    const drag = dragRef.current;
-    if (drag && drag.pointerId === e.pointerId) {
-      const wasClick = !drag.moved;
-      dragRef.current = null;
-      try {
-        rootRef.current?.releasePointerCapture(e.pointerId);
-      } catch {
-        // захват мог уже сняться
-      }
-      if (wasClick && onActivate) {
-        e.preventDefault();
-        e.stopPropagation();
-        onActivate();
-      }
-      return;
-    }
-    if (onActivate && e.button === 0) {
-      e.preventDefault();
-      e.stopPropagation();
-      onActivate();
-    }
-  }
-
   if (!show || !stream || !track) return null;
-  const interactive = Boolean(draggable || onActivate);
   return (
     <div
-      ref={rootRef}
-      className={`presenterCameraPip${draggable ? " is-draggable" : ""}${onActivate ? " is-clickable" : ""}${className ? ` ${className}` : ""}`}
-      style={offset ? { left: offset.x, top: offset.y, right: "auto", bottom: "auto" } : undefined}
+      className={`presenterCameraPip${onActivate ? " is-clickable" : ""}${className ? ` ${className}` : ""}`}
+      style={placeholder ? { display: "none" } : undefined}
       aria-label={ariaLabel ?? t("screenSharePresenterCamera")}
-      onPointerDown={interactive ? onPointerDown : undefined}
-      onPointerMove={draggable ? onPointerMove : undefined}
-      onPointerUp={interactive ? onPointerUp : undefined}
+      aria-hidden={placeholder || undefined}
+      onClick={placeholder ? undefined : onActivate}
     >
       <video ref={videoRef} playsInline autoPlay muted />
     </div>
   );
+}
+
+/** Звук демонстрации вне большого окна, отдельно от громкости микрофона. */
+export function ScreenShareAudio({ stream, volume }: { stream: MediaStream; volume: number }) {
+  const ref = useRef<HTMLAudioElement>(null);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    if (el.srcObject !== stream) el.srcObject = stream;
+    el.muted = false;
+    el.volume = Math.max(0, Math.min(1, volume));
+    if (el.paused) void el.play().catch(() => undefined);
+  }, [stream, volume]);
+
+  return <audio ref={ref} className="screenShareAudio" autoPlay />;
 }
 
 export function ScreenShareViewer({
@@ -268,31 +231,6 @@ export function ScreenShareViewer({
   }, [stream, volume]);
 
   useEffect(() => {
-    const el = videoRef.current;
-    if (!el) return;
-    let lastTime = 0;
-    let stalledTicks = 0;
-    const id = window.setInterval(() => {
-      if (el.paused) void el.play().catch(() => undefined);
-      const t = el.currentTime;
-      if (t === lastTime && !el.paused && el.readyState >= 2) {
-        stalledTicks += 1;
-        if (stalledTicks >= 3) {
-          const src = el.srcObject;
-          el.srcObject = null;
-          el.srcObject = src;
-          void el.play().catch(() => undefined);
-          stalledTicks = 0;
-        }
-      } else {
-        stalledTicks = 0;
-        lastTime = t;
-      }
-    }, 2000);
-    return () => window.clearInterval(id);
-  }, [stream]);
-
-  useEffect(() => {
     const onFullscreenChange = () => {
       setIsFullscreen(document.fullscreenElement === containerRef.current);
     };
@@ -320,10 +258,29 @@ export function ScreenShareViewer({
 
   const volumePercent = Math.round(Math.max(0, Math.min(1, volume)) * 100);
   const [swapped, setSwapped] = useState(false);
+  const [, setCameraEpoch] = useState(0);
   const cameraMainRef = useRef<HTMLVideoElement>(null);
   const hasCamera = Boolean(
-    cameraStream?.getVideoTracks().some((t) => t.readyState === "live" && t.enabled)
+    cameraStream?.getVideoTracks().some((t) => t.readyState === "live" && t.enabled && !t.muted)
   );
+
+  useEffect(() => {
+    const tracks = cameraStream?.getVideoTracks() ?? [];
+    if (tracks.length === 0) return;
+    const bump = () => setCameraEpoch((n) => n + 1);
+    for (const track of tracks) {
+      track.addEventListener("mute", bump);
+      track.addEventListener("unmute", bump);
+      track.addEventListener("ended", bump);
+    }
+    return () => {
+      for (const track of tracks) {
+        track.removeEventListener("mute", bump);
+        track.removeEventListener("unmute", bump);
+        track.removeEventListener("ended", bump);
+      }
+    };
+  }, [cameraStream]);
 
   useEffect(() => {
     if (!hasCamera && swapped) setSwapped(false);

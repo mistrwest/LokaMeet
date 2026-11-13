@@ -13,12 +13,24 @@ type RemotePeerMediaProps = {
 
 function videoLiveSignature(stream: MediaStream) {
   return stream
-    .getTracks()
+    .getVideoTracks()
     .map((t) => `${t.id}:${t.readyState}:${t.enabled ? 1 : 0}:${t.muted ? 1 : 0}`)
     .join("|");
 }
 
-/** Сохраняет один MediaStream на элементе, чтобы сброс srcObject не обрывал звук при обновлении треков. */
+function audioLiveSignature(stream: MediaStream, excludeScreenAudioTrackId?: string) {
+  const audible = createPeerTileStream(stream, excludeScreenAudioTrackId);
+  return audible
+    .getAudioTracks()
+    .map((t) => `${t.id}:${t.readyState}:${t.enabled ? 1 : 0}`)
+    .join("|");
+}
+
+/**
+ * Видео и микрофон играются разными элементами.
+ * Иначе Chromium замолкает весь video-элемент, когда кадр камеры становится muted
+ * (выключение камеры во время демонстрации со звуком).
+ */
 export function RemotePeerMedia({
   stream,
   muted = false,
@@ -27,19 +39,18 @@ export function RemotePeerMedia({
   className,
   excludeScreenAudioTrackId
 }: RemotePeerMediaProps) {
-  const ref = useRef<HTMLVideoElement>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const audioRef = useRef<HTMLAudioElement>(null);
+  const videoHolder = useRef<MediaStream>(new MediaStream());
+  const audioHolder = useRef<MediaStream>(new MediaStream());
   const [trackSignature, setTrackSignature] = useState(() => videoLiveSignature(stream));
   const hasLiveVideo = stream
     .getVideoTracks()
     .some((t) => t.enabled && t.readyState === "live" && !t.muted);
-
-  const playbackStream = useMemo(() => {
-    if (!excludeScreenAudioTrackId && stream.getAudioTracks().length <= 1) {
-      const audioCount = stream.getAudioTracks().length;
-      if (audioCount < 2) return stream;
-    }
-    return createPeerTileStream(stream, excludeScreenAudioTrackId);
-  }, [stream, trackSignature, excludeScreenAudioTrackId]);
+  const audioSignature = useMemo(
+    () => audioLiveSignature(stream, excludeScreenAudioTrackId),
+    [stream, trackSignature, excludeScreenAudioTrackId]
+  );
 
   useEffect(() => {
     const bump = () => setTrackSignature(videoLiveSignature(stream));
@@ -59,31 +70,58 @@ export function RemotePeerMedia({
   }, [stream]);
 
   useEffect(() => {
-    const el = ref.current;
+    const el = videoRef.current;
     if (!el) return;
-
     pruneStaleRemoteStreamTracks(stream);
-    // Не удаляем muted live-видео: после выключения камеры трек остаётся muted,
-    // а демонстрация экрана через replaceTrack делает unmute того же receiver без нового ontrack.
-    // Зависший кадр скрывается через visibility ниже.
-    if (el.srcObject !== playbackStream) {
-      el.srcObject = playbackStream;
+    const holder = videoHolder.current;
+    const want = stream.getVideoTracks().filter((t) => t.readyState !== "ended");
+    const wantIds = new Set(want.map((t) => t.id));
+    for (const track of [...holder.getVideoTracks()]) {
+      if (!wantIds.has(track.id)) holder.removeTrack(track);
     }
-    // Скрытие зависшего кадра позволяет показать аватар вместо устаревшего изображения камеры или экрана.
+    for (const track of want) {
+      if (!holder.getVideoTracks().some((t) => t.id === track.id)) holder.addTrack(track);
+    }
+    if (el.srcObject !== holder) el.srcObject = holder;
+    el.muted = true;
     el.style.visibility = hasLiveVideo ? "visible" : "hidden";
-    el.muted = muted;
-    el.volume = volume;
+    if (hasLiveVideo && el.paused) void el.play().catch(() => undefined);
+  }, [stream, trackSignature, hasLiveVideo]);
 
-    const anyEl = el as HTMLVideoElement & { setSinkId?: (id: string) => Promise<void> };
+  useEffect(() => {
+    const el = audioRef.current;
+    if (!el) return;
+    const holder = audioHolder.current;
+    const want = createPeerTileStream(stream, excludeScreenAudioTrackId).getAudioTracks();
+    const wantIds = new Set(want.map((t) => t.id));
+    for (const track of [...holder.getAudioTracks()]) {
+      if (!wantIds.has(track.id)) holder.removeTrack(track);
+    }
+    for (const track of want) {
+      if (!holder.getAudioTracks().some((t) => t.id === track.id)) holder.addTrack(track);
+    }
+    if (el.srcObject !== holder) el.srcObject = holder;
+    el.muted = muted || want.length === 0;
+    el.volume = Math.max(0, Math.min(1, volume));
+    const anyEl = el as HTMLAudioElement & { setSinkId?: (id: string) => Promise<void> };
     if (sinkId && typeof anyEl.setSinkId === "function") {
       void anyEl.setSinkId(sinkId).catch(() => undefined);
     }
-
-    if (el.paused) {
-      void el.play().catch(() => undefined);
+    if (!el.muted && el.paused) {
+      void el.play().catch((err: unknown) => {
+        if (!(err instanceof DOMException) || err.name !== "AbortError") return;
+        window.setTimeout(() => {
+          if (audioRef.current !== el || el.muted || !el.paused) return;
+          void el.play().catch(() => undefined);
+        }, 80);
+      });
     }
+  }, [stream, audioSignature, excludeScreenAudioTrackId, muted, volume, sinkId]);
 
-  }, [stream, playbackStream, trackSignature, muted, volume, sinkId, hasLiveVideo]);
-
-  return <video ref={ref} className={className} playsInline autoPlay />;
+  return (
+    <>
+      <video ref={videoRef} className={className} playsInline autoPlay muted />
+      <audio ref={audioRef} className="peerMicAudio" autoPlay />
+    </>
+  );
 }

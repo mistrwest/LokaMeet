@@ -1,8 +1,8 @@
 {
   "name": "lokameet",
   "private": true,
-  "version": "1.1.0",
-  "description": "LokaMeet — видеосвязь, звонки и чат в локальной сети без интернета (WebRTC P2P).",
+  "version": "1.4.0",
+  "description": "LokaMeet 1.4.0 — видеосвязь в локальной сети. Демонстрация экрана: частота монитора, от 60 до 120 кадр/с, без обрезки кадра. Микрофон по голосу с чувствительностью. Исправлено: кадры трансляции, проглатывание слов, автофокус и контур виртуального фона.",
   "main": "dist/main/main.js",
   "author": "mistrwest",
   "license": "SEE LICENSE IN LICENSE",
@@ -41,19 +41,21 @@
     "electron": "^36.0.2",
     "electron-builder": "^26.0.19",
     "typescript": "^5.7.3",
-    "vite": "^6.1.0"
+    "vite": "^6.1.0",
+    "wait-on": "^8.0.5"
   },
   "build": {
     "appId": "local.lokameet.app",
     "productName": "LokaMeet",
     "copyright": "Copyright © 2026 LokaMeet",
-    "icon": "build/icon.png",
+    "icon": "build/icon.ico",
     "files": [
       "dist/**/*",
       "package.json"
     ],
     "asarUnpack": [
-      "dist/renderer/mediapipe/**"
+      "dist/renderer/mediapipe/**",
+      "dist/renderer/camera-bg/**"
     ],
     "directories": {
       "output": "release",
@@ -74,7 +76,7 @@
           ]
         }
       ],
-      "icon": "build/icon.png"
+      "icon": "build/icon.ico"
     },
     "nsis": {
       "oneClick": false,

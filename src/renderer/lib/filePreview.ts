@@ -10,16 +10,44 @@ export async function createFilePreviewDataUrl(
     mime.startsWith("video/") || /\.(mp4|webm|mov|mkv|avi|m4v|ogv)$/i.test(name);
 
   if (isImage) {
-    try {
-      return await new Promise<string | undefined>((resolve) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : undefined);
-        reader.onerror = () => resolve(undefined);
-        reader.readAsDataURL(file);
-      });
-    } catch {
-      return undefined;
-    }
+    // В чат уходит уменьшенный кадр: полный файл передаётся отдельно и не раздувает сообщение.
+    return await new Promise<string | undefined>((resolve) => {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      let settled = false;
+      const finish = (value?: string) => {
+        if (settled) return;
+        settled = true;
+        URL.revokeObjectURL(url);
+        resolve(value);
+      };
+      const timeoutId = window.setTimeout(() => finish(undefined), 8000);
+      img.onload = () => {
+        window.clearTimeout(timeoutId);
+        try {
+          const width = img.naturalWidth || 1;
+          const height = img.naturalHeight || 1;
+          const scale = Math.min(1, 480 / width);
+          const canvas = document.createElement("canvas");
+          canvas.width = Math.max(1, Math.round(width * scale));
+          canvas.height = Math.max(1, Math.round(height * scale));
+          const ctx = canvas.getContext("2d");
+          if (!ctx) {
+            finish(undefined);
+            return;
+          }
+          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+          finish(canvas.toDataURL("image/jpeg", 0.82));
+        } catch {
+          finish(undefined);
+        }
+      };
+      img.onerror = () => {
+        window.clearTimeout(timeoutId);
+        finish(undefined);
+      };
+      img.src = url;
+    });
   }
 
   if (!isVideo) return undefined;
@@ -99,4 +127,43 @@ export function isVideoAttachmentMime(mime?: string, name?: string) {
   const m = (mime || "").toLowerCase();
   const n = (name || "").toLowerCase();
   return m.startsWith("video/") || /\.(mp4|webm|mov|mkv|avi|m4v|ogv)$/i.test(n);
+}
+
+export function isImageAttachmentMime(mime?: string, name?: string) {
+  const m = (mime || "").toLowerCase();
+  const n = (name || "").toLowerCase();
+  return m.startsWith("image/") || /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(n);
+}
+
+export function mimeFromName(name: string) {
+  const ext = (name.split(".").pop() || "").toLowerCase();
+  const map: Record<string, string> = {
+    png: "image/png",
+    jpg: "image/jpeg",
+    jpeg: "image/jpeg",
+    gif: "image/gif",
+    webp: "image/webp",
+    bmp: "image/bmp",
+    svg: "image/svg+xml",
+    avif: "image/avif",
+    mp4: "video/mp4",
+    webm: "video/webm",
+    mov: "video/quicktime",
+    mkv: "video/x-matroska",
+    avi: "video/x-msvideo",
+    mp3: "audio/mpeg",
+    wav: "audio/wav",
+    ogg: "audio/ogg",
+    pdf: "application/pdf",
+    zip: "application/zip",
+    txt: "text/plain",
+    json: "application/json"
+  };
+  return map[ext] || "application/octet-stream";
+}
+
+export function isGifAttachmentMime(mime?: string, name?: string) {
+  const m = (mime || "").toLowerCase();
+  const n = (name || "").toLowerCase();
+  return m === "image/gif" || n.endsWith(".gif");
 }

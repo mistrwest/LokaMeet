@@ -4,6 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>LokaMeet</title>
+    <link rel="icon" type="image/png" href="./icon.png" />
     <style>
       html,
       body {
@@ -24,6 +25,14 @@
       #boot-splash .inner {
         width: min(420px, calc(100vw - 48px));
         text-align: center;
+      }
+      #boot-splash .app-boot-logo {
+        display: block;
+        width: 96px;
+        height: 96px;
+        margin: 0 auto 16px;
+        object-fit: contain;
+        border-radius: 22px;
       }
       #boot-splash .brand {
         font-size: 34px;
@@ -72,6 +81,7 @@
   <body>
     <div id="boot-splash" aria-busy="true" aria-live="polite">
       <div class="inner">
+        <img class="app-boot-logo" src="./icon.png" alt="" width="96" height="96" />
         <div class="brand">LokaMeet</div>
         <div class="label">Загрузка…</div>
         <div class="track"><div class="fill"></div></div>

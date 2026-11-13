@@ -162,6 +162,22 @@ export class SignalingServer {
               avatarHash: parsed.avatarHash,
               avatarPosition: parsed.avatarPosition
             });
+            try {
+              const self = this.self();
+              ws.send(
+                JSON.stringify({
+                  type: "hello",
+                  peerId: self.peerId,
+                  userName: self.userName,
+                  status: self.status as any,
+                  statusText: self.statusText,
+                  avatarHash: self.avatarHash,
+                  avatarPosition: self.avatarPosition
+                })
+              );
+            } catch {
+              // повторный hello не должен ронять handshake
+            }
           }
         } catch {
           // битый JSON на этапе handshake — пропускаем
@@ -210,7 +226,13 @@ export class SignalingServer {
     const room = this.roomsHosted.get(roomId);
     if (!room) return;
     const senderPeerId =
-      env.type === "chat-message" ? env.message.fromPeerId : env.type === "rtc-signal" ? env.signal.fromPeerId : undefined;
+      env.type === "chat-message"
+        ? env.message.fromPeerId
+        : env.type === "rtc-signal"
+          ? env.signal.fromPeerId
+          :       env.type === "game-message" || env.type === "file-chunk" || env.type === "file-cancel"
+            ? env.fromPeerId
+            : undefined;
     for (const p of room.participants.values()) {
       if (p.peerId === this.self().peerId) continue;
       // Не эхоим обратно отправителю — у него сообщение уже локально
@@ -348,8 +370,11 @@ export class SignalingServer {
 
     // Релей RTC/chat: если целевой peer не подключён — пакет теряется
     if (env.type === "rtc-signal") {
-      this.sendToPeer(env.signal.toPeerId, env);
-      this.callbacks.onEnvelope(env, fromPeerId);
+      if (env.signal.toPeerId === this.self().peerId) {
+        this.callbacks.onEnvelope(env, fromPeerId);
+      } else {
+        this.sendToPeer(env.signal.toPeerId, env);
+      }
       return;
     }
     if (env.type === "chat-message") {
@@ -359,6 +384,25 @@ export class SignalingServer {
       } else {
         this.sendToPeer(env.message.scope.peerId, env);
         this.callbacks.onEnvelope(env, fromPeerId);
+      }
+      return;
+    }
+    if (env.type === "file-chunk" || env.type === "file-cancel") {
+      if (env.roomId) {
+        this.broadcastRoom(env.roomId, env);
+        this.callbacks.onEnvelope(env, fromPeerId);
+      } else if (env.toPeerId && env.toPeerId !== this.self().peerId) {
+        this.sendToPeer(env.toPeerId, env);
+      } else {
+        this.callbacks.onEnvelope(env, fromPeerId);
+      }
+      return;
+    }
+    if (env.type === "game-message") {
+      if (!env.toPeerId || env.toPeerId === this.self().peerId) {
+        this.callbacks.onEnvelope(env, fromPeerId);
+      } else {
+        this.sendToPeer(env.toPeerId, env);
       }
       return;
     }

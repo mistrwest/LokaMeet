@@ -62,23 +62,26 @@ export type UserProfile = {
   uiFontScale?: number; // Значение 1.0 сохраняет базовый масштаб интерфейса.
   uiCompact?: boolean;
   uiShowSeconds?: boolean;
-  defaultVideoQuality?: "low" | "medium" | "high" | "fullhd" | "qhd" | "uhd";
+  defaultVideoQuality?: "auto" | "low" | "medium" | "high" | "fullhd" | "qhd" | "uhd";
   autoSwitchToChatOnAccept?: boolean;
   audioInputDeviceId?: string;
   audioOutputDeviceId?: string;
   videoInputDeviceId?: string;
   /** Ручные параметры камеры (фокус, экспозиция и т.д.), если устройство их поддерживает. */
   cameraControls?: {
-    focusMode?: "continuous" | "manual";
+    focusMode?: "continuous" | "manual" | "single-shot" | "none";
     focusDistance?: number;
-    exposureMode?: "continuous" | "manual";
+    exposureMode?: "continuous" | "manual" | "single-shot" | "none";
     exposureCompensation?: number;
+    exposureTime?: number;
     brightness?: number;
     contrast?: number;
     saturation?: number;
     sharpness?: number;
     zoom?: number;
-    whiteBalanceMode?: "continuous" | "manual";
+    pan?: number;
+    tilt?: number;
+    whiteBalanceMode?: "continuous" | "manual" | "single-shot" | "none";
     colorTemperature?: number;
   };
   /** Цифровое приближение и виртуальный фон обрабатываются на холсте, без перезапуска камеры. */
@@ -114,6 +117,12 @@ export type UserProfile = {
   remoteScreenShareVolume?: number;
   noiseSuppression?: boolean; // Флаг отделяет настройку алгоритма от состояния микрофона.
   noiseSuppressionSensitivity?: number; // Шкала 0–100 позволяет передавать настройку без преобразования.
+  /** Передавать микрофон только пока пользователь говорит. */
+  voiceActivation?: boolean;
+  /** 0 — только громкая речь, 100 — микрофон открывается от тихого голоса. */
+  voiceActivationSensitivity?: number;
+  /** 1 = шумодав включён по умолчанию (одноразовая миграция со старого false). */
+  audioNsRev?: number;
   soundNotificationsEnabled?: boolean; // Флаг позволяет отключить сигналы, не теряя выбранные файлы и громкость.
   soundNotificationVolume?: number; // Шкала 0–100 соответствует значению регулятора интерфейса.
   callSoundFile?: string; // Путь сохраняется отдельно, чтобы пользователь мог выбрать собственный сигнал вызова.
@@ -137,11 +146,30 @@ export type UserProfile = {
   recordingSoundVolume?: number;
   /** Ноль отключает авто-статус, чтобы пользователь мог сохранить ручное присутствие. */
   autoAwayMinutes?: number;
+  /** Настройки мини-игр в звонке (шашки, шахматы, морской бой). */
+  gamesSettings?: {
+    boardScale?: "medium" | "large" | "xl";
+    showCoordinates?: boolean;
+    highlightLastMove?: boolean;
+    confirmResign?: boolean;
+    soundEnabled?: boolean;
+    soundVolume?: number;
+    checkersShowHints?: boolean;
+    chessShowHints?: boolean;
+    battleshipShowSunkOutline?: boolean;
+  };
 };
 
 export type ChatScope =
   | { type: "direct"; peerId: string }
   | { type: "room"; roomId: string };
+
+/** Цитата: автор и короткий текст исходного сообщения. */
+export type ChatReplyRef = {
+  messageId: string;
+  fromUserName: string;
+  text: string;
+};
 
 export type ChatMessage = {
   id: string;
@@ -152,6 +180,9 @@ export type ChatMessage = {
   text: string;
   kind?: "system";
   attachment?: ChatAttachment;
+  /** Несколько вложений одного сообщения: подпись и файлы уходят вместе. */
+  attachments?: ChatAttachment[];
+  reply?: ChatReplyRef;
 };
 
 export type ChatAttachment =
@@ -182,6 +213,12 @@ export type ChatAttachment =
   | {
       kind: "smile";
       file: string;
+    }
+  | {
+      kind: "game-invite";
+      sessionId: string;
+      gameId: string;
+      status: "pending" | "accepted" | "declined" | "cancelled";
     };
 
 export type JsonSessionDescription = {
@@ -196,6 +233,9 @@ export type JsonIceCandidate = {
   usernameFragment?: string | null;
 };
 
+/** call = голос/камера; screen = отдельное соединение демонстрации (не трогает mic). */
+export type RtcMediaChannel = "call" | "screen";
+
 export type RtcSignal =
   | {
       type: "rtc-offer";
@@ -203,6 +243,7 @@ export type RtcSignal =
       fromPeerId: string;
       toPeerId: string;
       sdp: JsonSessionDescription;
+      channel?: RtcMediaChannel;
     }
   | {
       type: "rtc-answer";
@@ -210,6 +251,7 @@ export type RtcSignal =
       fromPeerId: string;
       toPeerId: string;
       sdp: JsonSessionDescription;
+      channel?: RtcMediaChannel;
     }
   | {
       type: "rtc-ice";
@@ -217,6 +259,7 @@ export type RtcSignal =
       fromPeerId: string;
       toPeerId: string;
       candidate: JsonIceCandidate;
+      channel?: RtcMediaChannel;
     }
   | {
       type: "screen-share-start";
@@ -245,6 +288,13 @@ export type RtcSignal =
       roomId?: string;
       fromPeerId: string;
       toPeerId: string;
+    }
+  | {
+      type: "camera-visibility";
+      roomId?: string;
+      fromPeerId: string;
+      toPeerId: string;
+      enabled: boolean;
     };
 
 export type WsEnvelope =
@@ -292,6 +342,34 @@ export type WsEnvelope =
       roomName: string;
     }
   | { type: "chat-message"; message: ChatMessage }
+  | {
+      type: "file-chunk";
+      id: string;
+      fromPeerId: string;
+      fromUserName: string;
+      toPeerId?: string;
+      roomId?: string;
+      name: string;
+      size: number;
+      mime?: string;
+      index: number;
+      total: number;
+      data: string;
+    }
+  | {
+      type: "file-cancel";
+      id: string;
+      fromPeerId: string;
+      toPeerId?: string;
+      roomId?: string;
+    }
+  | {
+      type: "game-message";
+      fromPeerId: string;
+      toPeerId?: string;
+      roomId?: string;
+      message: unknown;
+    }
   | { type: "avatar-request"; peerId: string; avatarHash?: string }
   | { type: "avatar-data"; peerId: string; avatarHash: string; dataUrl: string }
   | ({ type: "rtc-signal" } & { signal: RtcSignal });
