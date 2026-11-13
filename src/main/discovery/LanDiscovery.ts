@@ -205,14 +205,28 @@ export class LanDiscovery {
     this.publishedRooms.delete(roomId);
   }
 
+  private busyHoldUntil = new Map<string, number>();
+
   private isBusyStatus(status: PeerInfo["status"]) {
     return status === "in_call" || status === "in_conference";
   }
 
   private upsertPeer(peer: PeerInfo, source: "mdns" | "udp") {
     const existing = this.peersById.get(peer.peerId);
+    const now = Date.now();
+    if (this.isBusyStatus(peer.status)) {
+      this.busyHoldUntil.set(peer.peerId, now + 10_000);
+    }
     if (source === "mdns" && existing && this.isBusyStatus(existing.status) && !this.isBusyStatus(peer.status)) {
-      peer = { ...peer, status: existing.status };
+      const hold = this.busyHoldUntil.get(peer.peerId) ?? 0;
+      if (now < hold) {
+        peer = { ...peer, status: existing.status };
+      } else {
+        this.busyHoldUntil.delete(peer.peerId);
+      }
+    }
+    if (source === "udp" && !this.isBusyStatus(peer.status)) {
+      this.busyHoldUntil.delete(peer.peerId);
     }
     this.peersById.set(peer.peerId, peer);
   }

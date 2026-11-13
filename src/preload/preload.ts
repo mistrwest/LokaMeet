@@ -20,12 +20,26 @@ const api = {
     openDevTools: () => ipcRenderer.invoke("app:openDevTools") as Promise<boolean>,
     openPath: (pathToOpen: string) => ipcRenderer.invoke("app:openPath", pathToOpen) as Promise<boolean>,
     openExternal: (url: string) => ipcRenderer.invoke("app:openExternal", url) as Promise<boolean>,
+    clipboardReadText: () => ipcRenderer.invoke("app:clipboardReadText") as Promise<string>,
+    clipboardReadImage: () => ipcRenderer.invoke("app:clipboardReadImage") as Promise<string | null>,
+    clipboardReadPaste: () =>
+      ipcRenderer.invoke("app:clipboardReadPaste") as Promise<{ imageDataUrl: string | null; filePaths: string[] }>,
+    readLocalFile: (filePath: string) =>
+      ipcRenderer.invoke("app:readLocalFile", filePath) as Promise<{ name: string; size: number; data: Uint8Array } | null>,
+    clipboardWriteText: (text: string) => ipcRenderer.invoke("app:clipboardWriteText", text) as Promise<boolean>,
+    linkProbe: (url: string) =>
+      ipcRenderer.invoke("link:probe", url) as Promise<{
+        kind: "image" | "animation" | "video" | "audio";
+        previewUrl?: string;
+        mediaUrl?: string;
+      } | null>,
     showOpenDialog: (options: {
       filters?: Array<{ name: string; extensions: string[] }>;
       properties?: Array<"openFile" | "openDirectory" | "createDirectory">;
       defaultPath?: string;
     }) => ipcRenderer.invoke("app:showOpenDialog", options) as Promise<string | null>,
-    quit: () => ipcRenderer.invoke("app:quit") as Promise<boolean>
+    quit: () => ipcRenderer.invoke("app:quit") as Promise<boolean>,
+    flashFrame: () => ipcRenderer.invoke("app:flashFrame") as Promise<boolean>
   },
   avatar: {
     saveFromPath: (sourcePath: string) =>
@@ -80,6 +94,9 @@ const api = {
     list: () => ipcRenderer.invoke("smiles:list") as Promise<string[]>
   },
   screen: {
+    getRefreshRate: () => ipcRenderer.invoke("screen:getRefreshRate") as Promise<number>,
+    getCaptureTarget: (sourceId?: string | null) =>
+      ipcRenderer.invoke("screen:getCaptureTarget", sourceId ?? null) as Promise<{ width: number; height: number; fps: number }>,
     getSources: () => ipcRenderer.invoke("screen:getSources") as Promise<Array<{ id: string; name: string; thumbnail: string }>>,
     setPreferredSource: (sourceId: string | null) => ipcRenderer.invoke("screen:setPreferredSource", sourceId) as Promise<boolean>,
     getAppWindowSourceId: () => ipcRenderer.invoke("screen:getAppWindowSourceId") as Promise<string | null>,

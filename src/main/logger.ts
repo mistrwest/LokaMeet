@@ -79,6 +79,8 @@ const MESSAGE_LABEL: Record<string, string> = {
   "No video track in display media": "В выбранном источнике экрана нет видео",
   "Failed to start screen share": "Не удалось начать демонстрацию экрана",
   "Failed to get screen sources, using getDisplayMedia": "Список окон недоступен, открывается системный выбор экрана",
+  "Display refresh rate unavailable": "Не удалось узнать частоту монитора",
+  "Display capture size unavailable": "Не удалось узнать размер экрана для демонстрации",
   "Creating peer connection": "Создаётся соединение с участником",
   startDirectCall: "Исходящий звонок",
   connect: "Подключение по адресу",
@@ -86,6 +88,15 @@ const MESSAGE_LABEL: Record<string, string> = {
   "React component error": "Сбой компонента интерфейса",
   "Peer renegotiation deferred (signaling glare)": "Пересогласование соединения отложено: одновременно пришёл встречный запрос",
   "Peer renegotiation failed": "Не удалось пересогласовать соединение",
+  "Mutual direct call; keeping outgoing": "Встречный звонок: оставляем свой исходящий",
+  "Ignored duplicate rtc-offer": "Повторное предложение связи пропущено",
+  "Ignored rtc-offer while ICE in progress": "Предложение связи пропущено: соединение уже устанавливается",
+  "Ignored rtc-offer in unexpected state": "Предложение связи пропущено: соединение не готово",
+  "Ignored glare rtc-offer (impolite)": "Встречное предложение связи пропущено, чтобы не сломать своё",
+  "Rollback failed; keeping local offer": "Не удалось отменить своё предложение, оставляем его",
+  "Failed to apply rtc-offer": "Не удалось принять предложение связи",
+  "Kept existing peer connection after m-line mismatch": "Соединение сохранено: новый SDP не совпал по порядку дорожек",
+  "Ignored stale rtc-answer (m-line mismatch)": "Устаревший ответ на звонок отклонён: порядок дорожек не совпал",
   "Media ensure failed before offer": "Не удалось подготовить камеру/микрофон перед звонком",
   "Failed to ensure audio track in room": "Не удалось включить микрофон в конференции",
   "Failed to ensure video track in room": "Не удалось включить камеру в конференции",
@@ -121,6 +132,7 @@ const MESSAGE_LABEL: Record<string, string> = {
   "VideoFrame encode failed": "Не удалось закодировать кадр записи",
   "ICE connection state": "Состояние ICE-соединения",
   "Peer connection state": "Состояние peer-соединения",
+  "Recovering peer connection": "Восстановление соединения с участником",
   leaveCall: "Выход из звонка"
 };
 
@@ -205,6 +217,7 @@ const ENVELOPE_TYPE_LABEL: Record<string, string> = {
   "room-invite": "приглашение в конференцию",
   "room-invite-reject": "приглашение отклонено",
   "chat-message": "сообщение чата",
+  "game-message": "сообщение игры",
   "rtc-signal": "сигнал видеосвязи",
   "rtc-offer": "предложение связи",
   "rtc-answer": "ответ на предложение связи",
@@ -213,6 +226,7 @@ const ENVELOPE_TYPE_LABEL: Record<string, string> = {
   "screen-share-stop": "остановка демонстрации экрана",
   "recording-start": "начало записи",
   "recording-stop": "остановка записи",
+  "camera-visibility": "видимость камеры",
   "avatar-request": "запрос аватара",
   "avatar-data": "данные аватара"
 };

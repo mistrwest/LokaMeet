@@ -1,7 +1,7 @@
 import path from "node:path";
 import fs from "node:fs";
 import os from "node:os";
-import { app, BrowserWindow, Menu, session, desktopCapturer } from "electron";
+import { app, BrowserWindow, Menu, session, desktopCapturer, nativeImage } from "electron";
 import { v4 as uuidv4 } from "uuid";
 import { LanDiscovery, DiscoverySnapshot } from "./discovery/LanDiscovery";
 import { SignalingServer, HostedRoom } from "./signaling/SignalingServer";
@@ -34,7 +34,7 @@ const defaultProfile: UserProfile = {
   uiFontScale: 0.95,
   uiCompact: false,
   uiShowSeconds: false,
-  defaultVideoQuality: "medium",
+  defaultVideoQuality: "auto",
   autoSwitchToChatOnAccept: true,
   audioInputDeviceId: "",
   audioOutputDeviceId: "",
@@ -53,13 +53,26 @@ const defaultProfile: UserProfile = {
   speakerVolume: 100,
   remoteMicVolume: 100,
   remoteScreenShareVolume: 100,
-  noiseSuppression: false,
-  noiseSuppressionSensitivity: 50,
+  noiseSuppression: true,
+  noiseSuppressionSensitivity: 65,
+  voiceActivation: false,
+  voiceActivationSensitivity: 50,
   soundNotificationsEnabled: true,
   soundNotificationVolume: 50,
   callSoundFile: "snds/call.mp3",
   messageSoundFile: "snds/sms.mp3",
-  autoAwayMinutes: 5
+  autoAwayMinutes: 5,
+  gamesSettings: {
+    boardScale: "large",
+    showCoordinates: true,
+    highlightLastMove: true,
+    confirmResign: true,
+    soundEnabled: true,
+    soundVolume: 55,
+    checkersShowHints: true,
+    chessShowHints: true,
+    battleshipShowSunkOutline: true
+  }
 };
 
 const state: MainState = {
@@ -129,6 +142,31 @@ async function loadRenderer(win: BrowserWindow, query?: Record<string, string>) 
   await win.loadFile(indexHtml, query ? { query } : undefined);
 }
 
+function attachRendererGuards(win: BrowserWindow) {
+  win.webContents.on("will-navigate", (event, url) => {
+    const current = win.webContents.getURL();
+    if (url !== current) event.preventDefault();
+  });
+  win.webContents.on("context-menu", (_event, params) => {
+    const { editFlags, isEditable, selectionText } = params;
+    const template: Electron.MenuItemConstructorOptions[] = isEditable
+      ? [
+          { role: "undo", enabled: editFlags.canUndo },
+          { role: "redo", enabled: editFlags.canRedo },
+          { type: "separator" },
+          { role: "cut", enabled: editFlags.canCut },
+          { role: "copy", enabled: editFlags.canCopy },
+          { role: "paste", enabled: editFlags.canPaste },
+          { role: "selectAll", enabled: editFlags.canSelectAll }
+        ]
+      : [
+          { role: "copy", enabled: Boolean(selectionText) || editFlags.canCopy },
+          { role: "selectAll" }
+        ];
+    Menu.buildFromTemplate(template).popup({ window: win });
+  });
+}
+
 function openSettingsWindow() {
   if (settingsWindow && !settingsWindow.isDestroyed()) {
     if (settingsWindow.isMinimized()) settingsWindow.restore();
@@ -140,9 +178,9 @@ function openSettingsWindow() {
   const mainBounds = mainWindow?.getBounds();
   settingsWindow = new BrowserWindow({
     width: 720,
-    height: 780,
+    height: 900,
     minWidth: 720,
-    minHeight: 780,
+    minHeight: 900,
     x: mainBounds ? mainBounds.x + Math.max(24, Math.round((mainBounds.width - 720) / 2)) : undefined,
     y: mainBounds ? mainBounds.y + 48 : undefined,
     frame: false,
@@ -154,6 +192,7 @@ function openSettingsWindow() {
     minimizable: true,
     maximizable: true,
     fullscreenable: false,
+    icon: resolveAppIcon(),
     webPreferences: {
       preload,
       contextIsolation: true,
@@ -161,6 +200,8 @@ function openSettingsWindow() {
     }
   });
   settingsWindow.setMenuBarVisibility(false);
+  applyWindowIcon(settingsWindow);
+  attachRendererGuards(settingsWindow);
   settingsWindow.on("page-title-updated", (e) => e.preventDefault());
   settingsWindow.setTitle("LokaMeet");
   settingsWindow.once("ready-to-show", () => {
@@ -179,6 +220,26 @@ function closeSettingsWindow() {
   return true;
 }
 
+function resolveAppIcon(): string | undefined {
+  const candidates = [
+    path.join(process.cwd(), "build", "icon.ico"),
+    path.join(__dirname, "..", "..", "build", "icon.ico"),
+    path.join(app.getAppPath(), "build", "icon.ico"),
+    path.join(process.cwd(), "build", "icon.png"),
+    path.join(__dirname, "..", "..", "build", "icon.png"),
+    path.join(app.getAppPath(), "build", "icon.png")
+  ];
+  return candidates.find((file) => fs.existsSync(file));
+}
+
+function applyWindowIcon(win: BrowserWindow) {
+  const file = resolveAppIcon();
+  if (!file) return;
+  const image = nativeImage.createFromPath(file);
+  if (image.isEmpty()) return;
+  win.setIcon(image);
+}
+
 async function createMainWindow() {
   Menu.setApplicationMenu(null);
   const appTitle = `LokaMeet ${app.getVersion()}`;
@@ -191,6 +252,7 @@ async function createMainWindow() {
     autoHideMenuBar: true,
     show: false,
     backgroundColor: "#0b0f16",
+    icon: resolveAppIcon(),
     webPreferences: {
       preload: path.join(__dirname, "..", "preload", "preload.js"),
       contextIsolation: true,
@@ -199,6 +261,8 @@ async function createMainWindow() {
     }
   });
   mainWindow.setMenuBarVisibility(false);
+  applyWindowIcon(mainWindow);
+  attachRendererGuards(mainWindow);
   // Vite/index.html ставит <title>LokaMeet</title> и сбрасывает заголовок окна — блокируем.
   mainWindow.on("page-title-updated", (e) => {
     e.preventDefault();
@@ -208,6 +272,9 @@ async function createMainWindow() {
   mainWindow.once("ready-to-show", () => {
     mainWindow?.setTitle(appTitle);
     mainWindow?.show();
+  });
+  mainWindow.on("focus", () => {
+    mainWindow?.flashFrame(false);
   });
 
   const devUrl = process.env.VITE_DEV_SERVER_URL;

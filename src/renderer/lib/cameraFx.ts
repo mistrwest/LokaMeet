@@ -95,9 +95,14 @@ export function isRawCameraTrack(track: MediaStreamTrack | null | undefined): bo
   return Boolean(track && rawCameraTracks.has(track));
 }
 
+function toUnpackedAsarUrl(url: string): string {
+  return url.replace("/app.asar/", "/app.asar.unpacked/").replace("\\app.asar\\", "\\app.asar.unpacked\\");
+}
+
 function assetUrl(rel: string): string {
   const resolved = new URL(rel, document.baseURI).href;
-  return resolved.replace("/app.asar/", "/app.asar.unpacked/").replace("\\app.asar\\", "\\app.asar.unpacked\\");
+  // WASM/tflite и фоны в portable читаются только как реальные файлы вне asar.
+  return toUnpackedAsarUrl(resolved);
 }
 
 function createCanvas(): HTMLCanvasElement {
@@ -124,7 +129,7 @@ function drawCover(ctx: CanvasRenderingContext2D, img: CanvasImageSource, w: num
   ctx.drawImage(img, (w - dw) / 2, (h - dh) / 2, dw, dh);
 }
 
-function loadImage(src: string): Promise<HTMLImageElement> {
+function loadImageOnce(src: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.decoding = "async";
@@ -134,28 +139,53 @@ function loadImage(src: string): Promise<HTMLImageElement> {
   });
 }
 
+async function loadImage(src: string): Promise<HTMLImageElement> {
+  try {
+    return await loadImageOnce(src);
+  } catch {
+    const alt = src.includes("app.asar.unpacked")
+      ? src.replace("/app.asar.unpacked/", "/app.asar/").replace("\\app.asar.unpacked\\", "\\app.asar\\")
+      : toUnpackedAsarUrl(src);
+    if (alt !== src) return loadImageOnce(alt);
+    throw new Error("background image failed");
+  }
+}
+
+type MaskResult = {
+  confidenceMasks?: Array<{
+    getAsFloat32Array?: () => Float32Array;
+    getAsUint8Array?: () => Uint8Array;
+    width?: number;
+    height?: number;
+    close?: () => void;
+  }>;
+  categoryMask?: { getAsUint8Array?: () => Uint8Array; width?: number; height?: number; close?: () => void };
+};
+
+/**
+ * Виртуальный фон: кадр кладётся в модель без растягивания, маска снимается
+ * с той же области. Край чуть уводится внутрь силуэта, чтобы комната не
+ * оставалась каймой за головой и плечами.
+ */
 class CameraFxEngine {
   private readonly video = document.createElement("video");
   private readonly canvas = createCanvas();
   private readonly ctx: CanvasRenderingContext2D;
+  private readonly workCanvas = createCanvas();
+  private readonly workCtx: CanvasRenderingContext2D;
   private readonly personCanvas = createCanvas();
   private readonly personCtx: CanvasRenderingContext2D;
   private readonly maskCanvas = createCanvas();
   private readonly maskCtx: CanvasRenderingContext2D;
+  private readonly maskSoftCanvas = createCanvas();
+  private readonly maskSoftCtx: CanvasRenderingContext2D;
   private readonly blurCanvas = createCanvas();
   private readonly blurCtx: CanvasRenderingContext2D;
-  private readonly blur2Canvas = createCanvas();
-  private readonly blur2Ctx: CanvasRenderingContext2D;
-  private readonly softMaskCanvas = createCanvas();
-  private readonly softMaskCtx: CanvasRenderingContext2D;
-  private readonly bgCanvas = createCanvas();
-  private readonly bgCtx: CanvasRenderingContext2D;
-  private readonly overlayCanvas = createCanvas();
-  private readonly overlayCtx: CanvasRenderingContext2D;
   private readonly smallCanvas = document.createElement("canvas");
   private readonly smallCtx: CanvasRenderingContext2D;
   private output: MediaStream | null = null;
-  private loopTimer = 0;
+  private raf = 0;
+  private lastDrawAt = 0;
   private options: CameraFxOptions = { ...defaultCameraFxOptions };
   private bgCache = new Map<string, HTMLImageElement>();
   private customImage: HTMLImageElement | null = null;
@@ -164,26 +194,33 @@ class CameraFxEngine {
   private invertMask = false;
   private invertChecked = false;
   private invertVotes = 0;
+  private invertFrames = 0;
   private maskReady = false;
-  private prevMaskAlpha: Float32Array | null = null;
-  private frameIndex = 0;
+  private lastSegTs = -1;
+  private segmentBusy = false;
   private running = false;
   private boundRaw: MediaStream | null = null;
+  private maskConf = new Float32Array(0);
+  private maskSmooth = new Float32Array(0);
+  private maskChokeA = new Float32Array(0);
+  private maskChokeB = new Float32Array(0);
+  /** Область кадра внутри 16:9 холста сегментации, без чёрных полей. */
+  private segBox = { x: 0, y: 0, w: 640, h: 360 };
 
   constructor() {
     this.video.muted = true;
     this.video.playsInline = true;
     this.video.setAttribute("playsinline", "true");
     this.ctx = this.canvas.getContext("2d", { alpha: false, desynchronized: true })!;
+    this.workCtx = this.workCanvas.getContext("2d", { alpha: false, desynchronized: true })!;
     this.personCtx = this.personCanvas.getContext("2d", { alpha: true, desynchronized: true })!;
     this.maskCtx = this.maskCanvas.getContext("2d", { alpha: true })!;
+    this.maskSoftCtx = this.maskSoftCanvas.getContext("2d", { alpha: true, desynchronized: true })!;
     this.blurCtx = this.blurCanvas.getContext("2d", { alpha: false, desynchronized: true })!;
-    this.blur2Ctx = this.blur2Canvas.getContext("2d", { alpha: false, desynchronized: true })!;
-    this.softMaskCtx = this.softMaskCanvas.getContext("2d", { alpha: true })!;
-    this.bgCtx = this.bgCanvas.getContext("2d", { alpha: true, desynchronized: true })!;
-    this.overlayCtx = this.overlayCanvas.getContext("2d", { alpha: true, desynchronized: true })!;
-    this.smallCanvas.width = 480;
-    this.smallCanvas.height = 270;
+    // 4× площадь нативного входа landscape-модели (256×144): MediaPipe отдаёт
+    // float-маску уже в этом размере — край не превращается в «лесенку» на 1440p.
+    this.smallCanvas.width = 640;
+    this.smallCanvas.height = 360;
     this.smallCtx = this.smallCanvas.getContext("2d", { alpha: false })!;
   }
 
@@ -198,38 +235,53 @@ class CameraFxEngine {
 
   setOptions(patch: Partial<CameraFxOptions>) {
     const prevMode = this.options.backgroundMode;
-    const prevPreset = this.options.presetId;
     this.options = normalizeCameraFxOptions({ ...this.options, ...patch });
-    if (this.options.backgroundMode !== prevMode || this.options.presetId !== prevPreset) {
-      this.resetMaskState();
+    const nextNeeds = this.needsSegmenter();
+    const prevNeeds = prevMode === "blur" || prevMode === "preset" || prevMode === "custom";
+    if (nextNeeds && !prevNeeds) {
+      this.maskReady = false;
+      this.maskSmooth = new Float32Array(0);
     }
+    if (!nextNeeds) this.maskReady = false;
     if (this.options.backgroundMode === "preset") void this.ensurePreset(this.options.presetId);
     if (this.options.backgroundMode === "custom") void this.ensureCustom(this.options.customDataUrl);
-    if (this.needsSegmenter()) void this.ensureSegmenter();
+    if (nextNeeds) void this.ensureSegmenter();
   }
 
   getOptions(): CameraFxOptions {
     return this.options;
   }
 
-  async bind(raw: MediaStream) {
+  async bind(raw: MediaStream, opts?: { fitOutput?: boolean }) {
     this.boundRaw = raw;
-    this.resetMaskState();
     this.video.srcObject = raw;
     await this.video.play().catch(() => undefined);
     await this.waitForFrame();
     const vw = this.video.videoWidth;
     const vh = this.video.videoHeight;
-    if (vw && vh) this.resize(vw, vh);
+    if (vw && vh) {
+      const needResize = this.canvas.width !== vw || this.canvas.height !== vh;
+      if (opts?.fitOutput && needResize && this.output) {
+        for (const t of this.output.getTracks()) {
+          try {
+            t.stop();
+          } catch {
+            // холст пересоздадим под новый размер
+          }
+        }
+        this.output = null;
+      }
+      this.resize(vw, vh);
+    }
     this.ensureLoop();
     if (this.needsSegmenter()) void this.ensureSegmenter();
   }
 
   stop(opts?: { stopOutput?: boolean }) {
     this.running = false;
-    if (this.loopTimer) {
-      window.clearTimeout(this.loopTimer);
-      this.loopTimer = 0;
+    if (this.raf) {
+      window.cancelAnimationFrame(this.raf);
+      this.raf = 0;
     }
     this.video.srcObject = null;
     this.boundRaw = null;
@@ -251,14 +303,6 @@ class CameraFxEngine {
 
   private replacesBackground() {
     return this.options.backgroundMode === "preset" || this.options.backgroundMode === "custom";
-  }
-
-  private resetMaskState() {
-    this.invertChecked = false;
-    this.invertMask = false;
-    this.invertVotes = 0;
-    this.maskReady = false;
-    this.prevMaskAlpha = null;
   }
 
   private waitForFrame(): Promise<void> {
@@ -283,21 +327,23 @@ class CameraFxEngine {
   private ensureLoop() {
     if (this.running) return;
     this.running = true;
-    const tick = () => {
+    const tick = (now: number) => {
       if (!this.running) return;
+      this.raf = window.requestAnimationFrame(tick);
+      if (now - this.lastDrawAt < 30) return;
+      this.lastDrawAt = now;
       if (this.video.paused) void this.video.play().catch(() => undefined);
       try {
         this.draw();
       } catch {
         // кадр FX можно пропустить, чтобы превью не останавливалось
       }
-      this.loopTimer = window.setTimeout(tick, 33);
     };
-    tick();
+    this.raf = window.requestAnimationFrame(tick);
   }
 
   private resize(w: number, h: number) {
-    const maxW = this.needsSegmenter() ? 1920 : 2560;
+    const maxW = 3840;
     if (w > maxW) {
       h = Math.max(1, Math.round((h * maxW) / w));
       w = maxW;
@@ -307,8 +353,28 @@ class CameraFxEngine {
     if (this.output) return;
     this.canvas.width = w;
     this.canvas.height = h;
-    this.personCanvas.width = w;
-    this.personCanvas.height = h;
+  }
+
+  private processSize(outW: number, outH: number) {
+    if (!this.needsSegmenter()) return { w: outW, h: outH };
+    const maxW = 1920;
+    if (outW <= maxW) return { w: outW, h: outH };
+    return { w: maxW, h: Math.max(1, Math.round((outH * maxW) / outW)) };
+  }
+
+  private ensureWorkSize(w: number, h: number) {
+    if (this.workCanvas.width !== w || this.workCanvas.height !== h) {
+      this.workCanvas.width = w;
+      this.workCanvas.height = h;
+    }
+    if (this.personCanvas.width !== w || this.personCanvas.height !== h) {
+      this.personCanvas.width = w;
+      this.personCanvas.height = h;
+    }
+    if (this.maskSoftCanvas.width !== w || this.maskSoftCanvas.height !== h) {
+      this.maskSoftCanvas.width = w;
+      this.maskSoftCanvas.height = h;
+    }
   }
 
   private async ensurePreset(id: CameraPresetId) {
@@ -374,7 +440,7 @@ class CameraFxEngine {
     return this.segmenterLoading;
   }
 
-  private ingestMask(result: { confidenceMasks?: Array<{ getAsFloat32Array?: () => Float32Array; getAsUint8Array?: () => Uint8Array; width?: number; height?: number; close?: () => void }>; categoryMask?: { getAsUint8Array?: () => Uint8Array; width?: number; height?: number } }) {
+  private ingestMask(result: MaskResult) {
     const conf = result.confidenceMasks?.[0];
     const cat = result.categoryMask;
     let width = this.smallCanvas.width;
@@ -396,50 +462,64 @@ class CameraFxEngine {
       height = cat.height ?? height;
     }
     if (!alpha) return;
+    const px = width * height;
+    if (this.maskConf.length !== px) this.maskConf = new Float32Array(px);
+    for (let i = 0; i < px; i++) {
+      this.maskConf[i] = asFloat ? Number(alpha[i]) : Number(alpha[i]) > 0 ? 1 : 0;
+    }
+    try {
+      result.confidenceMasks?.forEach((m) => m.close?.());
+      result.categoryMask?.close?.();
+    } catch {
+      // маска могла быть одноразовой
+    }
     if (this.maskCanvas.width !== width || this.maskCanvas.height !== height) {
       this.maskCanvas.width = width;
       this.maskCanvas.height = height;
     }
     const img = this.maskCtx.createImageData(width, height);
-    const px = width * height;
-    const replaceBg = this.replacesBackground();
-    const mix = replaceBg ? 0.78 : 0.62;
-    const lo = replaceBg ? 0.46 : 0.38;
-    const hi = replaceBg ? 0.7 : 0.64;
-    const fresh = !this.prevMaskAlpha || this.prevMaskAlpha.length !== px;
-    if (fresh) this.prevMaskAlpha = new Float32Array(px);
-    const prev = this.prevMaskAlpha!;
-    this.updateInvertFromMask(alpha, width, height, asFloat);
-    for (let i = 0; i < px; i++) {
-      let a = asFloat ? Number(alpha[i]) : Number(alpha[i]) > 0 ? 1 : 0;
-      if (this.invertMask) a = 1 - a;
-      if (!fresh) a = prev[i] * (1 - mix) + a * mix;
-      prev[i] = a;
-      // Неуверенный ореол вокруг рук (~0.3–0.5) иначе рисует тёмную комнату поверх пресета.
-      a = smoothstep(lo, hi, a);
-      if (replaceBg) a = a * a * (3 - 2 * a);
-      const byte = Math.max(0, Math.min(255, Math.round(a * 255)));
-      const o = i * 4;
-      img.data[o] = 255;
-      img.data[o + 1] = 255;
-      img.data[o + 2] = 255;
-      img.data[o + 3] = byte;
+    this.updateInvertFromMask(this.maskConf, width, height, true);
+    const data = img.data;
+    if (this.replacesBackground()) {
+      // Рост маски быстрый, спад медленный: закрытое лицо не выедает голову, край не мигает.
+      const fresh = this.maskSmooth.length !== px;
+      if (fresh) this.maskSmooth = new Float32Array(px);
+      for (let i = 0; i < px; i++) {
+        let a = this.maskConf[i];
+        if (this.invertMask) a = 1 - a;
+        const prev = this.maskSmooth[i];
+        a = fresh ? a : a >= prev ? prev * 0.35 + a * 0.65 : prev * 0.9 + a * 0.1;
+        this.maskSmooth[i] = a;
+      }
+      const choked = this.chokeConfidence(this.maskSmooth, width, height);
+      const lo = 0.3;
+      const hi = 0.48;
+      for (let i = 0; i < px; i++) {
+        const a = choked[i] <= lo ? 0 : choked[i] >= hi ? 1 : smoothstep(lo, hi, choked[i]);
+        const byte = a <= 0 ? 0 : a >= 1 ? 255 : Math.round(a * 255);
+        const o = i * 4;
+        data[o] = 255;
+        data[o + 1] = 255;
+        data[o + 2] = 255;
+        data[o + 3] = byte;
+      }
+    } else {
+      const lo = 0.28;
+      const hi = 0.52;
+      for (let i = 0; i < px; i++) {
+        let a = this.maskConf[i];
+        if (this.invertMask) a = 1 - a;
+        a = a <= lo ? 0 : a >= hi ? 1 : smoothstep(lo, hi, a);
+        const byte = a <= 0 ? 0 : a >= 1 ? 255 : Math.round(a * 255);
+        const o = i * 4;
+        data[o] = 255;
+        data[o + 1] = 255;
+        data[o + 2] = 255;
+        data[o + 3] = byte;
+      }
     }
     this.maskCtx.putImageData(img, 0, 0);
-    if (this.softMaskCanvas.width !== width || this.softMaskCanvas.height !== height) {
-      this.softMaskCanvas.width = width;
-      this.softMaskCanvas.height = height;
-    }
-    this.softMaskCtx.clearRect(0, 0, width, height);
-    this.softMaskCtx.filter = replaceBg ? "none" : "blur(0.8px)";
-    this.softMaskCtx.drawImage(this.maskCanvas, 0, 0);
-    this.softMaskCtx.filter = "none";
     this.maskReady = true;
-    try {
-      result.confidenceMasks?.forEach((m) => m.close?.());
-    } catch {
-      // маска могла быть одноразовой
-    }
   }
 
   private sampleMaskAvg(
@@ -477,84 +557,112 @@ class CameraFxEngine {
         this.sampleMaskAvg(alpha, width, asFloat, 0, height - band, band, height) +
         this.sampleMaskAvg(alpha, width, asFloat, width - band, height - band, width, height)) /
       4;
-    // selfie_segmenter: человек = высокие значения. Инвертируем только если углы явно «человек», а центр — фон.
-    if (corners - center > 0.28 && corners > 0.45) this.invertVotes += 1;
-    else if (center - corners > 0.12) this.invertVotes -= 1;
-    if (this.invertVotes >= 4) {
-      if (!this.invertMask) this.prevMaskAlpha = null;
+    this.invertFrames += 1;
+    if (corners - center > 0.32 && corners > 0.5) this.invertVotes += 1;
+    else if (center - corners > 0.1) this.invertVotes -= 1;
+    if (this.invertVotes >= 6) {
       this.invertMask = true;
       this.invertChecked = true;
-    } else if (this.invertVotes <= -2 || this.frameIndex > 24) {
-      if (this.invertMask) this.prevMaskAlpha = null;
+    } else if (this.invertVotes <= -2 || this.invertFrames >= 18) {
       this.invertMask = false;
       this.invertChecked = true;
     }
   }
 
-  private drawBackgroundBlur(source: HTMLCanvasElement, w: number, h: number) {
-    if (this.bgCanvas.width !== w || this.bgCanvas.height !== h) {
-      this.bgCanvas.width = w;
-      this.bgCanvas.height = h;
-    }
-    this.bgCtx.setTransform(1, 0, 0, 1, 0, 0);
-    this.bgCtx.globalCompositeOperation = "source-over";
-    this.bgCtx.filter = "none";
-    this.bgCtx.drawImage(source, 0, 0, w, h);
-    if (this.maskReady) {
-      this.bgCtx.save();
-      this.bgCtx.globalCompositeOperation = "destination-out";
-      this.bgCtx.filter = "blur(8px)";
-      this.bgCtx.drawImage(this.softMaskCanvas, 0, 0, w, h);
-      this.bgCtx.filter = "none";
-      this.bgCtx.restore();
-      const tw = Math.max(16, Math.round(w / 28));
-      const th = Math.max(9, Math.round(h / 28));
-      if (this.blurCanvas.width !== tw || this.blurCanvas.height !== th) {
-        this.blurCanvas.width = tw;
-        this.blurCanvas.height = th;
+  private min4(src: Float32Array, w: number, h: number, dst: Float32Array) {
+    for (let y = 0; y < h; y++) {
+      const row = y * w;
+      for (let x = 0; x < w; x++) {
+        let m = src[row + x];
+        if (x > 0) m = Math.min(m, src[row + x - 1]);
+        if (x + 1 < w) m = Math.min(m, src[row + x + 1]);
+        if (y > 0) m = Math.min(m, src[row - w + x]);
+        if (y + 1 < h) m = Math.min(m, src[row + w + x]);
+        dst[row + x] = m;
       }
-      this.blurCtx.filter = "none";
-      this.blurCtx.imageSmoothingEnabled = true;
-      this.blurCtx.imageSmoothingQuality = "low";
-      this.blurCtx.drawImage(source, 0, 0, tw, th);
-      this.bgCtx.save();
-      this.bgCtx.globalCompositeOperation = "destination-over";
-      this.bgCtx.imageSmoothingEnabled = true;
-      this.bgCtx.imageSmoothingQuality = "low";
-      this.bgCtx.drawImage(this.blurCanvas, 0, 0, w, h);
-      this.bgCtx.restore();
     }
-    const amount = Math.max(0, Math.min(1, this.options.blurAmount / 100));
-    const d1 = 3.6 + amount * 5.2;
-    let w1 = Math.max(48, Math.round(w / d1));
-    let h1 = Math.max(28, Math.round(h / d1));
-    w1 += w1 % 2;
-    h1 += h1 % 2;
-    if (this.blurCanvas.width !== w1 || this.blurCanvas.height !== h1) {
-      this.blurCanvas.width = w1;
-      this.blurCanvas.height = h1;
-    }
-    this.blurCtx.filter = "none";
-    this.blurCtx.imageSmoothingEnabled = true;
-    this.blurCtx.imageSmoothingQuality = "low";
-    this.blurCtx.drawImage(this.bgCanvas, 0, 0, w1, h1);
+  }
 
-    const d2 = 1.45 + amount * 1.7;
-    let w2 = Math.max(18, Math.round(w1 / d2));
-    let h2 = Math.max(10, Math.round(h1 / d2));
-    w2 += w2 % 2;
-    h2 += h2 % 2;
-    if (this.blur2Canvas.width !== w2 || this.blur2Canvas.height !== h2) {
-      this.blur2Canvas.width = w2;
-      this.blur2Canvas.height = h2;
+  /** Два шага внутрь силуэта: кайма настоящей комнаты за головой уходит под новый фон. */
+  private chokeConfidence(src: Float32Array, w: number, h: number): Float32Array {
+    if (this.maskChokeA.length !== src.length) this.maskChokeA = new Float32Array(src.length);
+    if (this.maskChokeB.length !== src.length) this.maskChokeB = new Float32Array(src.length);
+    this.min4(src, w, h, this.maskChokeA);
+    this.min4(this.maskChokeA, w, h, this.maskChokeB);
+    return this.maskChokeB;
+  }
+
+  /** Кадр в холст модели с сохранением пропорций, иначе маска съезжает относительно спины и головы. */
+  private paintSegmentInput(source: HTMLCanvasElement) {
+    const dw = this.smallCanvas.width;
+    const dh = this.smallCanvas.height;
+    const sw = Math.max(1, source.width);
+    const sh = Math.max(1, source.height);
+    const scale = Math.min(dw / sw, dh / sh);
+    const w = Math.max(1, Math.round(sw * scale));
+    const h = Math.max(1, Math.round(sh * scale));
+    const x = Math.floor((dw - w) / 2);
+    const y = Math.floor((dh - h) / 2);
+    this.segBox = { x, y, w, h };
+    this.smallCtx.setTransform(1, 0, 0, 1, 0, 0);
+    this.smallCtx.fillStyle = "#000";
+    this.smallCtx.fillRect(0, 0, dw, dh);
+    this.smallCtx.drawImage(source, 0, 0, sw, sh, x, y, w, h);
+  }
+
+  private runSegmenter(source: HTMLCanvasElement) {
+    if (!this.segmenter || this.segmentBusy) return;
+    this.paintSegmentInput(source);
+    const ts = Math.max(this.lastSegTs + 1, Math.round(performance.now()));
+    this.lastSegTs = ts;
+    this.segmentBusy = true;
+    try {
+      const result = this.segmenter.segmentForVideo(this.smallCanvas, ts) as MaskResult;
+      this.ingestMask(result);
+      this.segmentBusy = false;
+    } catch {
+      try {
+        this.segmenter.segmentForVideo(this.smallCanvas, ts, (result) => {
+          this.ingestMask(result);
+          this.segmentBusy = false;
+        });
+      } catch {
+        this.segmentBusy = false;
+        this.segmenter = null;
+        this.segmenterLoading = null;
+        void this.ensureSegmenter();
+      }
     }
-    const extra = 1.1 + amount * 2.6;
-    this.blur2Ctx.filter = `blur(${extra.toFixed(2)}px)`;
-    this.blur2Ctx.drawImage(this.blurCanvas, 0, 0, w2, h2);
-    this.blur2Ctx.filter = "none";
-    this.ctx.imageSmoothingEnabled = true;
-    this.ctx.imageSmoothingQuality = "low";
-    this.ctx.drawImage(this.blur2Canvas, 0, 0, w, h);
+  }
+
+  private drawBackgroundBlur(source: HTMLCanvasElement, w: number, h: number) {
+    const amount = Math.max(0, Math.min(1, this.options.blurAmount / 100));
+    let tw = Math.max(64, Math.round(w / 8));
+    let th = Math.max(36, Math.round(h / 8));
+    tw += tw % 2;
+    th += th % 2;
+    if (this.blurCanvas.width !== tw || this.blurCanvas.height !== th) {
+      this.blurCanvas.width = tw;
+      this.blurCanvas.height = th;
+    }
+    const radius = 2 + amount * 7;
+    this.blurCtx.filter = `blur(${radius.toFixed(1)}px)`;
+    this.blurCtx.imageSmoothingEnabled = true;
+    this.blurCtx.imageSmoothingQuality = "high";
+    this.blurCtx.drawImage(source, 0, 0, tw, th);
+    this.blurCtx.filter = "none";
+    this.workCtx.imageSmoothingEnabled = true;
+    this.workCtx.imageSmoothingQuality = "high";
+    this.workCtx.drawImage(this.blurCanvas, 0, 0, w, h);
+  }
+
+  private blitMirrored(source: CanvasImageSource, w: number, h: number) {
+    const ctx = this.ctx;
+    ctx.setTransform(-1, 0, 0, 1, w, 0);
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "medium";
+    ctx.drawImage(source, 0, 0, w, h);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
   }
 
   private draw() {
@@ -563,6 +671,8 @@ class CameraFxEngine {
     const vh = video.videoHeight;
     if (!vw || !vh || video.readyState < 2) return;
     this.resize(vw, vh);
+    const outW = this.canvas.width;
+    const outH = this.canvas.height;
     const z = this.options.cropZoom;
     const sw = vw / z;
     const sh = vh / z;
@@ -570,36 +680,37 @@ class CameraFxEngine {
     const maxSy = Math.max(0, vh - sh);
     const sx = maxSx * (0.5 + this.options.cropPanX * 0.5);
     const sy = maxSy * (0.5 + this.options.cropPanY * 0.5);
-    const w = this.canvas.width;
-    const h = this.canvas.height;
-    const ctx = this.ctx;
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.globalCompositeOperation = "source-over";
-    ctx.filter = "none";
 
     if (!this.needsSegmenter()) {
-      ctx.imageSmoothingEnabled = true;
-      ctx.imageSmoothingQuality = "medium";
-      ctx.drawImage(video, sx, sy, sw, sh, 0, 0, w, h);
-      this.applyMirror();
+      this.ctx.setTransform(-1, 0, 0, 1, outW, 0);
+      this.ctx.imageSmoothingEnabled = true;
+      this.ctx.imageSmoothingQuality = "medium";
+      this.ctx.drawImage(video, sx, sy, sw, sh, 0, 0, outW, outH);
+      this.ctx.setTransform(1, 0, 0, 1, 0, 0);
       return;
     }
+
+    const proc = this.processSize(outW, outH);
+    this.ensureWorkSize(proc.w, proc.h);
+    const w = proc.w;
+    const h = proc.h;
 
     this.personCtx.setTransform(1, 0, 0, 1, 0, 0);
     this.personCtx.globalCompositeOperation = "source-over";
     this.personCtx.filter = "none";
     this.personCtx.clearRect(0, 0, w, h);
     this.personCtx.drawImage(video, sx, sy, sw, sh, 0, 0, w, h);
+    this.runSegmenter(this.personCanvas);
 
-    if (this.segmenter) {
-      this.smallCtx.drawImage(this.personCanvas, 0, 0, this.smallCanvas.width, this.smallCanvas.height);
-      try {
-        this.segmenter.segmentForVideo(this.smallCanvas, performance.now(), (result) => this.ingestMask(result));
-      } catch {
-        // кадр сегментации можно пропустить без остановки превью
-      }
+    // Пока маски нет — отдаём живой кадр, без «пустого» фона и вспышки артефактов.
+    if (!this.maskReady) {
+      this.blitMirrored(this.personCanvas, outW, outH);
+      return;
     }
-    this.frameIndex++;
+
+    this.workCtx.setTransform(1, 0, 0, 1, 0, 0);
+    this.workCtx.globalCompositeOperation = "source-over";
+    this.workCtx.filter = "none";
 
     if (this.options.backgroundMode === "blur") {
       this.drawBackgroundBlur(this.personCanvas, w, h);
@@ -607,57 +718,54 @@ class CameraFxEngine {
       const img =
         this.options.backgroundMode === "custom" ? this.customImage : this.bgCache.get(this.options.presetId) ?? null;
       if (img && img.complete && img.naturalWidth) {
-        drawCover(ctx, img, w, h);
+        drawCover(this.workCtx, img, w, h);
       } else {
-        ctx.drawImage(this.personCanvas, 0, 0, w, h);
+        this.workCtx.drawImage(this.personCanvas, 0, 0, w, h);
         if (this.options.backgroundMode === "preset") void this.ensurePreset(this.options.presetId);
         if (this.options.backgroundMode === "custom") void this.ensureCustom(this.options.customDataUrl);
       }
     }
 
-    if (this.maskReady) {
-      this.ensureOverlaySize(w, h);
-      this.overlayCtx.setTransform(1, 0, 0, 1, 0, 0);
-      this.overlayCtx.filter = "none";
-      this.overlayCtx.globalCompositeOperation = "copy";
-      this.overlayCtx.drawImage(this.personCanvas, 0, 0, w, h);
-      this.overlayCtx.globalCompositeOperation = "destination-in";
-      this.overlayCtx.imageSmoothingEnabled = true;
-      this.overlayCtx.imageSmoothingQuality = this.replacesBackground() ? "low" : "medium";
-      this.overlayCtx.drawImage(this.softMaskCanvas.width ? this.softMaskCanvas : this.maskCanvas, 0, 0, w, h);
-      this.overlayCtx.globalCompositeOperation = "source-over";
-      ctx.drawImage(this.overlayCanvas, 0, 0, w, h);
-    }
-    this.applyMirror();
-  }
+    this.maskSoftCtx.setTransform(1, 0, 0, 1, 0, 0);
+    this.maskSoftCtx.globalCompositeOperation = "copy";
+    this.maskSoftCtx.imageSmoothingEnabled = true;
+    this.maskSoftCtx.imageSmoothingQuality = "high";
+    const feather = this.replacesBackground() ? Math.min(2.4, Math.max(1.4, w / 800)) : 0.6;
+    this.maskSoftCtx.filter = `blur(${feather.toFixed(2)}px)`;
+    const mw = this.maskCanvas.width;
+    const mh = this.maskCanvas.height;
+    const maskScaleX = mw / this.smallCanvas.width;
+    const maskScaleY = mh / this.smallCanvas.height;
+    this.maskSoftCtx.drawImage(
+      this.maskCanvas,
+      this.segBox.x * maskScaleX,
+      this.segBox.y * maskScaleY,
+      this.segBox.w * maskScaleX,
+      this.segBox.h * maskScaleY,
+      0,
+      0,
+      w,
+      h
+    );
+    this.maskSoftCtx.filter = "none";
+    this.maskSoftCtx.globalCompositeOperation = "source-over";
 
-  private ensureOverlaySize(w: number, h: number) {
-    if (this.overlayCanvas.width === w && this.overlayCanvas.height === h) return;
-    this.overlayCanvas.width = w;
-    this.overlayCanvas.height = h;
-  }
+    this.personCtx.globalCompositeOperation = "destination-in";
+    this.personCtx.imageSmoothingEnabled = true;
+    this.personCtx.imageSmoothingQuality = "high";
+    this.personCtx.filter = "none";
+    this.personCtx.drawImage(this.maskSoftCanvas, 0, 0, w, h);
+    this.personCtx.globalCompositeOperation = "source-over";
 
-  private applyMirror() {
-    const w = this.canvas.width;
-    const h = this.canvas.height;
-    if (!w || !h) return;
-    this.ensureOverlaySize(w, h);
-    this.overlayCtx.filter = "none";
-    this.overlayCtx.globalCompositeOperation = "copy";
-    this.overlayCtx.setTransform(-1, 0, 0, 1, w, 0);
-    this.overlayCtx.drawImage(this.canvas, 0, 0);
-    this.overlayCtx.setTransform(1, 0, 0, 1, 0, 0);
-    this.overlayCtx.globalCompositeOperation = "source-over";
-    this.ctx.setTransform(1, 0, 0, 1, 0, 0);
-    this.ctx.globalCompositeOperation = "source-over";
-    this.ctx.drawImage(this.overlayCanvas, 0, 0);
+    this.workCtx.drawImage(this.personCanvas, 0, 0, w, h);
+    this.blitMirrored(this.workCanvas, outW, outH);
   }
 }
 
 const engine = new CameraFxEngine();
 
-export async function bindCameraFx(raw: MediaStream) {
-  await engine.bind(raw);
+export async function bindCameraFx(raw: MediaStream, opts?: { fitOutput?: boolean }) {
+  await engine.bind(raw, opts);
 }
 
 export function setCameraFxOptions(patch: Partial<CameraFxOptions>) {

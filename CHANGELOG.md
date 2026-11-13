@@ -1,5 +1,54 @@
 # Changelog
 
+## 1.4.0
+
+### Added
+- Screen share follows the monitor refresh rate, from 60 to 120 fps. The current rate is shown in Media settings, under video quality. Capture resolution matches the screen and the frame is not cropped.
+- Voice-activated microphone with a sensitivity slider on the Audio tab. Higher opens the mic on a quieter voice. Silence is not sent.
+- Checkers, chess and battleship can be played against the computer at easy, medium or hard.
+- Manual camera controls are shown only when the device exposes them.
+- Open logs folder and clear chat history live on the Interface tab.
+
+### Fixed
+- Screen-share video is no longer cropped or frame-dropped. Motion stays close to the original picture.
+- Voice activation no longer swallows the start of a word or the gap between words, and it no longer degrades the remote microphone.
+- Outgoing voice stays at a normal level. Noise suppression no longer ducks the talker or restarts the shared audio device.
+- Background blur and replacement hold the silhouette: edges do not flicker, the real room does not leave a rim, and a covered face does not erase the head.
+- Continuous autofocus hunts again with the face visible or covered, so the lens does not stay soft and the background follows the person.
+
+## 1.3.0
+
+### Added
+- A chat message with a screenshot, link or GIF is sent as one bubble, caption included.
+- Messages can be quoted.
+- Games: a separate “Play with them” button next to “Vs computer”.
+- Chat previews open on click. Pictures, animated images, video files and VK clips play in a viewer.
+- Paste no longer sends immediately. Text and pasted files wait until Send.
+- Recording start and stop messages are highlighted in the chat.
+- The taskbar button flashes on a chat message or call event when the window is not focused.
+
+### Fixed
+- Turning the camera off no longer silences the microphone, with or without a screen share that includes audio.
+- A still image during screen share no longer flickers. Moving picture is unchanged.
+
+## 1.2.0
+
+### Games in calls
+- Play during a 1:1 call or conference: Russian draughts, chess and battleship.
+- Invite an opponent; other conference participants can spectate a live game.
+- Resign, offer/accept a draw, rematch with match score; collapse the board back to video tiles or open fullscreen.
+- Per-user game settings: board size, coordinates, last-move highlight, sounds, move hints, resign confirmation.
+
+### Chess
+- Full rules: all pieces, check/checkmate, stalemate, castling, en passant, promotion, 50-move rule, threefold repetition, insufficient material.
+- Wooden board and Staunton-style pieces; captured material and evaluation shown in the HUD.
+
+### Checkers
+- Russian draughts: flying kings, mandatory captures, match score.
+
+### Battleship
+- 10×10 fleet placement, fog of war, hit/sunk feedback, match score.
+
 ## 1.1.0
 
 ### Camera & virtual background
