@@ -1,34 +1,9 @@
 @echo off
-setlocal
-pushd "%~dp0"
-
-echo === LokaMeet: run app (instance A) ===
-echo Working dir: %CD%
-
-set "LOKAMEET_PROFILE=A"
-
+cd /d "%~dp0"
 if not exist node_modules (
-  echo Installing dependencies...
   call npm install
-  if errorlevel 1 goto :fail
+  if errorlevel 1 exit /b 1
 )
-
-if /I "%~1"=="nobuild" goto :skipbuild
-
-echo Building (renderer + main + preload)...
 call npm run build
-if errorlevel 1 goto :fail
-
-:skipbuild
-
-echo Starting Electron...
+if errorlevel 1 exit /b 1
 call npm start
-popd
-exit /b 0
-
-:fail
-echo.
-echo Run failed.
-popd
-exit /b 1
-

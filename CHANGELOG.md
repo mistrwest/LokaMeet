@@ -1,5 +1,27 @@
 # Changelog
 
+## 2.0.0
+
+### Added
+- One window for chats, LAN, rooms, the call log, games and settings.
+- Conferences of up to 15 people through the room host (mediasoup). One-to-one calls stay WebRTC peer-to-peer, with no internet.
+- Named rooms with an optional password, invites from the LAN list, and a conference group chat.
+- Chats: text, pictures, GIFs, video, files, voice notes, quotes, edit, delete and link previews.
+- Animated Noto smileys in a picker above the message field.
+- File transfer on a separate WebRTC DataChannel, plus drag-and-drop and paste from the clipboard.
+- Statuses online / away / busy / invisible, auto-away, and a photo or video avatar with crop.
+- Screen share of a monitor, a window or every screen, with computer audio and the presenter camera in the corner.
+- Desktop control: the request button blinks until it is answered, the person being controlled picks the monitor, mouse and keyboard go only to that screen, the picture can go full screen, and the local mouse wins while it moves.
+- MP4 recording of the call stage, a voice-activated microphone, a virtual camera background, a full-screen call and a compact dock.
+- Games during a call or on their own: chess, Russian checkers and sea battle, with a person, a room or the computer.
+- Themes, font scale, RU/EN, event sounds, an English log in `logs`, and Windows installer and portable builds.
+
+### Fixed
+- Voice no longer drops a couple of seconds after connect. Remote audio is played so echo cancellation does not mute the microphone.
+- Peers hear each other louder: send-side compression and makeup gain.
+- The voice-activated microphone opens on speech, keeps the start of a word and the pause between words, and the setting applies during an active call.
+- The divider between the chat list and the thread lines up with the header.
+
 ## 1.4.0
 
 ### Added

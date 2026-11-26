@@ -1,376 +1,288 @@
-export type AvailabilityStatus =
-  | "online"
-  | "away"
-  | "dnd"
-  | "offline"
-  | "in_conference"
-  | "in_call";
+export type Locale = "ru" | "en";
+export type ThemeId = "ink" | "graphite" | "harbor" | "porcelain" | "sand" | "iris" | "clay" | "grove" | "ember" | "sky" | "dusk" | "azure" | "ice" | "navy";
 
-/** Позиция кадрирования аватара: x/y — object-position (%), zoom — приближение (%). */
-export type AvatarPosition = {
+export type Presence = "online" | "invisible" | "busy" | "away";
+export type ShownStatus = "online" | "offline" | "busy" | "away";
+export type CallKind = "call" | "conf";
+
+export interface AvatarFocus {
   x: number;
   y: number;
-  /** 100 = без зума, до 300 = сильное приближение. */
-  zoom?: number;
-};
+  zoom: number;
+}
 
-export type PeerInfo = {
-  peerId: string;
-  userName: string;
-  status: AvailabilityStatus;
-  statusText?: string;
-  avatarHash?: string;
-  avatarPosition?: AvatarPosition;
-  host: string;
-  port: number;
-  lastSeenAt: number;
-};
-
-export type RoomInfo = {
-  roomId: string;
-  roomName: string;
-  hostPeerId: string;
-  host: string;
-  port: number;
-  hasPassword: boolean;
-  maxParticipants: number;
-  participantsApprox: number;
-  lastSeenAt: number;
-};
-
-export type UserProfile = {
-  peerId: string;
-  userName: string;
-  status: AvailabilityStatus;
-  statusText?: string;
-  language: "ru" | "en";
-  theme:
-    | "light"
-    | "dark"
-    | "warm-dark"
-    | "soft-light"
-    | "ocean-blue"
-    | "ocean-dusk"
-    | "ipd-slate"
-    | "ipd-lagoon"
-    | "ipd-midnight";
-  avatarHash?: string;
-  avatarPosition?: AvatarPosition;
-  hasChosenName?: boolean;
-  uiChatHeight?: number;
-  uiSidebarWidth?: number;
-  uiFontScale?: number; // Значение 1.0 сохраняет базовый масштаб интерфейса.
-  uiCompact?: boolean;
-  uiShowSeconds?: boolean;
-  defaultVideoQuality?: "auto" | "low" | "medium" | "high" | "fullhd" | "qhd" | "uhd";
-  autoSwitchToChatOnAccept?: boolean;
-  audioInputDeviceId?: string;
-  audioOutputDeviceId?: string;
-  videoInputDeviceId?: string;
-  /** Ручные параметры камеры (фокус, экспозиция и т.д.), если устройство их поддерживает. */
-  cameraControls?: {
-    focusMode?: "continuous" | "manual" | "single-shot" | "none";
-    focusDistance?: number;
-    exposureMode?: "continuous" | "manual" | "single-shot" | "none";
-    exposureCompensation?: number;
-    exposureTime?: number;
-    brightness?: number;
-    contrast?: number;
-    saturation?: number;
-    sharpness?: number;
-    zoom?: number;
-    pan?: number;
-    tilt?: number;
-    whiteBalanceMode?: "continuous" | "manual" | "single-shot" | "none";
-    colorTemperature?: number;
-  };
-  /** Цифровое приближение и виртуальный фон обрабатываются на холсте, без перезапуска камеры. */
-  cameraFx?: {
-    cropZoom?: number;
-    cropPanX?: number;
-    cropPanY?: number;
-    backgroundMode?: "none" | "blur" | "preset" | "custom";
-    backgroundPreset?: "room" | "office" | "beach" | "nature" | "mountain" | "loft" | "cafe" | "bookshelf" | "studio" | "conference" | "brick";
-    backgroundCustomId?: string;
-    blurAmount?: number;
-  };
-  chatAutoScroll?: boolean;
-  chatSmileSizePx?: number; // Допустимый диапазон нужен, чтобы смайлы не нарушали вёрстку.
-  chatFontSize?: number; // Ограничение диапазона сохраняет читаемость чата.
-  chatDisplayLimit?: number; // Ноль отключает ограничение, иначе показываются последние N сообщений.
-  uiSpeakingIndicator?: boolean;
-  /** Выбор пропорций позволяет предпочесть заполнение сетки или единый размер плиток. */
-  uiTileAspect?: "auto" | "16x9" | "4x3" | "1x1";
-  /** Режим object-fit задаёт приоритет заполнения плитки или полного изображения. */
-  uiTileObjectFit?: "cover" | "contain";
-  /** Радиус скругления в пикселях позволяет согласовать плитки с темой интерфейса. */
-  uiTileRadius?: number;
-  /** Зазор в пикселях сохраняет визуальное разделение участников. */
-  uiTileGap?: number;
-  /** Версия стандартной раскладки нужна, чтобы безопасно применять будущие миграции настроек. */
-  uiLayoutVersion?: number;
-  microphoneVolume?: number; // Шкала 0–100 соответствует значению регулятора интерфейса.
-  speakerVolume?: number; // Устаревшее поле сохраняет совместимость и означает громкость микрофона собеседника.
-  /** Отдельная громкость микрофона не затрагивает звук демонстрации собеседника. */
-  remoteMicVolume?: number;
-  /** Отдельная громкость демонстрации не затрагивает микрофон собеседника. */
-  remoteScreenShareVolume?: number;
-  noiseSuppression?: boolean; // Флаг отделяет настройку алгоритма от состояния микрофона.
-  noiseSuppressionSensitivity?: number; // Шкала 0–100 позволяет передавать настройку без преобразования.
-  /** Передавать микрофон только пока пользователь говорит. */
-  voiceActivation?: boolean;
-  /** 0 — только громкая речь, 100 — микрофон открывается от тихого голоса. */
-  voiceActivationSensitivity?: number;
-  /** 1 = шумодав включён по умолчанию (одноразовая миграция со старого false). */
-  audioNsRev?: number;
-  soundNotificationsEnabled?: boolean; // Флаг позволяет отключить сигналы, не теряя выбранные файлы и громкость.
-  soundNotificationVolume?: number; // Шкала 0–100 соответствует значению регулятора интерфейса.
-  callSoundFile?: string; // Путь сохраняется отдельно, чтобы пользователь мог выбрать собственный сигнал вызова.
-  messageSoundFile?: string; // Путь позволяет независимо настроить сигнал входящего сообщения.
-  callerSoundFile?: string; // Отдельный путь различает сигнал у инициатора и получателя звонка.
-  connectionSoundFile?: string; // Отдельный путь позволяет настроить звук успешного соединения.
-  callSoundVolume?: number; // Шкала 0–100 соответствует значению регулятора интерфейса.
-  messageSoundVolume?: number; // Шкала 0–100 соответствует значению регулятора интерфейса.
-  callerSoundVolume?: number; // Шкала 0–100 соответствует значению регулятора интерфейса.
-  connectionSoundVolume?: number; // Шкала 0–100 соответствует значению регулятора интерфейса.
-  /** Папка, куда сохраняются записи звонков и конференций. */
-  recordingDir?: string;
-  /** Полный путь последней сохранённой записи, чтобы открыть её папку из настроек. */
-  lastRecordingPath?: string;
-  /** Контейнер файла записи. */
-  recordingFormat?: "mp4" | "avi";
-  recordingQuality?: "480p" | "720p" | "1080p" | "1440p";
-  recordingFps?: 15 | 24 | 30;
-  recordingBitrate?: "low" | "medium" | "high" | "max";
-  recordingSoundFile?: string;
-  recordingSoundVolume?: number;
-  /** Ноль отключает авто-статус, чтобы пользователь мог сохранить ручное присутствие. */
-  autoAwayMinutes?: number;
-  /** Настройки мини-игр в звонке (шашки, шахматы, морской бой). */
-  gamesSettings?: {
-    boardScale?: "medium" | "large" | "xl";
-    showCoordinates?: boolean;
-    highlightLastMove?: boolean;
-    confirmResign?: boolean;
-    soundEnabled?: boolean;
-    soundVolume?: number;
-    checkersShowHints?: boolean;
-    chessShowHints?: boolean;
-    battleshipShowSunkOutline?: boolean;
-  };
-};
-
-export type ChatScope =
-  | { type: "direct"; peerId: string }
-  | { type: "room"; roomId: string };
-
-/** Цитата: автор и короткий текст исходного сообщения. */
-export type ChatReplyRef = {
-  messageId: string;
-  fromUserName: string;
-  text: string;
-};
-
-export type ChatMessage = {
+export interface Profile {
   id: string;
-  scope: ChatScope;
-  fromPeerId: string;
-  fromUserName: string;
-  sentAt: number;
+  name: string;
+  avatar?: string;
+  avatarFocus?: AvatarFocus;
+  status: Presence;
+}
+
+export interface Identity {
+  id: string;
+  name: string;
+  avatar?: string;
+  avatarFocus?: AvatarFocus;
+  status: Presence;
+  lastUsed: number;
+}
+
+export interface Settings {
+  locale: Locale;
+  noiseSuppression: boolean;
+  vad: boolean;
+  vadSensitivity: number;
+  callSound: boolean;
+  messageSound: boolean;
+  retentionDays: 0 | 7 | 30 | 90;
+  recordDir: string;
+  shareVolume: number;
+  peerVolume: number;
+  bgMode: "off" | "blur" | "image";
+  bgBlur: number;
+  bgPreset: string;
+  bgCustom: string;
+  theme: ThemeId;
+  micId: string;
+  speakerId: string;
+  cameraId: string;
+  echoCancellation: boolean;
+  autoGain: boolean;
+  micGain: number;
+  desktopNotify: boolean;
+  notifyJoin: boolean;
+  notifyRecord: boolean;
+  camMirror: boolean;
+  camWidth: number;
+  camHeight: number;
+  camFps: number;
+  camFacing: "" | "user" | "environment";
+  camTune: Record<string, number | string | boolean>;
+  fontScale: number;
+  reduceMotion: boolean;
+  notifyVolume: number;
+  volumeCall: number;
+  volumeMessage: number;
+  volumeJoin: number;
+  volumeRecord: number;
+  toneCall: string;
+  toneMessage: string;
+  toneJoin: string;
+  toneRecord: string;
+  joinMuted: boolean;
+  enterToSend: boolean;
+  layoutList: number;
+  layoutRail: number;
+  layoutChat: number;
+  gameDifficulty: "easy" | "normal" | "hard";
+  gameHints: boolean;
+  gameInviteSound: boolean;
+  gameInviteVolume: number;
+  awayMinutes: number;
+  chatSize: "s" | "m" | "l";
+  chatDense: boolean;
+  chatAvatars: boolean;
+}
+
+export type MessageKind = "text" | "image" | "file" | "gif" | "video" | "voice" | "system";
+
+export interface FileInfo {
+  transferId: string;
+  name: string;
+  size: number;
+  mime: string;
+  path?: string;
+  sourcePath?: string;
+  preview?: string;
+  deleted?: boolean;
+}
+
+export interface ChatMessage {
+  id: string;
+  chatId: string;
+  senderId: string;
+  kind: MessageKind;
   text: string;
-  kind?: "system";
-  attachment?: ChatAttachment;
-  /** Несколько вложений одного сообщения: подпись и файлы уходят вместе. */
-  attachments?: ChatAttachment[];
-  reply?: ChatReplyRef;
-};
+  replyTo?: { id: string; text: string };
+  ts: number;
+  editedAt?: number;
+  deleted?: boolean;
+  status: "pending" | "delivered" | "local" | "failed";
+  file?: FileInfo;
+}
 
-export type ChatAttachment =
-  | {
-      kind: "file";
-      fileId: string;
-      name: string;
-      size: number;
-      mime?: string;
-      previewDataUrl?: string;
-    }
-  | {
-      kind: "image";
-      fileId: string;
-      name: string;
-      size: number;
-      mime?: string;
-      previewDataUrl?: string;
-    }
-  | {
-      kind: "video";
-      fileId: string;
-      name: string;
-      size: number;
-      mime?: string;
-      previewDataUrl?: string;
-    }
-  | {
-      kind: "smile";
-      file: string;
-    }
-  | {
-      kind: "game-invite";
-      sessionId: string;
-      gameId: string;
-      status: "pending" | "accepted" | "declined" | "cancelled";
-    };
+export type GameId = "chess" | "checkers" | "sea";
 
-export type JsonSessionDescription = {
-  type: string;
-  sdp?: string;
-};
+export type GameWire =
+  | { t: "invite"; matchId: string; game: GameId; mode: "p2p" | "group"; fromName: string }
+  | { t: "accept"; matchId: string; name: string }
+  | { t: "decline"; matchId: string }
+  | { t: "sync"; matchId: string; game: GameId; mode: "p2p" | "group"; white: string; black: string; whiteName: string; blackName: string; seq: number; peers: string[]; chess?: ChessSync; checkers?: CheckersSync; sea?: SeaSync }
+  | { t: "move"; matchId: string; seq: number; by: string; chess?: { from: number; to: number; promo: string }; checkers?: { from: number; path: number[] } }
+  | { t: "sea"; matchId: string; seq: number; kind: "ready" | "shot" | "result"; seat: "w" | "b"; index?: number; hit?: boolean; sunk?: boolean; win?: boolean }
+  | { t: "leave"; matchId: string }
+  | { t: "resign"; matchId: string }
+  | { t: "resign-offer"; matchId: string }
+  | { t: "resign-answer"; matchId: string; accept: boolean }
+  | { t: "draw-offer"; matchId: string }
+  | { t: "draw-answer"; matchId: string; accept: boolean };
 
-export type JsonIceCandidate = {
-  candidate?: string;
-  sdpMid?: string | null;
-  sdpMLineIndex?: number | null;
-  usernameFragment?: string | null;
-};
+export interface ChessSync {
+  board: string;
+  turn: "w" | "b";
+  castle: string;
+  ep: number;
+  half: number;
+  winner: "" | "w" | "b" | "draw";
+  note: "" | "check" | "mate" | "stalemate";
+}
 
-/** call = голос/камера; screen = отдельное соединение демонстрации (не трогает mic). */
-export type RtcMediaChannel = "call" | "screen";
+export interface CheckersSync {
+  board: string;
+  turn: "w" | "b";
+  winner: "" | "w" | "b" | "draw";
+  quiet: number;
+}
 
-export type RtcSignal =
-  | {
-      type: "rtc-offer";
-      roomId?: string;
-      fromPeerId: string;
-      toPeerId: string;
-      sdp: JsonSessionDescription;
-      channel?: RtcMediaChannel;
-    }
-  | {
-      type: "rtc-answer";
-      roomId?: string;
-      fromPeerId: string;
-      toPeerId: string;
-      sdp: JsonSessionDescription;
-      channel?: RtcMediaChannel;
-    }
-  | {
-      type: "rtc-ice";
-      roomId?: string;
-      fromPeerId: string;
-      toPeerId: string;
-      candidate: JsonIceCandidate;
-      channel?: RtcMediaChannel;
-    }
-  | {
-      type: "screen-share-start";
-      roomId?: string;
-      fromPeerId: string;
-      toPeerId: string;
-      userName: string;
-      screenAudioTrackId?: string;
-      screenVideoTrackId?: string;
-    }
-  | {
-      type: "screen-share-stop";
-      roomId?: string;
-      fromPeerId: string;
-      toPeerId: string;
-    }
-  | {
-      type: "recording-start";
-      roomId?: string;
-      fromPeerId: string;
-      toPeerId: string;
-      userName: string;
-    }
-  | {
-      type: "recording-stop";
-      roomId?: string;
-      fromPeerId: string;
-      toPeerId: string;
-    }
-  | {
-      type: "camera-visibility";
-      roomId?: string;
-      fromPeerId: string;
-      toPeerId: string;
-      enabled: boolean;
-    };
+export interface SeaSync {
+  phase: "place" | "battle" | "done";
+  turn: "w" | "b";
+  ready: { w: boolean; b: boolean };
+  winner: "" | "w" | "b";
+  shots: { w: number[]; b: number[] };
+}
 
-export type WsEnvelope =
-  | {
-      type: "hello";
-      peerId: string;
-      userName: string;
-      status: AvailabilityStatus;
-      statusText?: string;
-      avatarHash?: string;
-      avatarPosition?: AvatarPosition;
-    }
-  | { type: "direct-call-request"; fromPeerId: string; fromUserName: string }
-  | { type: "direct-call-accept"; fromPeerId: string }
-  | { type: "direct-call-reject"; fromPeerId: string; reason?: string }
-  | { type: "room-join"; roomId: string; peerId: string; userName: string; password?: string }
-  | {
-      type: "room-welcome";
-      roomId: string;
-      hostPeerId: string;
-      participants: Array<{ peerId: string; userName: string }>;
-      maxParticipants: number;
-    }
-  | { type: "room-peer-joined"; roomId: string; peerId: string; userName: string }
-  | { type: "room-peer-left"; roomId: string; peerId: string }
-  | { type: "room-leave"; roomId: string; peerId: string }
-  | {
-      type: "room-invite";
-      fromPeerId: string;
-      fromUserName: string;
-      roomId: string;
-      roomName: string;
-      hostPeerId: string;
-      host: string;
-      port: number;
-      hasPassword: boolean;
-      maxParticipants: number;
-      participantsApprox: number;
-    }
-  | {
-      type: "room-invite-reject";
-      fromPeerId: string;
-      fromUserName: string;
-      roomId: string;
-      roomName: string;
-    }
-  | { type: "chat-message"; message: ChatMessage }
-  | {
-      type: "file-chunk";
-      id: string;
-      fromPeerId: string;
-      fromUserName: string;
-      toPeerId?: string;
-      roomId?: string;
-      name: string;
-      size: number;
-      mime?: string;
-      index: number;
-      total: number;
-      data: string;
-    }
-  | {
-      type: "file-cancel";
-      id: string;
-      fromPeerId: string;
-      toPeerId?: string;
-      roomId?: string;
-    }
-  | {
-      type: "game-message";
-      fromPeerId: string;
-      toPeerId?: string;
-      roomId?: string;
-      message: unknown;
-    }
-  | { type: "avatar-request"; peerId: string; avatarHash?: string }
-  | { type: "avatar-data"; peerId: string; avatarHash: string; dataUrl: string }
-  | ({ type: "rtc-signal" } & { signal: RtcSignal });
+export interface CallRecord {
+  id: string;
+  title: string;
+  peerId?: string;
+  roomId?: string;
+  direction: "in" | "out" | "missed";
+  video: boolean;
+  ts: number;
+  duration: number;
+}
 
+export interface Room {
+  id: string;
+  name: string;
+  salt: string;
+  passwordHash: string;
+  createdBy: string;
+}
+
+export interface PeerInfo {
+  id: string;
+  name: string;
+  color: string;
+  ip: string;
+  port: number;
+  avatar?: string;
+  avatarFocus?: AvatarFocus;
+  inCall: boolean;
+  callKind?: CallKind;
+  recording?: boolean;
+  sharing?: boolean;
+  online: boolean;
+  status: ShownStatus;
+  firstSeen: number;
+  lastSeen: number;
+}
+
+export interface ConfInfo {
+  hostId: string;
+  count: number;
+}
+
+export interface RoomInfo extends Room {
+  members: string[];
+  onlineCount: number;
+  conference?: ConfInfo;
+  joined: boolean;
+}
+
+export interface ChatMeta {
+  title: string;
+  kind: "dm" | "group";
+  color: string;
+  photo?: string;
+  avatarFocus?: AvatarFocus;
+  peerId?: string;
+}
+
+export interface Snapshot {
+  profile: Profile;
+  settings: Settings;
+  peers: PeerInfo[];
+  messages: Record<string, ChatMessage[]>;
+  unread: Record<string, number>;
+  rooms: RoomInfo[];
+  calls: CallRecord[];
+  selfColor: string;
+  openChatId: string;
+  hiddenChats: string[];
+  contacts: Record<string, { id: string; name: string; color: string; avatar?: string; avatarFocus?: AvatarFocus; ts: number }>;
+  threads: Record<string, ChatMeta>;
+  identities: Identity[];
+}
+
+export interface Hello {
+  id: string;
+  name: string;
+  color: string;
+  avatar?: string;
+  avatarFocus?: AvatarFocus;
+  status?: ShownStatus;
+  inCall?: boolean;
+  callKind?: CallKind;
+  recording?: boolean;
+  sharing?: boolean;
+}
+
+export type SignalPayload =
+  | { t: "offer"; sdp: string; purpose?: "file" | "desk" }
+  | { t: "answer"; sdp: string; purpose?: "file" | "desk" }
+  | { t: "ice"; candidate: RTCIceCandidateInit | null; purpose?: "file" | "desk" }
+  | { t: "please-offer"; purpose?: "file" | "desk" }
+  | { t: "conf-invite"; roomId: string; name: string; password: string; hostId: string; from: string }
+  | { t: "call-invite"; callId: string; video: boolean; name: string }
+  | { t: "call-answer"; callId: string; accept: boolean }
+  | { t: "call-end"; callId: string }
+  | { t: "recording"; on: boolean; started?: number }
+  | { t: "screen"; on: boolean; streamId?: string }
+  | { t: "mute"; on: boolean; target?: string }
+  | { t: "mic"; on: boolean }
+  | { t: "control-ask"; name?: string }
+  | { t: "control-answer"; accept: boolean; width?: number; height?: number; grant?: string }
+  | { t: "control-end" }
+  | { t: "control-input"; kind: "move" | "down" | "up" | "wheel" | "key"; x?: number; y?: number; nx?: number; ny?: number; w?: number; h?: number; button?: number; delta?: number; key?: string; down?: boolean; grant?: string }
+  | { t: "file-offer"; message: ChatMessage }
+  | { t: "file-cancel"; transferId: string }
+  | { t: "game"; game: GameWire };
+
+export function dmChat(peerId: string): string {
+  return `dm:${peerId}`;
+}
+
+export function roomChat(roomId: string): string {
+  return `room:${roomId}`;
+}
+
+export function colorFromId(id: string): string {
+  const palette = ["#4c8dff", "#2fbf9b", "#f0a202", "#ef5b78", "#8b7cf6", "#22b8cf", "#f97316", "#7cb342"];
+  let h = 0;
+  for (let i = 0; i < id.length; i++) h = (Math.imul(h, 33) + id.charCodeAt(i)) >>> 0;
+  return palette[h % palette.length];
+}
+
+export function previewText(message: ChatMessage): string {
+  if (message.deleted) return "…";
+  const caption = (message.text || "").replace(/\s+/g, " ").trim();
+  if (message.kind === "image") return caption || "🖼 Фото";
+  if (message.kind === "gif") return caption ? `GIF · ${caption}` : "GIF";
+  if (message.kind === "video") return caption || `🎬 ${message.file?.name || "Видео"}`;
+  if (message.kind === "voice") return "🎤 Голосовое";
+  if (message.kind === "file") return message.file?.name || caption || "Файл";
+  return caption;
+}

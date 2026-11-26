@@ -1,11887 +1,3229 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import { useTranslation } from "react-i18next";
-import type { AvailabilityStatus, AvatarPosition, ChatAttachment, ChatMessage, ChatReplyRef, ChatScope, PeerInfo, RoomInfo, RtcSignal, UserProfile, WsEnvelope } from "../shared/types";
-import { createPeerConnection, getVideoConstraints, applyTrackResolution, getAutoLanConstraints, getOutboundVideoSize, isVideoQuality, bindLocalTracks, isSdpOrderError, replaceVideoTrack, parkOutgoingCamera, replaceMicAudioTrack, tuneScreenShareSender, boostScreenShareSdp, screenShareBitrateForTrack, requestScreenShareKeyframe, type LocalMediaConfig, type VideoQuality } from "./lib/webrtc";
-import { attachOutgoingScreenTracks, closeRtcPeer, createScreenSharePeerConnection } from "./lib/screenSharePc";
+import { Fragment, useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from "react";
+import { createPortal } from "react-dom";
 import {
-  alignCameraControls,
-  applyCameraControls,
-  applyCameraControlsDebounced,
-  cameraHasManualControls,
-  cameraModeLabelKey,
-  capsEqual,
-  defaultCameraControls,
-  normalizeCameraControls,
-  cameraVideoConstraints,
-  seedCameraControls,
-  settleCameraTrack,
-  type CameraCapabilityInfo,
-  type CameraControls
-} from "./lib/cameraControls";
-import {
-  bindCameraFx,
-  CAMERA_PRESETS,
-  cameraBgAssetUrl,
-  cameraFxNeedsProcessing,
-  defaultCameraFxOptions,
-  getCameraFxStream,
-  getCameraFxTrack,
-  isRawCameraTrack,
-  markRawCameraTrack,
-  normalizeCameraFxOptions,
-  setCameraFxOptions,
-  stopCameraFx,
-  type CameraFxOptions
-} from "./lib/cameraFx";
-import { getEnhancedAudioConstraints, MicEnhancer } from "./lib/micEnhance";
-import {
-  captureDesktopMedia,
-  categorizeScreenSources,
-  ensureScreenShareFps,
-  SCREEN_SHARE_FPS_MIN,
-  createPeerTileStream,
-  createScreenShareViewStream,
-  dropExtraRemoteAudioTracks,
-  findPresenterCameraTrack,
-  findScreenBroadcastAudioTrack,
-  getMicAudioTrack,
-  isScreenBroadcastAudioTrack,
-  isScreenVideoTrack,
-  pruneStaleRemoteStreamTracks,
-  type ScreenShareTab
-} from "./lib/screenShare";
-import { createFilePreviewDataUrl, isGifAttachmentMime, isImageAttachmentMime, isVideoAttachmentMime, mimeFromName } from "./lib/filePreview";
-import { ChatLinkEmbeds, ChatMediaViewer, mediaViewFromEmbed, type ChatEmbedOpen, type ChatMediaView } from "./lib/chatLinks";
-import { ScreenShareViewer, ScreenShareAudio, ScreenShareLocalSidebar, ScreenSharingDot, PresenterCameraPip, PeerShareMarks } from "./lib/screenShareViewer";
-import { RemotePeerMedia } from "./lib/remotePeerMedia";
-import { CallRecorder, recordingFileName, normalizeRecordingSettings, RECORDING_SIZE, type RecordingBitrate, type RecordingFormat, type RecordingFps, type RecordingQuality, type RecordSource } from "./lib/callRecorder";
-import { speakRecordAnnouncement } from "./lib/recordVoice";
-import { Select } from "./lib/Select";
-import {
-  MAX_CONFERENCE_PARTICIPANTS,
-  applyConferenceHubFromRoom,
-  canJoinConference,
-  conferenceRejectMessage,
-  createHostConferenceState,
-  createJoinConferenceState,
-  isConferenceCall,
-  isDirectCall,
-  resolveConferenceRoom
-} from "./lib/conference";
-import {
-  applyGameDraw,
-  applyGameMove,
-  applyGamePlace,
-  applyGameResign,
-  chooseComputerMove,
-  COMPUTER_PEER_ID,
-  createGameSnapshot,
-  randomFleet,
-  GameInviteCard,
-  GameInviteChatActions,
-  GameStage,
-  GamesMenu,
-  getGameCatalogItem,
-  isGameMessage,
-  withDrawOffer,
-  DEFAULT_GAMES_SETTINGS,
-  normalizeGamesSettings,
-  playGameSound,
-  type BattleshipShip,
-  type GamesSettings,
-  type GameDifficulty,
-  type GameId,
-  type GameMessage,
-  type GamePlayer,
-  type GameSession,
-  type IncomingGameInvite,
-  type Square,
-  type WatchOffer
-} from "./lib/games";
+  Gamepad2,
+  Hash,
+  Maximize2,
+  MessageCircle,
+  Mic,
+  MicOff,
+  Minimize2,
+  Monitor,
+  MonitorUp,
+  Paperclip,
+  Pause,
+  Pencil,
+  Phone,
+  PhoneOff,
+  Play,
+  Plus,
+  Reply,
+  Search,
+  Send,
+  Settings as SettingsIcon,
+  Shrink,
+  Smile,
+  Trash2,
+  Power,
+  Users,
+  Video,
+  Volume2,
+  VolumeX,
+  MousePointer2,
+  Keyboard,
+  Copy,
+  Scissors,
+  ClipboardPaste,
+} from "lucide-react";
+import { api } from "./api";
+import { engine } from "./engine";
+import { GameInvite, Games, games, setGameInvite, startGames } from "./games";
+import { translate, type Key } from "./i18n";
+import { railTiles, showSelfFloat } from "./call-layout";
+import { applyCameraTune, cameraConstraints } from "./pipeline";
+import { playCue, playTone, speakRecord } from "./sound";
+import { SMILEYS, Smiley, renderRichText } from "./smileys";
+import { colorFromId, dmChat, previewText, roomChat, type AvatarFocus, type ChatMessage, type Identity, type PeerInfo, type Presence, type Profile, type RoomInfo, type Settings, type Snapshot, type ThemeId } from "../shared/types";
+import { AboutPanel } from "./about";
+import { APP_VERSION } from "../shared/version";
 
-const isSettingsWindow =
-  typeof window !== "undefined" && new URLSearchParams(window.location.search).get("window") === "settings";
+const logoUrl = `${import.meta.env.BASE_URL}icon.png`;
+const CHAT_MIN = 372;
+const LIST_MIN = 360;
 
-const APP_ICON_SRC = `${import.meta.env.BASE_URL}icon.png`;
+type ConfirmAsk = { text: string; yes: string; no: string; resolve: (value: boolean) => void };
+let openConfirm: ((ask: ConfirmAsk) => void) | null = null;
 
-const VIDEO_QUALITY_OPTIONS: Array<{ value: VideoQuality; labelKey: string }> = [
-  { value: "auto", labelKey: "videoQ_auto" },
-  { value: "low", labelKey: "videoQ_low" },
-  { value: "medium", labelKey: "videoQ_medium" },
-  { value: "high", labelKey: "videoQ_high" },
-  { value: "fullhd", labelKey: "videoQ_fullhd" },
-  { value: "qhd", labelKey: "videoQ_qhd" },
-  { value: "uhd", labelKey: "videoQ_uhd" }
-];
-
-type FileTransferItem = {
-  key: string;
-  direction: "send" | "receive";
-  peerId: string;
-  fileId?: string;
-  fileName: string;
-  transferred: number;
-  total: number;
-  percent: number;
-};
-
-type CallContext =
-  | {
-      mode: "direct";
-      peerId: string;
-      peerName: string;
-      signalHubPeerId: string;
-      signalHubHost?: string;
-      signalHubPort?: number;
+function askConfirm(text: string, yes: string, no: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    if (!openConfirm) {
+      resolve(window.confirm(text));
+      return;
     }
-  | {
-      mode: "room";
-      roomId: string;
-      roomName: string;
-      hostPeerId: string;
-      signalHubPeerId: string;
-      signalHubHost?: string;
-      signalHubPort?: number;
-      hasPassword?: boolean;
-      participants: Array<{ peerId: string; userName: string }>;
-    };
-
-type RemoteTrack = {
-  peerId: string;
-  userName: string;
-  stream: MediaStream;
-};
-
-function formatTime(ts: number, showSeconds: boolean) {
-  const d = new Date(ts);
-  const date = d.toLocaleDateString([], { day: "2-digit", month: "2-digit", year: "numeric" });
-  const time = d.toLocaleTimeString(
-    [],
-    showSeconds ? { hour: "2-digit", minute: "2-digit", second: "2-digit" } : { hour: "2-digit", minute: "2-digit" }
-  );
-  return `${date} ${time}`;
+    openConfirm({ text, yes, no, resolve });
+  });
 }
 
-/** Убирает эмодзи/символы в начале статусных сообщений чата (в т.ч. из старой истории). */
-function stripChatStatusEmoji(text: string) {
-  return text.replace(/^[^\p{L}\p{N}]+/u, "").trim();
-}
+type Route = "chats" | "calls" | "lan" | "rooms" | "games" | "settings";
+type SettingsGroup = "profile" | "appearance" | "chat" | "notifications" | "audio" | "video" | "files" | "games" | "about";
 
-function formatDurationMs(ms: number) {
-  const totalSec = Math.max(0, Math.floor(ms / 1000));
-  const h = Math.floor(totalSec / 3600);
-  const m = Math.floor((totalSec % 3600) / 60);
-  const s = totalSec % 60;
-  const mm = String(m).padStart(2, "0");
-  const ss = String(s).padStart(2, "0");
-  return h > 0 ? `${h}:${mm}:${ss}` : `${m}:${ss.padStart(2, "0")}`;
-}
+export function App() {
+  const [snap, setSnap] = useState<Snapshot | null>(null);
+  const [route, setRoute] = useState<Route>("chats");
+  const [chatId, setChatId] = useState("");
+  const [showChat, setShowChat] = useState(true);
+  const [gamesOpen, setGamesOpen] = useState(false);
+  const [error, setError] = useState("");
+  const [entered, setEntered] = useState(false);
+  const [callFocus, setCallFocus] = useState(false);
+  const [docking, setDocking] = useState(false);
+  const [expanding, setExpanding] = useState(false);
+  const [settingsGroup, setSettingsGroup] = useState<SettingsGroup>("profile");
+  const [personId, setPersonId] = useState("");
+  const [toast, setToast] = useState("");
+  const [statusOpen, setStatusOpen] = useState(false);
+  const statusRef = useRef<HTMLDivElement>(null);
+  useDismiss(statusOpen, () => setStatusOpen(false), statusRef);
+  const autoAway = useRef(false);
+  const [confirmAsk, setConfirmAsk] = useState<ConfirmAsk | null>(null);
+  const [cols, setCols] = useState({ list: 400, rail: 220, chat: CHAT_MIN });
+  const colsRef = useRef(cols);
+  colsRef.current = cols;
+  const layoutDrag = useRef(false);
+  const live = useSyncExternalStore(engine.subscribe, () => engine.state);
+  const phaseWas = useRef(live.phase);
+  const snapRef = useRef<Snapshot | null>(null);
+  const recPrev = useRef<string | null>(null);
+  snapRef.current = snap;
 
-/** Вертикальный или горизонтальный разделитель для изменения размера панелей */
-function PanelResizer({
-  axis,
-  onDrag
-}: {
-  axis: "horizontal" | "vertical";
-  onDrag: (delta: number) => void;
-}) {
-  const { t } = useTranslation();
-  const startRef = useRef(0);
-  const onDragRef = useRef(onDrag);
-  onDragRef.current = onDrag;
-
-  const handleMouseDown = (e: React.MouseEvent) => {
-    if (e.button !== 0) return;
-    e.preventDefault();
-    startRef.current = axis === "horizontal" ? e.clientX : e.clientY;
-    const handleMove = (e2: MouseEvent) => {
-      const current = axis === "horizontal" ? e2.clientX : e2.clientY;
-      const delta = current - startRef.current;
-      startRef.current = current;
-      onDragRef.current(delta);
+  useEffect(() => { startGames(); }, []);
+  useEffect(() => {
+    let had = Boolean(games.get().match);
+    return games.subscribe(() => {
+      const now = Boolean(games.get().match);
+      if (now && !had) {
+        setGamesOpen(true);
+        setRoute("games");
+      }
+      had = now;
+    });
+  }, []);
+  useEffect(() => {
+    if (!chatId && snap?.openChatId) setChatId(snap.openChatId);
+  }, [snap?.openChatId, chatId]);
+  useEffect(() => { if (snap) setGameInvite(snap.settings); }, [snap?.settings]);
+  useEffect(() => {
+    openConfirm = (ask) => setConfirmAsk(ask);
+    return () => { openConfirm = null; };
+  }, []);
+  useEffect(() => {
+    if (!confirmAsk) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      confirmAsk.resolve(false);
+      setConfirmAsk(null);
     };
-    const handleUp = () => {
-      document.removeEventListener("mousemove", handleMove);
-      document.removeEventListener("mouseup", handleUp);
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [confirmAsk]);
+  useEffect(() => {
+    void api.invoke<Snapshot>("snapshot").then(setSnap);
+    return api.on((event) => {
+      if (event.t === "snapshot") setSnap(event.snapshot as Snapshot);
+      if (event.t !== "incoming-message") return;
+      const current = snapRef.current;
+      if (!current) return;
+      if (event.system && typeof event.text === "string") {
+        const name = event.text.split("\t")[1] || "";
+        const join = event.text.startsWith("sys:join") || event.text.startsWith("sys:start-conf");
+        const rec = event.text.startsWith("sys:rec-on") || event.text.startsWith("sys:rec-off");
+        if ((join || rec) && name !== current.profile.name) {
+          const allowed = rec ? current.settings.notifyRecord !== false : current.settings.notifyJoin !== false;
+          if (allowed) {
+            const text = formatSystem(event.text, (key) => translate(current.settings.locale, key));
+            setToast(text);
+            playCue("join", current.settings);
+            desktopNotice(text, current.settings.desktopNotify !== false);
+          }
+        }
+        return;
+      }
+      if (event.from && event.from === current.profile.id) return;
+      const sender = current.peers.find((peer) => peer.id === event.from);
+      const who = sender?.name || translate(current.settings.locale, "notify.someone");
+      const kind = String(event.kind || "text");
+      const fileName = String(event.fileName || "");
+      const noteKey = kind === "voice" ? "notify.voice" : kind === "image" || kind === "gif" || kind === "video" ? "notify.photo" : kind === "file" ? "notify.file" : "notify.message";
+      const note = translate(current.settings.locale, noteKey).replaceAll("{name}", who).replaceAll("{text}", String(event.text || "").slice(0, 80)).replaceAll("{file}", fileName);
+      setToast(note);
+      if (current.settings.messageSound) playCue("message", current.settings);
+      desktopNotice(note, current.settings.desktopNotify !== false);
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!toast) return;
+    const timer = window.setTimeout(() => setToast(""), 4200);
+    return () => window.clearTimeout(timer);
+  }, [toast]);
+
+  const recState = `${live.recording ? 1 : 0}|${[...live.recorders].sort().join(",")}`;
+  useEffect(() => {
+    if (!snap) return;
+    if (recPrev.current === null) {
+      recPrev.current = recState;
+      return;
+    }
+    if (recPrev.current === recState) return;
+    const before = recPrev.current;
+    recPrev.current = recState;
+    const was = before.startsWith("1") || before.slice(before.indexOf("|") + 1).length > 0;
+    const now = recState.startsWith("1") || recState.slice(recState.indexOf("|") + 1).length > 0;
+    if (was === now) return;
+    speakRecord(now ? "start" : "stop");
+  }, [recState, snap]);
+
+  useEffect(() => {
+    if (!snap) return;
+    engine.setIdentity(snap.profile.id, snap.profile.name, snap.settings);
+    document.documentElement.dataset.theme = snap.settings.theme || "ink";
+    document.documentElement.dataset.motion = snap.settings.reduceMotion ? "reduce" : "";
+    document.documentElement.dataset.chatSize = snap.settings.chatSize || "m";
+    document.documentElement.dataset.chatDense = snap.settings.chatDense ? "1" : "0";
+    document.documentElement.dataset.chatAvatars = snap.settings.chatAvatars === false ? "0" : "1";
+    const scale = snap.settings.fontScale || 1;
+    document.documentElement.style.fontSize = `${Math.round(14 * scale)}px`;
+    document.title = `LokaMeet ${APP_VERSION}`;
+  }, [snap]);
+
+  const awayMinutes = snap?.settings.awayMinutes ?? 10;
+  const myStatus = snap?.profile.status;
+  useEffect(() => {
+    if (!myStatus) return;
+    let last = Date.now();
+    const minutes = Math.max(0, awayMinutes);
+    const onMove = () => {
+      last = Date.now();
+      if (autoAway.current && myStatus === "away") {
+        autoAway.current = false;
+        void api.invoke("setProfile", { status: "online" });
+      }
     };
-    document.body.style.cursor = axis === "horizontal" ? "col-resize" : "row-resize";
-    document.body.style.userSelect = "none";
-    document.addEventListener("mousemove", handleMove);
-    document.addEventListener("mouseup", handleUp);
+    window.addEventListener("pointerdown", onMove);
+    window.addEventListener("keydown", onMove);
+    window.addEventListener("mousemove", onMove);
+    const timer = window.setInterval(() => {
+      if (!minutes || myStatus !== "online") return;
+      if (Date.now() - last < minutes * 60_000) return;
+      autoAway.current = true;
+      void api.invoke("setProfile", { status: "away" });
+    }, 5000);
+    return () => {
+      window.removeEventListener("pointerdown", onMove);
+      window.removeEventListener("keydown", onMove);
+      window.removeEventListener("mousemove", onMove);
+      window.clearInterval(timer);
+    };
+  }, [awayMinutes, myStatus]);
+
+  const layoutSig = `${snap?.settings.layoutList ?? ""}|${snap?.settings.layoutRail ?? ""}|${snap?.settings.layoutChat ?? ""}`;
+  useEffect(() => {
+    if (!snap || layoutDrag.current) return;
+    setCols({
+      list: Math.max(LIST_MIN, snap.settings.layoutList || 400),
+      rail: snap.settings.layoutRail || 220,
+      chat: Math.max(CHAT_MIN, snap.settings.layoutChat || CHAT_MIN),
+    });
+  }, [layoutSig]);
+
+  useEffect(() => {
+    const prev = phaseWas.current;
+    phaseWas.current = live.phase;
+    if (live.phase === "idle" || live.phase === "incoming") {
+      setCallFocus(false);
+      return;
+    }
+    if (prev === "idle" || prev === "incoming") setCallFocus(true);
+  }, [live.phase]);
+
+  const limit = (kind: "list" | "rail" | "chat", value: number) => {
+    const width = window.innerWidth;
+    const side = width < 860 ? 76 : 140;
+    const free = Math.max(320, width - side);
+    if (kind === "list") return clamp(value, LIST_MIN, Math.max(LIST_MIN, Math.min(560, free - 280)));
+    if (kind === "chat") return clamp(value, CHAT_MIN, Math.max(CHAT_MIN, Math.min(520, free - 280)));
+    return clamp(value, 150, Math.max(150, Math.min(320, free - 380)));
+  };
+  const nudge = (kind: "list" | "rail" | "chat", dx: number) => {
+    const sign = kind === "list" ? 1 : -1;
+    setCols((prev) => {
+      const next = { ...prev, [kind]: limit(kind, prev[kind] + dx * sign) };
+      colsRef.current = next;
+      return next;
+    });
+  };
+  const commitLayout = () => {
+    layoutDrag.current = false;
+    const next = colsRef.current;
+    void api.invoke("setSettings", { layoutList: Math.round(next.list), layoutRail: Math.round(next.rail), layoutChat: Math.round(next.chat) });
   };
 
-  const isVertical = axis === "horizontal";
+  if (!snap) return null;
+  const t = (key: Key) => translate(snap.settings.locale, key);
+  if (!entered) return <Welcome t={t} identities={snap.identities ?? []} onDone={() => setEntered(true)} />;
+
+  const openChat = (id: string) => {
+    setChatId(id);
+    setRoute("chats");
+    if (live.phase === "active" || live.phase === "calling") collapseCall();
+    void api.invoke("setOpenChat", { chatId: id });
+  };
+  const browse = (next: Route) => {
+    if (next === "calls" && (live.phase === "active" || live.phase === "calling")) {
+      setRoute("calls");
+      expandCall();
+      return;
+    }
+    setRoute(next);
+    if (live.phase === "active" || live.phase === "calling") collapseCall();
+  };
+  const collapseCall = () => {
+    if (!callFocus || docking) return;
+    minimizeCall();
+  };
+  const expandCall = () => {
+    if (callFocus) return;
+    if (snap.settings.reduceMotion) {
+      setCallFocus(true);
+      return;
+    }
+    setExpanding(true);
+    setCallFocus(true);
+    window.setTimeout(() => setExpanding(false), 560);
+  };
+  const openProfile = () => {
+    setSettingsGroup("profile");
+    browse("settings");
+  };
+  const openPeer = (id: string) => {
+    if (id === snap.profile.id) openProfile();
+    else if (personById(snap, id)) setPersonId(id);
+  };
+  const minimizeCall = () => {
+    if (snap.settings.reduceMotion) {
+      setCallFocus(false);
+      return;
+    }
+    setDocking(true);
+    window.setTimeout(() => {
+      setCallFocus(false);
+      setDocking(false);
+    }, 520);
+  };
+  const inCall = live.phase === "active" || live.phase === "calling";
+  const mine = selfView(snap.profile.status, inCall, live.mode, t);
+  const unread = Object.values(snap.unread).some((count) => count > 0);
+  const person = personId ? personById(snap, personId) : undefined;
+  const caller = live.incoming ? personById(snap, live.incoming.peerId) : undefined;
+
   return (
-    <div
-      className="panel-resizer"
-      data-axis={axis}
-      onMouseDown={handleMouseDown}
-      role="separator"
-      aria-orientation={isVertical ? "vertical" : "horizontal"}
-      title={isVertical ? t("resizeWidth") : t("resizeHeight")}
-    />
+    <div className="app" style={{ ["--layout-list" as string]: `${cols.list}px`, ["--layout-rail" as string]: `${cols.rail}px`, ["--layout-chat" as string]: `${cols.chat}px` }}>
+      <nav className="rail">
+        <button type="button" className="logo-link has-tip" data-tip="GitHub" onClick={() => void api.invoke("openExternal", { url: "https://github.com/mistrwest/LokaMeet" })}>
+          <img className="logo" src={logoUrl} alt="LokaMeet" />
+        </button>
+        <RailButton active={!inCall || !callFocus ? route === "chats" : false} alert={unread} icon={<MessageCircle size={30} />} label={t("nav.chats")} tip={t("tip.chats")} onClick={() => browse("chats")} />
+        <RailButton active={(inCall && callFocus) || route === "calls"} icon={<Phone size={30} />} label={t("nav.calls")} tip={t("tip.calls")} onClick={() => browse("calls")} />
+        <RailButton active={route === "lan" && (!inCall || !callFocus)} icon={<Users size={30} />} label={t("nav.lan")} tip={t("tip.lan")} onClick={() => browse("lan")} />
+        <RailButton active={route === "rooms" && (!inCall || !callFocus)} icon={<Hash size={30} />} label={t("nav.rooms")} tip={t("tip.rooms")} onClick={() => browse("rooms")} />
+        <RailButton active={route === "games" || gamesOpen} icon={<Gamepad2 size={30} />} label={t("nav.games")} tip={t("tip.games")} onClick={() => browse("games")} />
+        <div className="spacer" />
+        <div className="me-anchor" ref={statusRef}>
+          <button className={`rail-me has-tip${route === "settings" && settingsGroup === "profile" ? " active" : ""}${statusOpen ? " no-tip" : ""}`} data-tip={t("welcome.status")} onClick={() => setStatusOpen((on) => !on)}>
+            <span className="rail-avatar">
+              <Avatar name={snap.profile.name} color={snap.selfColor} photo={snap.profile.avatar} focus={snap.profile.avatarFocus} status={mine.kind} />
+              <i className={`presence ${mine.kind}`} />
+            </span>
+            <span className="rail-me-name">{snap.profile.name}</span>
+            <span className={`rail-me-status status-word ${mine.kind}`}>{mine.label}</span>
+          </button>
+          {statusOpen && (
+            <div className="status-pop" role="menu">
+              <div className="status-pop-title">{t("welcome.status")}</div>
+              {(["online", "away", "busy", "invisible"] as const).map((item) => (
+                <button key={item} type="button" className={snap.profile.status === item ? "active" : ""} onClick={() => { autoAway.current = false; setStatusOpen(false); void api.invoke("setProfile", { status: item }); }}>
+                  <i className={`presence ${item}`} />
+                  <span className={`status-word ${item}`}>{t(presenceKey(item))}</span>
+                </button>
+              ))}
+              <button type="button" onClick={() => { setStatusOpen(false); openProfile(); }}>{t("profile.settings")}</button>
+            </div>
+          )}
+        </div>
+        <RailButton active={route === "settings" && (!inCall || !callFocus)} icon={<SettingsIcon size={30} />} label={t("nav.settings")} tip={t("tip.settings")} onClick={() => browse("settings")} />
+        <RailButton active={false} icon={<Power size={30} />} label={t("nav.quit")} tip={t("tip.quit")} onClick={() => {
+          void (async () => {
+            if (inCall && !await askConfirm(t("app.quitAsk"), t("app.quit"), t("composer.cancel"))) return;
+            void api.invoke("quit");
+          })();
+        }} />
+      </nav>
+      <div className="content">
+        {inCall && !callFocus && <CallDock snap={snap} t={t} onExpand={expandCall} />}
+        {inCall && callFocus ? (
+          <CallScreen snap={snap} t={t} showChat={showChat} setShowChat={setShowChat} openGames={() => setGamesOpen(true)} onMinimize={minimizeCall} docking={docking} expanding={expanding} openProfile={openProfile} openPeer={openPeer} onRail={(dx) => nudge("rail", dx)} onChat={(dx) => nudge("chat", dx)} onDragStart={() => { layoutDrag.current = true; }} onDragEnd={commitLayout} />
+        ) : (
+          <main className={route === "settings" || route === "games" || route === "calls" ? "workspace solo" : "workspace"}>
+            {route === "chats" && <ChatList snap={snap} t={t} chatId={chatId} openChat={openChat} openProfile={openProfile} openPeer={openPeer} />}
+            {route === "chats" && <Splitter className="list" onStart={() => { layoutDrag.current = true; }} onDelta={(dx) => nudge("list", dx)} onDone={commitLayout} />}
+            {route === "chats" && <Thread snap={snap} t={t} chatId={chatId} openProfile={openProfile} openPeer={openPeer} />}
+            {route === "calls" && <CallList snap={snap} t={t} />}
+            {route === "lan" && <LanList snap={snap} t={t} openChat={openChat} openProfile={openProfile} openPeer={openPeer} />}
+            {route === "rooms" && <RoomList snap={snap} t={t} openChat={openChat} setError={setError} />}
+            {route === "settings" && <SettingsView snap={snap} t={t} group={settingsGroup} onGroup={setSettingsGroup} />}
+            {route === "games" && <Games snap={snap} t={t} hintPeer={live.peerId} hintRoom={live.roomId} />}
+          </main>
+        )}
+      </div>
+      {live.invite && (
+        <div className="modal-back">
+          <div className="modal">
+            <h2>{t("rooms.invited")}</h2>
+            <p>{t("rooms.inviteFrom").replaceAll("{name}", live.invite.from).replaceAll("{room}", live.invite.name)}</p>
+            <div className="row">
+              <button className="btn ghost" onClick={() => engine.declineInvite()}>{t("call.decline")}</button>
+              <button className="btn" onClick={() => void engine.acceptInvite().catch((reason) => setError(String(reason)))}>{t("rooms.joinConf")}</button>
+            </div>
+          </div>
+        </div>
+      )}
+      {live.incoming && (
+        <div className="call-pop-back">
+          <div className="call-pop">
+            <div className="call-pop-face">
+              <Avatar name={caller?.name || live.incoming.name} color={caller?.color || snap.selfColor} photo={caller?.avatar} focus={caller?.avatarFocus} large />
+            </div>
+            <h2>{caller?.name || live.incoming.name}</h2>
+            <p>{t("call.incomingHint")}</p>
+            <div className="call-pop-acts">
+              <button type="button" className="call-pop-ok" onClick={() => void engine.accept()}><Phone size={28} /></button>
+              <button type="button" className="call-pop-no" onClick={() => engine.decline()}><PhoneOff size={28} /></button>
+            </div>
+            <div className="call-pop-caps">
+              <span>{t("call.accept")}</span>
+              <span>{t("call.decline")}</span>
+            </div>
+          </div>
+        </div>
+      )}
+      {gamesOpen && (
+        <div className="modal-back" onClick={() => { if (!games.get().match) setGamesOpen(false); }}>
+          <div className="modal games-modal" onClick={(event) => event.stopPropagation()}>
+            <Games snap={snap} t={t} hintPeer={live.mode === "p2p" ? live.peerId : ""} hintRoom={live.mode === "conf" ? live.roomId : ""} />
+          </div>
+        </div>
+      )}
+      <GameInvite t={t} />
+      {live.controlAsk && <ControlAsk snap={snap} t={t} ask={live.controlAsk} />}
+      {error && <div className="modal-back" onClick={() => setError("")}><div className="modal">{error}</div></div>}
+      {person && <PeerCard peer={person} t={t} onClose={() => setPersonId("")} />}
+      {toast && <button type="button" className="toast" onClick={() => setToast("")}>{toast}</button>}
+      {confirmAsk && (
+        <div className="modal-back confirm-back" onClick={() => { confirmAsk.resolve(false); setConfirmAsk(null); }}>
+          <div className="modal confirm-modal" role="alertdialog" onClick={(event) => event.stopPropagation()}>
+            <h2>{confirmAsk.text}</h2>
+            <div className="row confirm-actions">
+              <button className="btn ghost" type="button" onClick={() => { confirmAsk.resolve(false); setConfirmAsk(null); }}>{confirmAsk.no}</button>
+              <button className="btn danger" type="button" autoFocus onClick={() => { confirmAsk.resolve(true); setConfirmAsk(null); }}>{confirmAsk.yes}</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
-function ProfileAvatar({
-  src,
-  name,
-  className = "",
-  position,
-  onClick
-}: {
-  src: string;
-  name: string;
-  className?: string;
-  position?: AvatarPosition;
-  onClick?: () => void;
-}) {
-  const { t } = useTranslation();
-  const x = position?.x ?? 50;
-  const y = position?.y ?? 50;
-  const zoom = Math.max(1, Math.min(3, (position?.zoom ?? 100) / 100));
+function RailButton({ active, icon, label, tip, onClick, alert = false }: { active: boolean; icon: ReactNode; label: string; tip: string; onClick: () => void; alert?: boolean }) {
+  return <button className={active ? "active has-tip" : "has-tip"} data-tip={tip} onClick={onClick}>{icon}{alert && <i className="rail-alert" />} <span>{label}</span></button>;
+}
+
+function Welcome({ t, identities, onDone }: { t: (key: Key) => string; identities: Identity[]; onDone: () => void }) {
+  const saved = identities.filter((item) => item.name);
+  const [mode, setMode] = useState<"pick" | "new">(saved.length ? "pick" : "new");
+  const [name, setName] = useState("");
+  const [status, setStatus] = useState<Presence>(saved[0]?.status || "online");
+  const [avatar, setAvatar] = useState("");
+  const [error, setError] = useState("");
+  const color = colorFromId(name || "new");
+  const shown = name.trim() || "?";
+  const hints: Record<"online" | "invisible" | "busy", Key> = { online: "welcome.onlineHint", invisible: "welcome.invisibleHint", busy: "welcome.busyHint" };
+  const cancel = () => {
+    if (mode === "new" && saved.length) {
+      setMode("pick");
+      setName("");
+      setAvatar("");
+      setStatus("online");
+      return;
+    }
+    void api.invoke("quit");
+  };
+  const onFile = (file?: File) => {
+    if (!file) return;
+    if (file.size > 4 * 1024 * 1024) {
+      setError(t("profile.tooBig"));
+      return;
+    }
+    setError("");
+    const reader = new FileReader();
+    reader.onload = () => setAvatar(String(reader.result || ""));
+    reader.readAsDataURL(file);
+  };
+  if (mode === "pick") {
+    return (
+      <div className="welcome">
+        <div className="welcome-card">
+          <div className="welcome-top">
+            <img className="welcome-logo" src={logoUrl} alt="" />
+            <div>
+              <div className="welcome-brand">LokaMeet</div>
+              <div className="welcome-ver">{APP_VERSION}</div>
+            </div>
+          </div>
+          <h2>{t("welcome.who")}</h2>
+          <p className="muted">{t("welcome.whoHint")}</p>
+          <div className="welcome-label">{t("welcome.status")}</div>
+          <div className="welcome-statuses">
+            {(["online", "invisible", "busy"] as const).map((item) => (
+              <button key={item} type="button" className={status === item ? `welcome-status ${item} on` : `welcome-status ${item}`} onClick={() => setStatus(item)}>
+                <i className={`presence ${item}`} />
+                <strong className={`status-word ${item}`}>{t(presenceKey(item))}</strong>
+                <small>{t(hints[item])}</small>
+              </button>
+            ))}
+          </div>
+          <div className="welcome-people">
+            {saved.map((item) => (
+              <button key={item.id} type="button" className="welcome-person" onClick={() => void api.invoke("pickIdentity", { id: item.id, status }).then(() => onDone())}>
+                <Avatar name={item.name} color={colorFromId(item.id)} photo={item.avatar} focus={item.avatarFocus} large status={status} />
+                <span>
+                  <strong>{item.name}</strong>
+                  <small>{t("welcome.enterAs").replace("{status}", t(presenceKey(status)))}</small>
+                </span>
+              </button>
+            ))}
+          </div>
+          <button className="btn ghost welcome-go" type="button" onClick={() => setMode("new")}>{t("welcome.new")}</button>
+          <button className="btn ghost welcome-cancel" type="button" onClick={cancel}>{t("welcome.cancel")}</button>
+        </div>
+      </div>
+    );
+  }
   return (
-    <span
-      className={`profileAvatar ${className}${onClick ? " profileAvatarClickable" : ""}`}
-      onClick={onClick}
-      role={onClick ? "button" : undefined}
-      tabIndex={onClick ? 0 : undefined}
-      onKeyDown={onClick ? (event) => (event.key === "Enter" || event.key === " " ? (event.preventDefault(), onClick()) : undefined) : undefined}
+    <div className="welcome">
+      <form className="welcome-card" onSubmit={(event) => {
+        event.preventDefault();
+        const next = name.trim().slice(0, 40);
+        if (!next) return;
+        void api.invoke("enterAs", { name: next, avatar, status, fresh: saved.length > 0 }).then(() => onDone());
+      }}>
+        <div className="welcome-top">
+          <img className="welcome-logo" src={logoUrl} alt="" />
+          <div>
+            <div className="welcome-brand">LokaMeet</div>
+            <div className="welcome-ver">{APP_VERSION}</div>
+          </div>
+        </div>
+        <label className="welcome-hero has-tip" data-tip={t("welcome.photo")}>
+          <Avatar name={shown} color={color} photo={avatar} large status={status} />
+          <span className="welcome-photo">{t("welcome.photo")}</span>
+          <input hidden type="file" accept="image/*,video/webm,video/mp4,.gif,.webp" onChange={(event) => { onFile(event.target.files?.[0]); event.target.value = ""; }} />
+        </label>
+        {avatar && <button className="welcome-clear" type="button" onClick={() => setAvatar("")}>{t("settings.clearPhoto")}</button>}
+        <h2>{t("welcome.title")}</h2>
+        <p className="muted">{t("welcome.hint")}</p>
+        <label className="welcome-name">
+          <span>{t("welcome.name")}</span>
+          <input autoFocus maxLength={40} value={name} placeholder={t("welcome.namePh")} onChange={(event) => setName(event.target.value)} />
+        </label>
+        <div className="welcome-label">{t("welcome.status")}</div>
+        <div className="welcome-statuses">
+          {(["online", "invisible", "busy"] as const).map((item) => (
+            <button key={item} type="button" className={status === item ? `welcome-status ${item} on` : `welcome-status ${item}`} onClick={() => setStatus(item)}>
+              <i className={`presence ${item}`} />
+              <strong className={`status-word ${item}`}>{t(presenceKey(item))}</strong>
+              <small>{t(hints[item])}</small>
+            </button>
+          ))}
+        </div>
+        {error && <p className="hint">{error}</p>}
+        <button className="btn welcome-go" type="submit" disabled={!name.trim()}>{t("welcome.go")}</button>
+        <button className="btn ghost welcome-cancel" type="button" onClick={cancel}>{t("welcome.cancel")}</button>
+      </form>
+    </div>
+  );
+}
+
+function initials(name: string): string {
+  const parts = name.replace(/[«»"'„“]/g, " ").trim().split(/\s+/).filter(Boolean);
+  if (parts.length >= 2) return `${parts[0][0] ?? ""}${parts[1][0] ?? ""}`.toUpperCase();
+  return (name.trim().slice(0, 2) || "L").toUpperCase();
+}
+
+function Avatar({ name, color, photo, focus, large = false, status, onClick }: { name: string; color: string; photo?: string; focus?: AvatarFocus; large?: boolean; status?: string; onClick?: () => void }) {
+  const letters = initials(name);
+  const ring = status ? ` status-${status}` : "";
+  const motion = isMotion(photo);
+  const style = focusStyle(focus);
+  return (
+    <div className={`${large ? "avatar-lg" : "avatar"}${ring}${onClick ? " clickable" : ""}`} style={{ background: color }} onClick={onClick ? (event) => { event.stopPropagation(); onClick(); } : undefined}>
+      {photo && motion ? <video src={photo} autoPlay muted loop playsInline style={style} /> : photo ? <img src={photo} alt="" style={style} /> : letters}
+    </div>
+  );
+}
+
+function ChatList({ snap, t, chatId, openChat, openProfile, openPeer }: { snap: Snapshot; t: (key: Key) => string; chatId: string; openChat: (id: string) => void; openProfile: () => void; openPeer: (id: string) => void }) {
+  const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState<"all" | "dm" | "group">("all");
+  const live = useSyncExternalStore(engine.subscribe, () => engine.state);
+  const rows = useMemo(() => {
+    const hidden = new Set(snap.hiddenChats ?? []);
+    const items: Array<{
+      id: string; kind: "dm" | "group"; title: string; color: string; photo?: string; focus?: AvatarFocus;
+      preview: string; ts: number; unread: number; inCall: boolean; status?: string; statusLabel?: string; peerId?: string;
+      recording: boolean; sharing: boolean; mine: boolean; delivered: boolean;
+    }> = [];
+    const seen = new Set<string>();
+    const push = (id: string) => {
+      if (!id || seen.has(id) || hidden.has(id)) return;
+      const thread = snap.messages[id] ?? [];
+      if (!thread.length) return;
+      seen.add(id);
+      const last = thread[thread.length - 1];
+      const title = titleOf(snap, id, t);
+      const peer = peerOf(snap, id);
+      const view = peer ? peerView(peer, t) : undefined;
+      const flags = peer ? activityOf(snap, peer.id, false) : { recording: false, sharing: false };
+      const room = id.startsWith("room:") ? snap.rooms.find((item) => item.id === id.slice(5)) : undefined;
+      const kind = id.startsWith("room:") ? "group" as const : "dm" as const;
+      const raw = last.deleted ? t("msg.deleted") : last.kind === "system" ? formatSystem(last.text, t) : previewText(last);
+      const who = last.kind === "system" ? "" : last.senderId === snap.profile.id ? t("chats.you") : kind === "group" ? (personById(snap, last.senderId)?.name || "") : "";
+      const preview = [who, raw.replace(/\s+/g, " ").trim()].filter(Boolean).join(": ");
+      items.push({
+        id,
+        kind,
+        title: title.name,
+        color: title.color,
+        photo: title.photo,
+        focus: title.focus,
+        peerId: peer?.id,
+        preview,
+        ts: last.ts,
+        unread: snap.unread[id] ?? 0,
+        inCall: Boolean(peer?.inCall || room?.conference),
+        status: room?.conference ? "conf" : view?.kind,
+        statusLabel: room?.conference ? t("status.inConf") : view?.label,
+        recording: flags.recording,
+        sharing: flags.sharing,
+        mine: last.senderId === snap.profile.id,
+        delivered: last.status === "delivered",
+      });
+    };
+    for (const id of Object.keys(snap.messages)) push(id);
+    const q = query.trim().toLowerCase();
+    return items.filter((item) => !q || item.title.toLowerCase().includes(q) || item.preview.toLowerCase().includes(q)).sort((a, b) => b.ts - a.ts);
+  }, [snap, query, t, live.recording, live.shareOn, live.recorders, live.tiles]);
+  const removeChat = async (id: string) => {
+    if (!await askConfirm(t("chats.deleteAsk"), t("common.ok"), t("composer.cancel"))) return;
+    if (id === chatId) openChat("");
+    await api.invoke("hideChat", { chatId: id });
+  };
+  const visible = rows.filter((row) => filter === "all" || row.kind === filter);
+  const renderRow = (row: (typeof rows)[number]) => {
+    const unread = row.unread > 0 && row.id !== chatId;
+    return (
+      <button key={row.id} className={`person chat-row${row.id === chatId ? " active" : ""}${row.inCall ? " in-call" : ""}${unread ? " unread" : ""}`} onClick={() => openChat(row.id)}>
+        <span className="rail-avatar">
+          <Avatar name={row.title} color={row.color} photo={row.photo} focus={row.focus} status={row.status} onClick={row.peerId ? () => openPeer(row.peerId!) : undefined} />
+          {row.status && <i className={`presence ${row.status}`} />}
+        </span>
+        <span className="chat-copy">
+          <div className="chat-top">
+            <div className="name">{row.title} <NickMarks recording={row.recording} sharing={row.sharing} t={t} /></div>
+            <div className="time">{row.ts ? clock(row.ts) : ""}</div>
+          </div>
+          <div className="chat-bottom">
+            <div className="sub preview">{row.statusLabel && <span className={`status-word ${row.status}`}>{row.statusLabel}</span>}{!row.inCall && row.preview ? `${row.statusLabel ? " · " : ""}${row.preview}` : ""}</div>
+            {unread ? <i className="badge unread-n">{row.unread}</i> : row.mine ? <span className={row.delivered ? "ticks on" : "ticks"}>✓✓</span> : null}
+          </div>
+        </span>
+        <span className="wipe" title={t("chats.delete")} onClick={(event) => { event.preventDefault(); event.stopPropagation(); void removeChat(row.id); }}><Trash2 size={14} /></span>
+      </button>
+    );
+  };
+  return (
+    <section className="list chats-pane">
+      <header><strong>{t("nav.chats")}</strong></header>
+      <label className="search"><Search size={16} /><input value={query} placeholder={t("chats.search")} onChange={(event) => setQuery(event.target.value)} /></label>
+      <div className="chat-filter">
+        {([
+          ["all", t("chats.all"), rows.filter((row) => row.unread > 0 && row.id !== chatId).length],
+          ["dm", t("chats.direct"), rows.filter((row) => row.kind === "dm" && row.unread > 0 && row.id !== chatId).length],
+          ["group", t("chats.groupsShort"), rows.filter((row) => row.kind === "group" && row.unread > 0 && row.id !== chatId).length],
+        ] as const).map(([id, label, count]) => (
+          <button key={id} type="button" className={filter === id ? "chip on" : "chip"} onClick={() => setFilter(id)}>
+            {label}{count > 0 ? <b>{count}</b> : null}
+          </button>
+        ))}
+      </div>
+      <div className="scroll">
+        {visible.length === 0 && <div className="empty">{t("chats.empty")}</div>}
+        {visible.map(renderRow)}
+      </div>
+    </section>
+  );
+}
+
+function Thread({ snap, t, chatId, openProfile, openPeer }: { snap: Snapshot; t: (key: Key) => string; chatId: string; openProfile: () => void; openPeer: (id: string) => void }) {
+  const [text, setText] = useState("");
+  const [reply, setReply] = useState<ChatMessage | null>(null);
+  const [editing, setEditing] = useState<ChatMessage | null>(null);
+  const [smileys, setSmileys] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
+  const [drafts, setDrafts] = useState<Array<{ id: string; file: File; preview: string; kind: ChatMessage["kind"] }>>([]);
+  const [recording, setRecording] = useState(false);
+  const [recMs, setRecMs] = useState(0);
+  const [wave, setWave] = useState<number[]>([]);
+  const dragDepth = useRef(0);
+  const box = useRef<HTMLTextAreaElement>(null);
+  const voiceRef = useRef<{ recorder: MediaRecorder; stream: MediaStream; ctx: AudioContext; chunks: Blob[]; started: number; raf: number } | null>(null);
+  const gesture = useRef({ down: false, x: 0, released: false });
+  const arming = useRef(false);
+  const voiceGen = useRef(0);
+  const messages = [...(snap.messages[chatId] ?? [])].sort((a, b) => a.ts - b.ts || a.id.localeCompare(b.id));
+  const title = titleOf(snap, chatId, t);
+  const peer = peerOf(snap, chatId);
+  const faces = chatFaces(snap, chatId);
+  const smileRef = useRef<HTMLDivElement>(null);
+  const feedRef = useRef<HTMLDivElement>(null);
+  const [menu, setMenu] = useState<{ x: number; y: number; compose: boolean; message?: ChatMessage } | null>(null);
+  useEffect(() => {
+    if (!recording || !voiceRef.current) return;
+    const id = window.setInterval(() => {
+      const current = voiceRef.current;
+      if (!current) return;
+      setRecMs(performance.now() - current.started);
+    }, 200);
+    return () => window.clearInterval(id);
+  }, [recording]);
+  useDismiss(smileys, () => setSmileys(false), smileRef);
+  useEffect(() => {
+    const node = feedRef.current;
+    if (node) node.scrollTop = node.scrollHeight;
+  }, [messages.length, chatId]);
+  useEffect(() => {
+    voiceGen.current += 1;
+    setDrafts([]);
+    setText("");
+    setReply(null);
+    setEditing(null);
+    setSmileys(false);
+    dropVoice(false);
+  }, [chatId]);
+
+  async function stageFiles(files: File[]) {
+    for (const file of files) {
+      const id = crypto.randomUUID();
+      const kind = sightKind(await sniffFile(file));
+      const visual = kind === "image" || kind === "gif" || kind === "video";
+      setDrafts((list) => [...list, { id, file, preview: visual && file.size < 80_000_000 ? URL.createObjectURL(file) : "", kind }]);
+    }
+  }
+
+  async function deliver(kind: ChatMessage["kind"], file?: File, voice?: Blob, caption = "") {
+    if (!chatId) return;
+    const id = crypto.randomUUID();
+    let sourcePath = "";
+    let preview = "";
+    let info: ChatMessage["file"];
+    const blob = voice ?? file;
+    if (blob) {
+      const named = file?.name || `voice-${id}.webm`;
+      const disk = (file as File & { path?: string } | undefined)?.path;
+      sourcePath = disk && disk.length > 0 ? disk : await api.invoke<string>("storeFile", { name: named, bytes: new Uint8Array(await blob.arrayBuffer()) });
+      const resolved = voice ? "voice" : kind;
+      if (file && resolved === "image" && file.size < 12_000_000) preview = await imagePreview(file);
+      if (file && resolved === "video" && file.size < 80_000_000) preview = await videoPoster(file);
+      info = { transferId: id, name: named, size: blob.size, mime: file ? mimeOf(file) : (blob.type || "application/octet-stream"), sourcePath, preview };
+    }
+    const message: ChatMessage = {
+      id, chatId, senderId: snap.profile.id, kind: voice ? "voice" : file ? kind : kind,
+      text: caption, replyTo: reply ? { id: reply.id, text: previewText(reply) } : undefined,
+      ts: Date.now(), status: "pending", file: info,
+    };
+    const stored = await api.invoke<ChatMessage>("sendChat", { message });
+    const voiceInline = Boolean(voice && blob && blob.size <= 6_000_000);
+    try {
+      if (!voiceInline && stored.file?.sourcePath && chatId.startsWith("dm:")) await engine.transfer(chatId.slice(3), stored);
+      if (!voiceInline && stored.file?.sourcePath && chatId.startsWith("room:")) {
+        const room = snap.rooms.find((item) => roomChat(item.id) === chatId);
+        await Promise.all((room?.members ?? []).filter((member) => member !== snap.profile.id).map((member) => engine.transfer(member, stored)));
+      }
+    } catch (error) {
+      console.error(error);
+    }
+  }
+
+  async function submit() {
+    const caption = text.trim();
+    if (editing) {
+      if (editing.kind === "text" && !caption) return;
+      await api.invoke("editChat", { chatId, id: editing.id, text: caption });
+      setEditing(null);
+      setText("");
+      return;
+    }
+    if (!caption && drafts.length === 0) return;
+    const queued = drafts;
+    setText("");
+    setDrafts([]);
+    setReply(null);
+    setSmileys(false);
+    if (queued.length === 0) {
+      await deliver("text", undefined, undefined, caption);
+      return;
+    }
+    for (let index = 0; index < queued.length; index += 1) {
+      await deliver(queued[index].kind, queued[index].file, undefined, index === 0 ? caption : "");
+    }
+  }
+
+  function dropVoice(send: boolean) {
+    const current = voiceRef.current;
+    if (!current) return;
+    voiceRef.current = null;
+    window.cancelAnimationFrame(current.raf);
+    current.recorder.onstop = () => {
+      current.stream.getTracks().forEach((track) => track.stop());
+      void current.ctx.close();
+      const blob = new Blob(current.chunks, { type: current.recorder.mimeType || "audio/webm" });
+      if (send && blob.size > 1000) void deliver("voice", undefined, blob, text.trim()).then(() => { setText(""); setReply(null); });
+    };
+    if (current.recorder.state !== "inactive") current.recorder.stop();
+    setRecording(false);
+    setWave([]);
+    setRecMs(0);
+  }
+
+  async function beginVoice(event: ReactPointerEvent<HTMLButtonElement>) {
+    if (voiceRef.current) {
+      dropVoice(true);
+      return;
+    }
+    if (arming.current) return;
+    const gen = voiceGen.current;
+    arming.current = true;
+    gesture.current = { down: true, x: event.clientX, released: false };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    let stream: MediaStream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (error) {
+      console.error(error);
+      gesture.current.down = false;
+      arming.current = false;
+      return;
+    }
+    arming.current = false;
+    if (gen !== voiceGen.current) {
+      stream.getTracks().forEach((track) => track.stop());
+      return;
+    }
+    const ctx = new AudioContext();
+    const source = ctx.createMediaStreamSource(stream);
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 256;
+    source.connect(analyser);
+    const chunks: Blob[] = [];
+    const recorder = new MediaRecorder(stream);
+    recorder.ondataavailable = (item) => { if (item.data.size) chunks.push(item.data); };
+    const started = performance.now();
+    const bucket = { recorder, stream, ctx, chunks, started, raf: 0 };
+    voiceRef.current = bucket;
+    const sample = new Uint8Array(analyser.fftSize);
+    let painted = 0;
+    const tick = (now: number) => {
+      if (voiceRef.current !== bucket) return;
+      if (now - painted > 70) {
+        painted = now;
+        analyser.getByteTimeDomainData(sample);
+        let sum = 0;
+        for (const value of sample) {
+          const x = (value - 128) / 128;
+          sum += x * x;
+        }
+        const amp = Math.min(1, Math.sqrt(sum / sample.length) * 5);
+        setWave((prev) => [...prev.slice(-46), amp]);
+        setRecMs(now - started);
+      }
+      bucket.raf = window.requestAnimationFrame(tick);
+    };
+    recorder.start();
+    setRecording(true);
+    setWave([]);
+    setRecMs(0);
+    bucket.raf = window.requestAnimationFrame(tick);
+  }
+
+  function moveVoice(event: ReactPointerEvent<HTMLButtonElement>) {
+    if (!gesture.current.down || !voiceRef.current) return;
+    if (gesture.current.x - event.clientX > 88) {
+      gesture.current.down = false;
+      dropVoice(false);
+    }
+  }
+
+  function releaseVoice() {
+    gesture.current.released = true;
+    gesture.current.down = false;
+    const current = voiceRef.current;
+    if (!current) return;
+    if (performance.now() - current.started > 350) dropVoice(true);
+  }
+
+  if (!chatId) return <section className="thread thread-empty"><header><strong>{t("chats.pick")}</strong></header><div className="empty">{t("chats.pickHint")}</div></section>;
+  const heading = title;
+  const group = chatId.startsWith("room:");
+  const view = peer ? peerView(peer, t) : undefined;
+  const room = group ? snap.rooms.find((item) => roomChat(item.id) === chatId) : undefined;
+  const other = !group ? peer || personById(snap, chatId.slice(3)) : undefined;
+  const callPeer = (video: boolean) => {
+    if (!other) return;
+    void engine.call(other.id, video, other.name);
+  };
+  const beginEdit = (message: ChatMessage) => {
+    setReply(null);
+    setEditing(message);
+    setText(message.text);
+    box.current?.focus();
+  };
+  const insertAtCaret = (chunk: string) => {
+    const node = box.current;
+    if (!node) {
+      setText((value) => `${value}${chunk}`);
+      return;
+    }
+    const start = node.selectionStart ?? text.length;
+    const end = node.selectionEnd ?? text.length;
+    const next = `${text.slice(0, start)}${chunk}${text.slice(end)}`;
+    setText(next);
+    requestAnimationFrame(() => {
+      node.focus();
+      const pos = start + chunk.length;
+      node.setSelectionRange(pos, pos);
+    });
+  };
+  const selectedText = () => {
+    const node = box.current;
+    if (!node) return "";
+    return text.slice(node.selectionStart ?? 0, node.selectionEnd ?? 0);
+  };
+  const runMenu = async (act: "copy" | "paste" | "cut" | "delete") => {
+    if (!menu) return;
+    if (menu.compose) {
+      const pick = selectedText();
+      if (act === "copy" && pick) await navigator.clipboard.writeText(pick);
+      if (act === "cut" && pick) {
+        await navigator.clipboard.writeText(pick);
+        insertAtCaret("");
+      }
+      if (act === "paste") insertAtCaret(await navigator.clipboard.readText().catch(() => ""));
+      if (act === "delete" && pick) insertAtCaret("");
+    } else if (menu.message) {
+      if (act === "copy" && menu.message.text) await navigator.clipboard.writeText(menu.message.text);
+      if (act === "delete" && menu.message.senderId === snap.profile.id) void api.invoke("deleteChat", { chatId, id: menu.message.id });
+    }
+    setMenu(null);
+  };
+  return (
+    <section
+      className={dragOver ? "thread dropping" : "thread chat-thread"}
+      onDragEnter={(event) => {
+        if (![...event.dataTransfer.types].includes("Files")) return;
+        event.preventDefault();
+        dragDepth.current += 1;
+        setDragOver(true);
+      }}
+      onDragOver={(event) => {
+        if (![...event.dataTransfer.types].includes("Files")) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "copy";
+      }}
+      onDragLeave={() => {
+        dragDepth.current = Math.max(0, dragDepth.current - 1);
+        if (dragDepth.current === 0) setDragOver(false);
+      }}
+      onDrop={(event) => {
+        event.preventDefault();
+        dragDepth.current = 0;
+        setDragOver(false);
+        void stageFiles([...(event.dataTransfer.files ?? [])]);
+      }}
     >
-      <img
-        className="profileAvatarInner"
-        src={src}
-        alt={t("avatarAlt", { name })}
-        style={{
-          objectPosition: `${x}% ${y}%`,
-          transform: `scale(${zoom})`,
-          transformOrigin: `${x}% ${y}%`
+      {dragOver && <div className="drop-veil">{t("composer.drop")}</div>}
+      <header className="thread-head">
+        <span className="rail-avatar">
+          <Avatar name={heading.name} color={heading.color} photo={heading.photo || (faces[0]?.photo)} focus={heading.focus || faces[0]?.focus} status={view?.kind} onClick={peer ? () => openPeer(peer.id) : openProfile} />
+          {view && <i className={`presence ${view.kind}`} />}
+        </span>
+        <div className="thread-who">
+          <div className="name">{heading.name} {peer && <NickMarks {...activityOf(snap, peer.id, false)} t={t} />} {peer?.online && <i className="dot" />}</div>
+          <div className="sub">
+            {view ? <span className={`status-word ${view.kind}`}>{view.label}</span>
+              : room?.conference ? <span className="status-word conf">{t("status.inConf")}</span>
+              : group ? `${Math.max(room?.onlineCount || 0, new Set(messages.filter((item) => item.senderId !== "system").map((item) => item.senderId)).size)} ${t("conf.members")}`
+              : ""}
+          </div>
+        </div>
+        {other && <button className="icon-btn has-tip" data-tip={t("tip.audioCall")} onClick={() => callPeer(false)}><Phone size={26} /></button>}
+        {other && <button className="icon-btn has-tip" data-tip={t("tip.videoCall")} onClick={() => callPeer(true)}><Video size={26} /></button>}
+      </header>
+      <ChatRecStrip chatId={chatId} t={t} />
+      <div className="messages" ref={feedRef}>
+        {messages.length === 0 && <div className="empty">{t("chats.pickHint")}</div>}
+        {messages.map((message, index) => {
+          const mine = message.senderId === snap.profile.id;
+          const sender = personById(snap, message.senderId);
+          const prev = messages[index - 1];
+          const stampDay = !prev || dayKey(prev.ts) !== dayKey(message.ts);
+          return (
+            <Fragment key={message.id}>
+              {stampDay && <div className="day-chip">{dayLabel(message.ts, snap.settings.locale, t)}</div>}
+              <Bubble
+                message={message}
+                mine={mine}
+                room={group}
+                name={mine ? "" : sender?.name || (group ? t("chats.member") : peer?.name || "")}
+                color={mine ? snap.selfColor : sender?.color || heading.color}
+                avatar={sender?.avatar}
+                focus={sender?.avatarFocus}
+                t={t}
+                onReply={() => { setEditing(null); setReply(message); }}
+                onEdit={() => beginEdit(message)}
+                onDelete={() => void api.invoke("deleteChat", { chatId, id: message.id })}
+                onMenu={(event) => { event.preventDefault(); setMenu({ x: event.clientX, y: event.clientY, compose: false, message }); }}
+              />
+            </Fragment>
+          );
+        })}
+      </div>
+      {editing && <div className="replybar"><span>{t("composer.editing")}</span><button className="icon-btn" onClick={() => { setEditing(null); setText(""); }}>{t("composer.cancel")}</button></div>}
+      {reply && !editing && <div className="replybar"><span>{t("composer.reply")}: {renderRichText(previewText(reply), 16)}</span><button className="icon-btn" onClick={() => setReply(null)}>{t("composer.cancel")}</button></div>}
+      {drafts.length > 0 && (
+        <div className="drafts">
+          {drafts.map((draft) => (
+            <div key={draft.id} className="draft" title={draft.file.name}>
+              {draft.preview && draft.kind === "video" ? <video src={draft.preview} muted playsInline /> : draft.preview ? <img src={draft.preview} alt="" /> : <span className="sub">{draft.file.name}</span>}
+              <button type="button" onClick={() => setDrafts((list) => list.filter((item) => item.id !== draft.id))}>×</button>
+            </div>
+          ))}
+          <span className="sub">{t("composer.attachHint")}</span>
+        </div>
+      )}
+      <div className="composer" ref={smileRef}>
+        {smileys && !recording && (
+          <div className="smile-pop" role="dialog" aria-label={t("smileys")}>
+            {SMILEYS.map((name) => (
+              <button key={name} type="button" title={name} onClick={() => { setText((value) => `${value}:${name}:`); box.current?.focus(); }}>
+                <Smiley name={name} size={28} />
+              </button>
+            ))}
+          </div>
+        )}
+        {recording ? (
+          <div className="rec-bar on">
+            <button className="icon-btn danger has-tip" type="button" data-tip={t("tip.voiceCancel")} onClick={() => dropVoice(false)}><Trash2 size={26} /></button>
+            <span className="rec-dot" />
+            <span className="rec-time">{stamp(recMs / 1000)}</span>
+            <span className="rec-live" aria-hidden>{wave.map((amp, index) => <i key={index} style={{ height: `${Math.max(6, amp * 32)}px` }} />)}</span>
+            <button className="send has-tip" type="button" data-tip={t("tip.voiceStop")} onClick={() => dropVoice(true)}><Send size={20} /></button>
+          </div>
+        ) : (
+          <>
+            <textarea ref={box} rows={1} placeholder={t("composer.placeholder")} value={text} onContextMenu={(event) => { event.preventDefault(); setMenu({ x: event.clientX, y: event.clientY, compose: true }); }} onChange={(event) => setText(event.target.value)} onPaste={(event) => {
+              const files = [...event.clipboardData.files];
+              if (files.length) { event.preventDefault(); void stageFiles(files); }
+            }} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && snap.settings.enterToSend !== false) { event.preventDefault(); void submit(); } }} />
+            <div className="composer-bar">
+              <div className="tools">
+                <label className="icon-btn has-tip" data-tip={t("tip.attach")}><Paperclip size={26} /><input hidden type="file" multiple onChange={(event) => { void stageFiles([...(event.target.files ?? [])]); event.target.value = ""; }} /></label>
+                <button className={`icon-btn has-tip${smileys ? " active no-tip" : ""}`} type="button" data-tip={t("tip.smile")} onClick={() => setSmileys((value) => !value)}><Smile size={26} /></button>
+                <button className="icon-btn has-tip" type="button" data-tip={t("tip.voice")} onPointerDown={(event) => { void beginVoice(event); }} onPointerMove={moveVoice} onPointerUp={releaseVoice}><Mic size={26} /></button>
+                {other && <button className="icon-btn has-tip" type="button" data-tip={t("tip.audioCall")} onClick={() => callPeer(false)}><Phone size={26} /></button>}
+                {other && <button className="icon-btn has-tip" type="button" data-tip={t("tip.videoCall")} onClick={() => callPeer(true)}><Video size={26} /></button>}
+              </div>
+              <button className="send has-tip" data-tip={t("tip.send")} disabled={!editing && !text.trim() && drafts.length === 0} onClick={() => void submit()}><Send size={20} /> {editing ? t("composer.save") : t("composer.send")}</button>
+            </div>
+          </>
+        )}
+      </div>
+      {menu && createPortal(
+        <div className="ctx-back" onClick={() => setMenu(null)} onContextMenu={(event) => { event.preventDefault(); setMenu(null); }}>
+          <ChatCtxMenu x={menu.x} y={menu.y} compose={menu.compose} t={t} onCopy={() => void runMenu("copy")} onPaste={() => void runMenu("paste")} onCut={() => void runMenu("cut")} onDelete={() => void runMenu("delete")} />
+        </div>,
+        document.body,
+      )}
+    </section>
+  );
+}
+
+function Bubble({ message, mine, room, name, color, avatar, focus, t, onReply, onEdit, onDelete, onMenu }: { message: ChatMessage; mine: boolean; room: boolean; name: string; color?: string; avatar?: string; focus?: AvatarFocus; t: (key: Key) => string; onReply: () => void; onEdit: () => void; onDelete: () => void; onMenu: (event: React.MouseEvent) => void }) {
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") setOpen(false); };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [open]);
+  if (message.kind === "system" && message.text.startsWith("sys:rec-saved")) {
+    const filePath = message.text.split("\t")[2] || "";
+    const folder = /\.(mp4|webm|mkv)$/i.test(filePath) ? filePath.replace(/[\\/][^\\/]+$/, "") || filePath : filePath;
+    return (
+      <div className="system rec-note rec-alert">
+        <div>{formatSystem(message.text, t, message.ts)}</div>
+        {filePath && <div className="sub">{filePath}</div>}
+        {folder && <button className="btn ghost" type="button" onClick={() => void api.invoke("openPath", { path: folder })}>{t("settings.openFolder")}</button>}
+      </div>
+    );
+  }
+  if (message.kind === "system") {
+    const rec = message.text.startsWith("sys:rec-on") || message.text.startsWith("sys:rec-off");
+    return <div className={rec ? "system rec-note rec-alert" : "system"}>{formatSystem(message.text, t, message.ts)}</div>;
+  }
+  const file = message.file;
+  const localPath = file ? ((mine ? file.sourcePath || file.path : file.path) || "") : "";
+  const video = message.kind !== "voice" && Boolean(file && (message.kind === "video" || looksVideo(file)));
+  const anim = Boolean(file && !video && message.kind === "gif");
+  const photo = Boolean(file && !video && message.kind === "image");
+  const visual = Boolean(file && !file.deleted && !message.deleted && (video || anim || photo));
+  const poster = file?.preview?.startsWith("data:image") ? file.preview : "";
+  const mediaSrc = localPath ? fileUrl(localPath) : "";
+  const src = mediaSrc || poster || (message.kind === "gif" ? "" : file?.preview || "");
+  const canEdit = mine && !message.deleted && message.kind !== "voice";
+  const acts = !message.deleted && (
+    <div className="acts">
+      <button type="button" title={t("msg.quote")} onClick={onReply}><Reply size={16} /></button>
+      {canEdit && <button type="button" title={t("msg.edit")} onClick={onEdit}><Pencil size={16} /></button>}
+      {mine && <button type="button" title={t("msg.delete")} onClick={onDelete}><Trash2 size={16} /></button>}
+    </div>
+  );
+  return (
+    <div className={mine ? "msg-row mine" : "msg-row theirs"}>
+      {mine && acts}
+          {!mine && name && <Avatar name={name} color={color || "#2f6fed"} photo={avatar} focus={focus} />}
+          <div className={mine ? "bubble-wrap mine" : "bubble-wrap theirs"}>
+            <article className={mine ? "bubble mine" : "bubble theirs"} onDoubleClick={() => { if (!message.deleted) onReply(); }} onContextMenu={onMenu}>
+              {!mine && name && <div className="who" style={{ color }}>{name}</div>}
+          {message.deleted ? <div className="deleted-note">{t("msg.deleted")}</div> : (
+            <>
+              {message.replyTo && <div className="quote">{message.replyTo.text}</div>}
+              {file?.deleted && <div className="file-card">{t("file.deleted")}</div>}
+              {visual && src && (
+                <button type="button" className="preview-card" onClick={() => setOpen(true)}>
+                  {video && mediaSrc ? <video src={mediaSrc} poster={poster || undefined} muted playsInline /> : <img src={video && poster ? poster : src} alt={file?.name || ""} />}
+                  {(video || anim) && <span className="preview-play"><Play size={16} /></span>}
+                </button>
+              )}
+              {file && !file.deleted && message.kind === "voice" && (localPath || file.path) && <VoiceNote src={fileUrl(localPath || file.path || "")} />}
+              {file && !file.deleted && message.kind === "voice" && !(localPath || file.path) && <div className="sub">{t("composer.voiceWait")}</div>}
+              {file && !file.deleted && message.kind !== "voice" && (!visual || !src) && (
+                <div className="file-card">
+                  <div><b>{file.name}</b><div className="sub">{Math.ceil(file.size / 1024)} KB</div></div>
+                  {(localPath || file.path) && <button className="btn ghost" onClick={() => void api.invoke("openPath", { path: localPath || file.path })}>{t("file.open")}</button>}
+                </div>
+              )}
+              {message.text && <div>{renderRichText(message.text)}</div>}
+            </>
+          )}
+          <div className="meta">
+            {message.editedAt && !message.deleted && <span className="edited">{t("msg.edited")}</span>}
+            <span>{clock(message.ts)}</span>
+            {mine && !message.deleted && <span className={message.status === "delivered" ? "ticks on" : "ticks"}>✓✓</span>}
+          </div>
+          {open && src && createPortal(
+            <div className="lightbox" onClick={() => setOpen(false)}>
+              <div className="lightbox-frame" onClick={(event) => event.stopPropagation()}>
+                {video && mediaSrc ? <video src={mediaSrc} poster={poster || undefined} controls autoPlay /> : <img src={src} alt={file?.name || ""} />}
+              </div>
+            </div>,
+            document.body,
+          )}
+        </article>
+      </div>
+      {!mine && acts}
+    </div>
+  );
+}
+
+function VoiceNote({ src }: { src: string }) {
+  const audio = useRef<HTMLAudioElement>(null);
+  const waveRef = useRef<HTMLDivElement>(null);
+  const drag = useRef(false);
+  const ctxRef = useRef<AudioContext | null>(null);
+  const bufferRef = useRef<AudioBuffer | null>(null);
+  const sourceRef = useRef<AudioBufferSourceNode | null>(null);
+  const gen = useRef(0);
+  const raf = useRef(0);
+  const offsetRef = useRef(0);
+  const [playing, setPlaying] = useState(false);
+  const [time, setTime] = useState(0);
+  const [dur, setDur] = useState(0);
+  const [peaks, setPeaks] = useState<number[]>(() => Array.from({ length: 42 }, (_, index) => 0.28 + ((index * 7) % 8) / 16));
+  useEffect(() => {
+    let dead = false;
+    const ctx = new AudioContext();
+    void fetch(src).then((response) => response.arrayBuffer()).then(async (bytes) => {
+      const decoded = await ctx.decodeAudioData(bytes.slice(0));
+      await ctx.close();
+      if (dead) return;
+      bufferRef.current = decoded;
+      const data = decoded.getChannelData(0);
+      const bars = 42;
+      const size = Math.max(1, Math.floor(data.length / bars));
+      const next = Array.from({ length: bars }, (_, index) => {
+        let peak = 0;
+        const start = index * size;
+        for (let offset = 0; offset < size; offset += 16) peak = Math.max(peak, Math.abs(data[start + offset] || 0));
+        return Math.max(0.16, Math.min(1, peak * 1.7));
+      });
+      setPeaks(next);
+      setDur(decoded.duration);
+      if (audio.current && !audio.current.paused) audio.current.pause();
+    }).catch(() => { void ctx.close(); });
+    return () => {
+      dead = true;
+      gen.current += 1;
+      window.cancelAnimationFrame(raf.current);
+      try { sourceRef.current?.stop(); } catch { /* already stopped */ }
+      void ctxRef.current?.close();
+      ctxRef.current = null;
+      bufferRef.current = null;
+    };
+  }, [src]);
+  const pause = () => {
+    gen.current += 1;
+    window.cancelAnimationFrame(raf.current);
+    const prev = sourceRef.current;
+    sourceRef.current = null;
+    if (prev) { try { prev.stop(); } catch { /* already stopped */ } }
+    if (audio.current && !audio.current.paused) audio.current.pause();
+    setPlaying(false);
+  };
+  const playFrom = (offset: number) => {
+    const buffer = bufferRef.current;
+    if (!buffer) {
+      const node = audio.current;
+      if (!node) return;
+      node.currentTime = offset;
+      void node.play();
+      return;
+    }
+    let ctx = ctxRef.current;
+    if (!ctx || ctx.state === "closed") {
+      ctx = new AudioContext();
+      ctxRef.current = ctx;
+    }
+    void ctx.resume();
+    const mine = ++gen.current;
+    window.cancelAnimationFrame(raf.current);
+    const prev = sourceRef.current;
+    sourceRef.current = null;
+    if (prev) { try { prev.stop(); } catch { /* already stopped */ } }
+    const node = ctx.createBufferSource();
+    node.buffer = buffer;
+    node.connect(ctx.destination);
+    const start = clamp(offset, 0, Math.max(0, buffer.duration - 0.03));
+    node.start(0, start);
+    sourceRef.current = node;
+    const base = ctx.currentTime - start;
+    offsetRef.current = start;
+    setPlaying(true);
+    setTime(start);
+    const tick = () => {
+      if (gen.current !== mine) return;
+      const now = ctx.currentTime - base;
+      if (now >= buffer.duration - 0.03) {
+        setPlaying(false);
+        setTime(0);
+        offsetRef.current = 0;
+        sourceRef.current = null;
+        return;
+      }
+      offsetRef.current = now;
+      setTime(now);
+      raf.current = window.requestAnimationFrame(tick);
+    };
+    raf.current = window.requestAnimationFrame(tick);
+  };
+  const toggle = () => {
+    if (playing) pause();
+    else playFrom(offsetRef.current);
+  };
+  const seek = (clientX: number) => {
+    const node = waveRef.current;
+    const total = bufferRef.current?.duration || dur || audio.current?.duration || 0;
+    if (!node || !total || !Number.isFinite(total)) return;
+    const rect = node.getBoundingClientRect();
+    const next = clamp((clientX - rect.left) / rect.width, 0, 1) * total;
+    offsetRef.current = next;
+    setTime(next);
+    if (playing) playFrom(next);
+    else if (audio.current && !bufferRef.current) audio.current.currentTime = next;
+  };
+  const played = dur ? time / dur : 0;
+  return (
+    <div className="voice">
+      <button type="button" onClick={toggle}>{playing ? <Pause size={18} /> : <Play size={18} />}</button>
+      <div
+        className="wave"
+        ref={waveRef}
+        onPointerDown={(event) => {
+          drag.current = true;
+          event.currentTarget.setPointerCapture(event.pointerId);
+          seek(event.clientX);
         }}
-        draggable={false}
+        onPointerMove={(event) => { if (drag.current) seek(event.clientX); }}
+        onPointerUp={() => { drag.current = false; }}
+        onPointerCancel={() => { drag.current = false; }}
+      >
+        {peaks.map((peak, index) => <i key={index} className={(index + 0.5) / peaks.length <= played ? "on" : ""} style={{ height: `${Math.max(4, peak * 28)}px` }} />)}
+        <span className="wave-head" style={{ left: `${played * 100}%` }} />
+      </div>
+      <span>{stamp(playing || time > 0.05 ? time : dur || time)}</span>
+      <audio
+        ref={audio}
+        src={src}
+        preload="metadata"
+        onPlay={() => { if (!bufferRef.current) setPlaying(true); }}
+        onPause={() => { if (!bufferRef.current) setPlaying(false); }}
+        onEnded={() => { if (!bufferRef.current) { setPlaying(false); setTime(0); offsetRef.current = 0; } }}
+        onTimeUpdate={(event) => { if (!bufferRef.current) { setTime(event.currentTarget.currentTime); offsetRef.current = event.currentTarget.currentTime; } }}
+        onLoadedMetadata={(event) => {
+          const node = event.currentTarget;
+          if (!bufferRef.current && Number.isFinite(node.duration)) setDur(node.duration);
+        }}
       />
+    </div>
+  );
+}
+
+function CallScreen({ snap, t, showChat, setShowChat, openGames, onMinimize, docking, expanding, openProfile, openPeer, onRail, onChat, onDragStart, onDragEnd }: { snap: Snapshot; t: (key: Key) => string; showChat: boolean; setShowChat: (value: boolean) => void; openGames: () => void; onMinimize: () => void; docking: boolean; expanding: boolean; openProfile: () => void; openPeer: (id: string) => void; onRail: (dx: number) => void; onChat: (dx: number) => void; onDragStart: () => void; onDragEnd: () => void }) {
+  const live = useSyncExternalStore(engine.subscribe, () => engine.state);
+  const stageRef = useRef<HTMLVideoElement>(null);
+  const stageBox = useRef<HTMLDivElement>(null);
+  const railRef = useRef<HTMLDivElement>(null);
+  const [full, setFull] = useState(false);
+  const [fsOn, setFsOn] = useState(false);
+  const fsHold = useRef(1);
+  const fsOver = useRef(false);
+  const fsTimer = useRef(0);
+  useEffect(() => {
+    const onChange = () => setFull(Boolean(document.fullscreenElement));
+    document.addEventListener("fullscreenchange", onChange);
+    return () => document.removeEventListener("fullscreenchange", onChange);
+  }, []);
+  const [shareOpen, setShareOpen] = useState(false);
+  const [showRail, setShowRail] = useState(true);
+  const railOn = live.mode === "conf" && showRail;
+  const desk = live.controlling
+    ? live.tiles.find((tile) => tile.source === "screen" && tile.peerId === (live.controlPeerId || live.peerId) && tile.stream)
+    : undefined;
+  const stage = desk ?? live.tiles.find((tile) => tile.id === live.stageId) ?? live.tiles[0];
+  const pip = live.tiles.find((tile) => tile.source === "self");
+  const screenStage = stage?.source === "screen";
+  const host = live.mode === "conf" && live.hostId === snap.profile.id;
+  useEffect(() => {
+    const root = railRef.current;
+    if (!root) return;
+    const observer = new IntersectionObserver((entries) => {
+      const ids = entries.filter((entry) => entry.isIntersecting).map((entry) => (entry.target as HTMLElement).dataset.id || "");
+      void engine.setVisible(ids.filter(Boolean));
+    }, { root, threshold: 0.35 });
+    root.querySelectorAll("[data-id]").forEach((node) => observer.observe(node));
+    return () => observer.disconnect();
+  }, [live.tiles.length]);
+  const chatId = live.mode === "conf" ? roomChat(live.roomId) : dmChat(live.peerId);
+  const face = (tile: { peerId: string; name: string; source: string } | undefined) => tile ? faceOf(snap, tile.peerId, tile.source === "self", tile.name) : undefined;
+  const stageLevel = stage && stage.source !== "screen" ? live.levels[stage.peerId] ?? 0 : 0;
+  const selfLevel = live.levels[snap.profile.id] ?? 0;
+  const stageHalo = useHalo(stageLevel);
+  const selfHalo = useHalo(selfLevel);
+  const ownerHalo = useHalo(screenStage && stage ? live.levels[stage.peerId] ?? 0 : 0);
+  const [shareLabel, setShareLabel] = useState("");
+  useEffect(() => {
+    const node = stageRef.current;
+    if (!screenStage || !node) {
+      setShareLabel("");
+      return;
+    }
+    const read = () => {
+      const width = node.videoWidth;
+      const height = node.videoHeight;
+      setShareLabel(width > 0 ? `${width}×${height}` : "");
+    };
+    read();
+    node.addEventListener("resize", read);
+    const timer = window.setInterval(read, 1000);
+    return () => {
+      node.removeEventListener("resize", read);
+      window.clearInterval(timer);
+    };
+  }, [screenStage, stage?.id, stage?.stream]);
+  const openTile = (tile: { peerId: string; source: string }) => {
+    if (tile.source === "self" || tile.peerId === snap.profile.id) return;
+    openPeer(tile.peerId);
+  };
+  const goFull = () => {
+    const screen = live.tiles.find((tile) => tile.source === "screen");
+    if (screen && live.stageId !== screen.id) engine.pin(screen.id);
+    const node = stageBox.current;
+    if (!node) return;
+    if (document.fullscreenElement) void document.exitFullscreen();
+    else void node.requestFullscreen();
+  };
+  const shareVol = snap.settings.shareVolume ?? 1;
+  const shareMuted = shareVol <= 0.001;
+  const setShare = (shareVolume: number) => {
+    engine.applyShareVolume(shareVolume);
+    void api.invoke("setSettings", { shareVolume });
+  };
+  const toggleShareMute = () => {
+    if (shareVol > 0.001) {
+      fsHold.current = shareVol;
+      setShare(0);
+      return;
+    }
+    setShare(fsHold.current > 0.001 ? fsHold.current : 1);
+  };
+  const pokeFs = () => {
+    if (!document.fullscreenElement) return;
+    setFsOn(true);
+    window.clearTimeout(fsTimer.current);
+    fsTimer.current = window.setTimeout(() => { if (!fsOver.current) setFsOn(false); }, screenStage ? 1400 : 2300);
+  };
+  return (
+    <section className={`call-shell${railOn ? " with-rail" : ""}${showChat ? " with-chat" : ""}${docking ? " shrinking" : ""}${expanding ? " expanding" : ""}`}>
+      <div className="stage-wrap">
+        <div className="call-top">
+          <img className="logo tiny" src={logoUrl} alt="" />
+          <strong>LokaMeet {APP_VERSION}</strong>
+          <span className="pill"><i className="dot" /> {live.phase === "calling" ? t("call.calling") : <Clock started={live.started} />}</span>
+          {(live.recording || live.recorders.length > 0) && (
+            <span className="rec">● {t("conf.rec")} {live.recording && live.recStarted ? <Clock started={live.recStarted} /> : recPeerClock(live)}</span>
+          )}
+          <span className="pill">{screenStage ? (shareLabel || "2K · 60") : "720p"}</span>
+        </div>
+        <div ref={stageBox} className={`${screenStage ? "stage screen" : "stage"}${stageHalo > 0.05 ? " speaking" : ""}${full && !fsOn && screenStage ? " fs-quiet" : ""}`} style={{ ["--level" as string]: stageLevel, ["--halo" as string]: stageHalo }} onMouseMove={pokeFs}>
+          <div className="stage-media">
+            {stage ? (
+              <MediaView stream={stage.stream} videoRef={stageRef} person={face(stage)} videoOn={stage.source === "screen" || (stage.source === "self" ? live.camOn : true)} contain={screenStage} mirror={stage.source === "self" && snap.settings.camMirror} speaking={stageHalo > 0.05} level={stageHalo} onOpen={() => openTile(stage)} />
+            ) : (
+              <MediaView stream={null} person={faceOf(snap, live.peerId, false, "")} videoOn={false} onOpen={() => openPeer(live.peerId)} />
+            )}
+          </div>
+          {live.controlling && screenStage && stage?.peerId === (live.controlPeerId || live.peerId) && (
+            <ControlLayer size={live.controlSize} videoRef={stageRef} t={t} who={face(stage)?.name || live.controlledBy} />
+          )}
+          {live.controlling && !(screenStage && stage?.peerId === (live.controlPeerId || live.peerId)) && (
+            <div className="control-wait">{t("control.waitScreen")}</div>
+          )}
+          {live.controlled && (
+            <div className="control-host-bar">
+              <MousePointer2 size={16} />
+              <span>{t("control.by").replaceAll("{name}", live.controlledBy || t("chats.member"))}</span>
+              <small>{t("control.takeHint")}</small>
+              <button className="btn" type="button" onClick={() => engine.stopControl()}>{t("control.stop")}</button>
+            </div>
+          )}
+          {stage && face(stage) && (
+            <div className="stage-name">
+              <b>{stage.source === "self" ? t("call.you") : face(stage)!.name}</b>
+              {(stage.source === "self" || stage.peerId === snap.profile.id ? !live.micOn : live.mutedPeers.includes(stage.peerId)) && <span className="mark-mute"><MicOff size={12} />{t("call.micOffShort")}</span>}
+            </div>
+          )}
+          {screenStage && !live.controlling && face(stage) && <SpeakOrb person={face(stage)!} halo={ownerHalo} />}
+          {pip && !live.controlling && showSelfFloat(stage, snap.profile.id, live.camOn) && (
+            <div className={`stage-float${selfHalo > 0.05 ? " speaking" : ""}`} style={{ ["--level" as string]: selfLevel, ["--halo" as string]: selfHalo }}>
+              <MediaView stream={pip.stream} person={face(pip)} videoOn={live.camOn} mirror={snap.settings.camMirror} speaking={selfHalo > 0.05} level={selfHalo} />
+              {!live.micOn && <span className="float-mute"><MicOff size={12} />{t("call.micOffShort")}</span>}
+            </div>
+          )}
+          {full && (
+            <div className={fsOn ? "fs-bar on" : "fs-bar"} onMouseEnter={() => { fsOver.current = true; setFsOn(true); }} onMouseLeave={() => { fsOver.current = false; pokeFs(); }}>
+              <button type="button" onClick={() => void document.exitFullscreen()}><Shrink size={18} /> {t("call.exitFull")}</button>
+              <button type="button" className={live.micOn ? "" : "off"} onClick={() => void engine.toggleMic()}>{live.micOn ? <Mic size={22} /> : <MicOff size={22} />} {t("call.mic")}</button>
+              <div className="fs-vol">
+                <button type="button" className={shareMuted ? "off" : ""} title={t("call.shareMute")} onClick={toggleShareMute}>{shareMuted ? <VolumeX size={18} /> : <Volume2 size={18} />}</button>
+                <input type="range" min={0} max={1} step={0.05} value={shareVol} aria-label={t("call.shareVolume")} onInput={(event) => setShare(Number((event.target as HTMLInputElement).value))} onChange={(event) => setShare(Number(event.target.value))} />
+              </div>
+              <button type="button" className="danger" onClick={() => {
+                void (async () => {
+                  if (host && !await askConfirm(t("call.endHost"), t("common.ok"), t("composer.cancel"))) return;
+                  void engine.hangup();
+                })();
+              }}><PhoneOff size={18} /></button>
+            </div>
+          )}
+        </div>
+        <div className="controls">
+          <button className={live.micOn ? "ctrl has-tip" : "ctrl off mic-off has-tip"} data-tip={t(live.micOn ? "tip.micOn" : "tip.micOff")} onClick={() => void engine.toggleMic()}>{live.micOn ? <Mic size={28} /> : <MicOff size={28} />}<small>{t("call.mic")}</small></button>
+          <button className={live.camOn ? "ctrl has-tip" : "ctrl off has-tip"} data-tip={t("tip.camera")} disabled={live.phase !== "active"} onClick={() => void engine.toggleCam()}><Video size={28} /><small>{t("call.camera")}</small></button>
+          <button className={live.shareOn ? "ctrl active has-tip" : "ctrl has-tip"} data-tip={t("tip.screen")} disabled={live.phase !== "active"} onClick={() => { if (live.shareOn) void engine.stopShare(); else setShareOpen(true); }}><MonitorUp size={28} /><small>{live.shareOn ? t("call.screenStop") : t("call.screen")}</small></button>
+          {live.phase === "active" && (
+            <button className={live.controlPending ? "ctrl pending has-tip" : live.controlling ? "ctrl active has-tip" : "ctrl has-tip"} data-tip={t("tip.control")} onClick={() => { if (live.controlling || live.controlled) engine.stopControl(); else if (!live.controlPending) void engine.askControl(); }}><MousePointer2 size={28} /><small>{live.controlPending ? t("control.waiting") : live.controlling ? t("control.stop") : t("call.control")}</small></button>
+          )}
+          {live.tiles.some((tile) => tile.source === "screen") && (
+            <div className="ctrl vol-ctrl has-tip" data-tip={t("call.shareVolume")}>
+              <button type="button" className={shareMuted ? "off" : ""} onClick={toggleShareMute}>{shareMuted ? <VolumeX size={22} /> : <Volume2 size={22} />}</button>
+              <input type="range" min={0} max={1} step={0.05} value={shareVol} aria-label={t("call.shareVolume")} onInput={(event) => setShare(Number((event.target as HTMLInputElement).value))} onChange={(event) => setShare(Number(event.target.value))} />
+              <small>{t("call.shareVolume")}</small>
+            </div>
+          )}
+          <button className={full ? "ctrl active has-tip" : "ctrl has-tip"} data-tip={t("tip.fullscreen")} onClick={goFull}><Maximize2 size={28} /><small>{t("call.fullscreen")}</small></button>
+          <button className={live.recording ? "ctrl active has-tip rec-ctrl" : "ctrl has-tip"} data-tip={t("tip.record")} onClick={() => void engine.toggleRecord(stageRef.current)}><span className={live.recording ? "rec-glyph on" : "rec-glyph"} /><small>{live.recording && live.recStarted ? <Clock started={live.recStarted} /> : t("call.record")}</small></button>
+          <button className="ctrl has-tip" data-tip={t("tip.games")} onClick={openGames}><Gamepad2 size={28} /><small>{t("call.games")}</small></button>
+          {live.mode === "conf" && <button className={showRail ? "ctrl active has-tip" : "ctrl has-tip"} data-tip={t("tip.cameras")} onClick={() => setShowRail((value) => !value)}><Users size={28} /><small>{t("call.cameras")}</small></button>}
+          <button className={showChat ? "ctrl active has-tip" : "ctrl has-tip"} data-tip={t("tip.chat")} onClick={() => setShowChat(!showChat)}><MessageCircle size={28} /><small>{t("call.chat")}</small></button>
+          <button className="ctrl has-tip" data-tip={t("tip.minimize")} onClick={onMinimize}><Minimize2 size={28} /><small>{t("call.minimize")}</small></button>
+          <button className="ctrl danger has-tip" data-tip={t("tip.hangup")} onClick={() => {
+            void (async () => {
+              if (host && !await askConfirm(t("call.endHost"), t("common.ok"), t("composer.cancel"))) return;
+              void engine.hangup();
+            })();
+          }}><PhoneOff size={28} /><small>{live.mode === "conf" && !host ? t("call.leave") : t("call.hangup")}</small></button>
+        </div>
+      </div>
+      {railOn && <Splitter className="rail" onStart={onDragStart} onDelta={onRail} onDone={onDragEnd} />}
+      {showChat && <Splitter className="chat" onStart={onDragStart} onDelta={onChat} onDone={onDragEnd} />}
+      {railOn && (
+        <div className="rail-tiles" ref={railRef}>
+          {railTiles(live.tiles, snap.profile.id).map((tile) => (
+            <RailTile key={tile.id} tile={tile} level={tile.source === "screen" ? 0 : live.levels[tile.peerId] ?? 0} you={t("call.you")} mirror={tile.source === "self" && snap.settings.camMirror} camOn={live.camOn} person={face(tile)} recording={activityOf(snap, tile.peerId, tile.source === "self").recording} sharing={tile.source === "screen" || activityOf(snap, tile.peerId, tile.source === "self").sharing} muted={live.mutedPeers.includes(tile.peerId) || ((tile.source === "self" || tile.peerId === snap.profile.id) && !live.micOn)} t={t} host={host} mine={tile.source === "self" || tile.peerId === snap.profile.id} onOpen={() => openTile(tile)} />
+          ))}
+        </div>
+      )}
+      {showChat && <Thread snap={snap} t={t} chatId={chatId} openProfile={openProfile} openPeer={openPeer} />}
+      {shareOpen && <ShareDialog t={t} onClose={() => setShareOpen(false)} />}
+    </section>
+  );
+}
+
+function CallDock({ snap, t, onExpand }: { snap: Snapshot; t: (key: Key) => string; onExpand: () => void }) {
+  const live = useSyncExternalStore(engine.subscribe, () => engine.state);
+  const people = live.tiles.filter((tile) => tile.source !== "screen").slice(0, 4);
+  const title = live.mode === "conf"
+    ? snap.rooms.find((room) => room.id === live.roomId)?.name || t("nav.rooms")
+    : snap.peers.find((peer) => peer.id === live.peerId)?.name || t("call.calling");
+  const host = live.mode === "conf" && live.hostId === snap.profile.id;
+  return (
+    <div className="call-dock">
+      <span className="pill"><i className="dot" /> {live.phase === "calling" ? t("call.calling") : <Clock started={live.started} />}</span>
+      <div className="dock-people">
+        {people.map((tile) => {
+          const person = faceOf(snap, tile.peerId, tile.source === "self", tile.name);
+          return <Avatar key={tile.id} name={person.name} color={person.color} photo={person.photo} focus={person.focus} status={person.status} />;
+        })}
+      </div>
+      <span className="dock-title">{title} {live.peerId && <NickMarks {...activityOf(snap, live.peerId, false)} t={t} />} {live.mode === "conf" && live.hostId && <NickMarks {...activityOf(snap, live.hostId, live.hostId === snap.profile.id)} t={t} />}</span>
+      <span style={{ flex: 1 }} />
+      <button className={live.micOn ? "icon-btn has-tip" : "icon-btn off has-tip"} data-tip={t(live.micOn ? "tip.micOn" : "tip.micOff")} onClick={() => void engine.toggleMic()}>{live.micOn ? <Mic size={26} /> : <MicOff size={26} />}</button>
+      <button className={live.camOn ? "icon-btn has-tip" : "icon-btn off has-tip"} data-tip={t("tip.camera")} onClick={() => void engine.toggleCam()}><Video size={26} /></button>
+      <button className="btn has-tip" data-tip={t("tip.return")} onClick={onExpand}>{t("call.return")}</button>
+      <button className="btn danger" onClick={() => {
+        void (async () => {
+          if (host && !await askConfirm(t("call.endHost"), t("common.ok"), t("composer.cancel"))) return;
+          void engine.hangup();
+        })();
+      }}>{live.mode === "conf" && !host ? t("call.leave") : t("call.hangup")}</button>
+    </div>
+  );
+}
+
+function useHalo(level: number): number {
+  const raw = useRef(level);
+  raw.current = level;
+  const [halo, setHalo] = useState(0);
+  const shown = useRef(0);
+  const painted = useRef(0);
+  useEffect(() => {
+    let frame = 0;
+    let last = performance.now();
+    const tick = (now: number) => {
+      const dt = Math.min(48, now - last);
+      last = now;
+      const sample = raw.current;
+      const target = sample < 0.04 ? 0 : Math.min(1, ((sample - 0.04) / 0.2) ** 0.6);
+      const current = shown.current;
+      const tau = target > current ? 90 : 780;
+      const next = current + (target - current) * (1 - Math.exp(-dt / tau));
+      const settled = Math.abs(next - target) < 0.008 ? target : next;
+      shown.current = settled;
+      if (settled === 0 ? painted.current !== 0 : Math.abs(settled - painted.current) > 0.015) {
+        painted.current = settled;
+        setHalo(settled);
+      }
+      frame = requestAnimationFrame(tick);
+    };
+    frame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frame);
+  }, []);
+  return halo;
+}
+
+function SpeakOrb({ person, halo }: { person: { name: string; color: string; photo?: string; focus?: AvatarFocus }; halo: number }) {
+  return (
+    <div className="stage-orb" style={{ ["--halo" as string]: halo }}>
+      <div className={halo > 0.05 ? "face speaking" : "face"}>
+        <span className="orb">
+          <Avatar name={person.name} color={person.color} photo={person.photo} focus={person.focus} large />
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function RailTile({ tile, level, you, mirror, camOn, person, recording, sharing, muted, t, host, mine, onOpen }: { tile: { id: string; source: string; name: string; peerId: string; stream: MediaStream | null }; level: number; you: string; mirror: boolean; camOn: boolean; person?: { name: string; color: string; photo?: string; focus?: AvatarFocus; status?: string }; recording: boolean; sharing: boolean; muted: boolean; t: (key: Key) => string; host: boolean; mine: boolean; onOpen: () => void }) {
+  const halo = useHalo(muted ? 0 : level);
+  return (
+    <button data-id={tile.id} className={halo > 0.05 ? "tile speaking" : "tile"} style={{ ["--level" as string]: muted ? 0 : level, ["--halo" as string]: halo }} onClick={() => engine.pin(tile.id)}>
+      <MediaView stream={tile.stream} person={person} videoOn={tile.source === "screen" || (tile.source === "self" ? camOn : true)} contain={tile.source === "screen"} mirror={mirror} speaking={halo > 0.05} level={halo} onOpen={onOpen} />
+      <span className="cap">{tile.source === "self" ? you : tile.name || tile.peerId.slice(0, 4)} <NickMarks recording={recording} sharing={sharing} muted={muted} t={t} /> <i className="level" style={{ ["--level" as string]: muted ? 0 : level }} /></span>
+      {host && !mine && (
+        <span className={muted ? "tile-mute on" : "tile-mute"} title={muted ? t("call.unmute") : t("call.mute")} onClick={(event) => { event.preventDefault(); event.stopPropagation(); void engine.mutePeer(tile.peerId, !muted); }}>{muted ? <MicOff size={14} /> : <Mic size={14} />}</span>
+      )}
+      {!mine && (
+        <span className="tile-ctrl" title={t("tip.control")} onClick={(event) => { event.preventDefault(); event.stopPropagation(); void engine.askControl(tile.peerId); }}><MousePointer2 size={14} /></span>
+      )}
+    </button>
+  );
+}
+
+function ControlLayer({ size, videoRef, t, who }: { size: { w: number; h: number }; videoRef: RefObject<HTMLVideoElement>; t: (key: Key) => string; who: string }) {
+  const box = useRef<HTMLDivElement>(null);
+  const hold = useRef(false);
+  const [cursor, setCursor] = useState({ x: 24, y: 24, in: false });
+  const [full, setFull] = useState(false);
+  const [chromeOn, setChromeOn] = useState(true);
+  useEffect(() => { box.current?.focus(); }, []);
+  useEffect(() => {
+    const sync = () => setFull(document.fullscreenElement === box.current?.closest(".stage"));
+    document.addEventListener("fullscreenchange", sync);
+    return () => document.removeEventListener("fullscreenchange", sync);
+  }, []);
+  const toggleFull = () => {
+    const stage = box.current?.closest(".stage");
+    if (!(stage instanceof HTMLElement)) return;
+    if (document.fullscreenElement) void document.exitFullscreen();
+    else void stage.requestFullscreen();
+  };
+  const map = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const video = videoRef.current;
+    const node = box.current || video;
+    if (!node) return { x: 0, y: 0, cx: 0, cy: 0 };
+    const rect = node.getBoundingClientRect();
+    const vw = video && video.videoWidth > 0 ? video.videoWidth : rect.width;
+    const vh = video && video.videoHeight > 0 ? video.videoHeight : rect.height;
+    const scale = Math.min(rect.width / Math.max(1, vw), rect.height / Math.max(1, vh));
+    const dw = vw * scale;
+    const dh = vh * scale;
+    const left = rect.left + (rect.width - dw) / 2;
+    const top = rect.top + (rect.height - dh) / 2;
+    const nx = (event.clientX - left) / Math.max(1, dw);
+    const ny = (event.clientY - top) / Math.max(1, dh);
+    const x = Math.round(Math.max(0, Math.min(1, nx)) * size.w);
+    const y = Math.round(Math.max(0, Math.min(1, ny)) * size.h);
+    return { x, y, cx: event.clientX - rect.left, cy: event.clientY - rect.top };
+  };
+  const send = (kind: "move" | "down" | "up" | "wheel" | "key", event: ReactPointerEvent<HTMLDivElement>, extra?: { button?: number; delta?: number }) => {
+    const p = map(event);
+    setCursor({ x: p.cx, y: p.cy, in: true });
+    if (document.fullscreenElement) {
+      const near = p.cy < 72 || hold.current;
+      setChromeOn((on) => (on === near ? on : near));
+    }
+    engine.sendControl({
+      t: "control-input",
+      kind,
+      x: p.x,
+      y: p.y,
+      nx: size.w ? p.x / size.w : 0,
+      ny: size.h ? p.y / size.h : 0,
+      button: extra?.button,
+      delta: extra?.delta,
+      w: size.w,
+      h: size.h,
+    });
+  };
+  return (
+    <div
+      ref={box}
+      className="control-layer"
+      tabIndex={0}
+      onContextMenu={(event) => event.preventDefault()}
+      onPointerEnter={() => setCursor((cur) => ({ ...cur, in: true }))}
+      onPointerLeave={() => setCursor((cur) => ({ ...cur, in: false }))}
+      onPointerMove={(event) => send("move", event)}
+      onPointerDown={(event) => { event.preventDefault(); event.currentTarget.focus(); event.currentTarget.setPointerCapture(event.pointerId); send("down", event, { button: event.button }); }}
+      onPointerUp={(event) => send("up", event, { button: event.button })}
+      onWheel={(event) => {
+        event.preventDefault();
+        const p = map(event as unknown as ReactPointerEvent<HTMLDivElement>);
+        engine.sendControl({
+          t: "control-input",
+          kind: "wheel",
+          x: p.x,
+          y: p.y,
+          nx: size.w ? p.x / size.w : 0,
+          ny: size.h ? p.y / size.h : 0,
+          delta: event.deltaY < 0 ? 120 : -120,
+          w: size.w,
+          h: size.h,
+        });
+      }}
+      onKeyDown={(event) => { event.preventDefault(); engine.sendControl({ t: "control-input", kind: "key", key: event.key, down: true }); }}
+      onKeyUp={(event) => { event.preventDefault(); engine.sendControl({ t: "control-input", kind: "key", key: event.key, down: false }); }}
+    >
+      <div
+        className={full && !chromeOn ? "control-chrome away" : "control-chrome"}
+        onPointerEnter={() => { hold.current = true; setChromeOn(true); }}
+        onPointerLeave={() => { hold.current = false; }}
+        onPointerDown={(event) => event.stopPropagation()}
+        onPointerMove={(event) => event.stopPropagation()}
+        onPointerUp={(event) => event.stopPropagation()}
+        onWheel={(event) => event.stopPropagation()}
+      >
+        <MousePointer2 size={14} />
+        <span>{t("control.desktop").replaceAll("{name}", who || t("chats.member"))}</span>
+        <i>{size.w}×{size.h}</i>
+        <button type="button" onClick={toggleFull}>{full ? <Shrink size={14} /> : <Maximize2 size={14} />} {full ? t("call.exitFull") : t("call.fullscreen")}</button>
+        <button type="button" onClick={() => engine.stopControl()}>{t("control.stop")}</button>
+      </div>
+      {cursor.in && <span className="control-cursor" style={{ left: cursor.x, top: cursor.y }} />}
+    </div>
+  );
+}
+
+function ChatCtxMenu({ x, y, compose, t, onCopy, onPaste, onCut, onDelete }: { x: number; y: number; compose: boolean; t: (key: Key) => string; onCopy: () => void; onPaste: () => void; onCut: () => void; onDelete: () => void }) {
+  const node = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState({ left: x, top: y });
+  useEffect(() => {
+    const el = node.current;
+    if (!el) return;
+    const w = el.offsetWidth;
+    const h = el.offsetHeight;
+    const left = Math.max(8, Math.min(x, window.innerWidth - w - 8));
+    const top = y + h + 8 > window.innerHeight ? Math.max(8, y - h - 6) : y;
+    setPos({ left, top });
+  }, [x, y, compose]);
+  return (
+    <div ref={node} className="ctx-menu" style={{ left: pos.left, top: pos.top }} onClick={(event) => event.stopPropagation()}>
+      <button type="button" onClick={onCopy}><Copy size={16} /> {t("ctx.copy")}</button>
+      {compose && <button type="button" onClick={onPaste}><ClipboardPaste size={16} /> {t("ctx.paste")}</button>}
+      {compose && <button type="button" onClick={onCut}><Scissors size={16} /> {t("ctx.cut")}</button>}
+      <button type="button" className="danger" onClick={onDelete}><Trash2 size={16} /> {t("ctx.delete")}</button>
+    </div>
+  );
+}
+
+function MediaView({ stream, videoRef, person, videoOn, contain = false, framed = false, mirror = false, speaking = false, level = 0, onOpen }: { stream: MediaStream | null; videoRef?: RefObject<HTMLVideoElement>; person?: { name: string; color: string; photo?: string; focus?: AvatarFocus; status?: string }; videoOn: boolean; contain?: boolean; framed?: boolean; mirror?: boolean; speaking?: boolean; level?: number; onOpen?: () => void }) {
+  const own = useRef<HTMLVideoElement>(null);
+  const ref = videoRef ?? own;
+  const [frames, setFrames] = useState(false);
+  useEffect(() => {
+    setFrames(false);
+    const node = ref.current;
+    if (!node) return;
+    node.srcObject = stream;
+    node.playbackRate = 1;
+  }, [stream, ref]);
+  useEffect(() => {
+    if (!stream) {
+      setFrames(false);
+      return;
+    }
+    const bound = new Set<MediaStreamTrack>();
+    const sync = () => {
+      const node = ref.current;
+      if (node && node.srcObject !== stream) {
+        node.srcObject = stream;
+        node.playbackRate = 1;
+        void node.play().catch(() => undefined);
+      }
+      const track = stream.getVideoTracks()[0];
+      if (track && !bound.has(track)) {
+        bound.add(track);
+        track.addEventListener("mute", sync);
+        track.addEventListener("unmute", sync);
+        track.addEventListener("ended", sync);
+      }
+      const painted = (node?.videoWidth ?? 0) > 0;
+      setFrames(Boolean(track && track.enabled && track.readyState === "live" && painted));
+    };
+    const onAdd = () => {
+      const node = ref.current;
+      if (node) {
+        node.srcObject = null;
+        node.srcObject = stream;
+        node.playbackRate = 1;
+        void node.play().catch(() => undefined);
+      }
+      sync();
+    };
+    sync();
+    stream.addEventListener("addtrack", onAdd);
+    stream.addEventListener("removetrack", sync);
+    return () => {
+      stream.removeEventListener("addtrack", onAdd);
+      stream.removeEventListener("removetrack", sync);
+      bound.forEach((track) => {
+        track.removeEventListener("mute", sync);
+        track.removeEventListener("unmute", sync);
+        track.removeEventListener("ended", sync);
+      });
+    };
+  }, [stream, ref]);
+  const show = videoOn && frames;
+  return (
+    <div className={`media-face${contain ? " contain" : ""}${speaking ? " speaking" : ""}`} style={{ ["--level" as string]: level, ["--halo" as string]: level }}>
+      <video ref={ref} autoPlay playsInline muted className={`${show ? "" : "is-off"}${mirror ? " mirror" : ""}${contain ? " contain" : ""}`} onPlaying={() => {
+        const node = ref.current;
+        if (node) node.playbackRate = 1;
+        const track = stream?.getVideoTracks()[0];
+        setFrames(Boolean(track && track.enabled && track.readyState === "live" && (node?.videoWidth ?? 0) > 0));
+      }} onLoadedData={() => {
+        const track = stream?.getVideoTracks()[0];
+        setFrames(Boolean(track && track.enabled && track.readyState === "live" && (ref.current?.videoWidth ?? 0) > 0));
+      }} />
+      {!show && person && (framed ? (
+        person.photo
+          ? <img className="fill-photo" src={person.photo} alt="" style={focusStyle(person.focus)} onClick={onOpen ? (event) => { event.stopPropagation(); onOpen(); } : undefined} />
+          : <div className="face flat" onClick={onOpen ? (event) => { event.stopPropagation(); onOpen(); } : undefined}>{person.name.slice(0, 1).toUpperCase() || "L"}</div>
+      ) : (
+        <div className={speaking ? "face speaking" : "face"}>
+          <span className="orb" style={{ ["--level" as string]: level, ["--halo" as string]: level }}>
+            <Avatar name={person.name} color={person.color} photo={person.photo} focus={person.focus} large onClick={onOpen} />
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ControlAsk({ snap, t, ask }: { snap: Snapshot; t: (key: Key) => string; ask: { peerId: string; name: string } }) {
+  type Desk = { id: string; name: string; thumbnail: string; width: number; height: number; x?: number; y?: number; primary?: boolean };
+  const [sources, setSources] = useState<Desk[]>([]);
+  const [picked, setPicked] = useState("");
+  const asker = personById(snap, ask.peerId);
+  useEffect(() => {
+    let dead = false;
+    void api.invoke<Desk[]>("screenSources").then((list) => {
+      if (dead) return;
+      const screens = list
+        .filter((item) => item.id.startsWith("screen:"))
+        .sort((a, b) => Number(Boolean(b.primary)) - Number(Boolean(a.primary)) || (a.x || 0) - (b.x || 0) || (a.y || 0) - (b.y || 0));
+      setSources(screens);
+      setPicked(screens.find((item) => item.primary)?.id || screens[0]?.id || "");
+    });
+    return () => { dead = true; };
+  }, [ask.peerId]);
+  return (
+    <div className="modal-back control-ask-back">
+      <div className="modal control-ask">
+        <p className="control-ask-kicker">{t("control.askTitle")}</p>
+        <Avatar name={ask.name} color={asker?.color || "#4c8dff"} photo={asker?.avatar} focus={asker?.avatarFocus} large status="call" />
+        <h2>{ask.name}</h2>
+        <p>{t("control.askText").replaceAll("{name}", ask.name)}</p>
+        <ul className="control-perms">
+          <li><Monitor size={18} /> {t("control.permScreen")}</li>
+          <li><MousePointer2 size={18} /> {t("control.permMouse")}</li>
+          <li><Keyboard size={18} /> {t("control.permKeys")}</li>
+        </ul>
+        <h3 className="desk-label">{t("control.pickScreen")}</h3>
+        <p className="hint">{t("control.pickHint")}</p>
+        <div className="source-grid screens desk-grid">
+          {sources.map((source, index) => (
+            <button key={source.id} type="button" className={picked === source.id ? "source picked" : "source"} onClick={() => setPicked(source.id)}>
+              <span className="source-shot" style={{ ["--shot" as string]: `${Math.max(1, source.width)} / ${Math.max(1, source.height)}` }}>
+                {source.thumbnail ? <img src={source.thumbnail} alt="" /> : <Monitor size={28} />}
+              </span>
+              <span className="source-name">
+                <b>{source.name || t("control.screenN").replace("{n}", String(index + 1))}</b>
+                <small>{source.primary ? t("control.primary") : `${source.width}×${source.height}`}</small>
+              </span>
+            </button>
+          ))}
+        </div>
+        <div className="control-ask-acts">
+          <button className="control-ask-ok" type="button" disabled={sources.length > 0 && !picked} onClick={() => void engine.answerControl(true, picked)}>{t("control.accept")}</button>
+          <button className="control-ask-no" type="button" onClick={() => void engine.answerControl(false)}>{t("control.decline")}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ShareDialog({ t, onClose }: { t: (key: Key) => string; onClose: () => void }) {
+  type Source = { id: string; name: string; thumbnail: string; width: number; height: number };
+  const [sources, setSources] = useState<Source[]>([]);
+  const [selected, setSelected] = useState("");
+  const [withAudio, setWithAudio] = useState(false);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    void api.invoke<Source[]>("screenSources").then(setSources);
+  }, []);
+  const screens = sources.filter((source) => source.id.startsWith("screen:"));
+  const apps = sources.filter((source) => !source.id.startsWith("screen:"));
+  const start = async () => {
+    const sourceIds = selected === "all" ? screens.map((source) => source.id) : selected ? [selected] : [];
+    if (!sourceIds.length) return;
+    setBusy(true);
+    try {
+      const ok = await engine.shareScreen({ sourceIds, withAudio });
+      if (ok) onClose();
+    } finally {
+      setBusy(false);
+    }
+  };
+  const card = (source: Source, screenCard: boolean) => (
+    <button key={source.id} type="button" className={selected === source.id ? "source picked" : "source"} onClick={() => setSelected(source.id)}>
+      <span className="source-shot" style={{ ["--shot" as string]: `${Math.max(1, source.width)} / ${Math.max(1, source.height)}` }}>
+        {source.thumbnail ? <img src={source.thumbnail} alt="" /> : <Monitor size={28} />}
+      </span>
+      <span className="source-name"><b>{source.name}</b>{screenCard && <small>{source.width}×{source.height}</small>}</span>
+    </button>
+  );
+  return (
+    <div className="modal-back" onClick={onClose}>
+      <div className="modal share-modal" onClick={(event) => event.stopPropagation()}>
+        <h2>{t("call.sharePick")}</h2>
+        <label className="check-row share-audio">
+          <input type="checkbox" checked={withAudio} onChange={(event) => setWithAudio(event.target.checked)} />
+          {t("call.shareSound")}
+        </label>
+        <div className="share-scroll">
+          <h3>{t("call.shareScreens")}</h3>
+          <div className="source-grid screens">
+            {screens.length > 0 && (
+              <button type="button" className={selected === "all" ? "source picked" : "source"} onClick={() => setSelected("all")}>
+                <span className="source-shot" style={{ ["--shot" as string]: "16 / 9" }}>
+                  <span className="all-screens"><Monitor size={28} /></span>
+                </span>
+                <span className="source-name"><b>{t("call.shareAll")}</b></span>
+              </button>
+            )}
+            {screens.map((source) => card(source, true))}
+          </div>
+          {apps.length > 0 && <h3>{t("call.shareApps")}</h3>}
+          {apps.length > 0 && <div className="source-grid apps">{apps.map((source) => card(source, false))}</div>}
+          {sources.length === 0 && <p className="hint">{t("call.shareNone")}</p>}
+        </div>
+        <div className="row">
+          <button className="btn ghost" type="button" onClick={onClose}>{t("composer.cancel")}</button>
+          <button className="btn" type="button" disabled={!selected || busy} onClick={() => void start()}>{t("call.shareStart")}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function LanList({ snap, t, openChat, openProfile, openPeer }: { snap: Snapshot; t: (key: Key) => string; openChat: (id: string) => void; openProfile: () => void; openPeer: (id: string) => void }) {
+  const [ip, setIp] = useState("");
+  const [port, setPort] = useState("47721");
+  const live = useSyncExternalStore(engine.subscribe, () => engine.state);
+  const inCall = live.phase === "active" || live.phase === "calling";
+  const mine = selfView(snap.profile.status, inCall, live.mode, t);
+  return (
+    <>
+      <section className="list">
+        <header><strong>{t("lan.title")}</strong></header>
+        <div className="scroll">
+          <div className="person me">
+            <span className="rail-avatar">
+              <Avatar name={snap.profile.name} color={snap.selfColor} photo={snap.profile.avatar} focus={snap.profile.avatarFocus} status={mine.kind} onClick={openProfile} />
+              <i className={`presence ${mine.kind}`} />
+            </span>
+            <span>
+              <div className="name">{snap.profile.name} <NickMarks {...activityOf(snap, snap.profile.id, true)} t={t} /></div>
+              <div className="sub">{t("common.you")} · <span className={`status-word ${mine.kind}`}>{mine.label}</span></div>
+            </span>
+          </div>
+          {snap.peers.length === 0 && <div className="empty">{t("lan.empty")}</div>}
+          {snap.peers.map((peer) => {
+            const view = peerView(peer, t);
+            return (
+            <div key={peer.id} className="person">
+              <span className="rail-avatar">
+                <Avatar name={peer.name} color={peer.color} photo={peer.avatar} focus={peer.avatarFocus} status={view.kind} onClick={() => openPeer(peer.id)} />
+                <i className={`presence ${view.kind}`} />
+              </span>
+              <span><div className="name">{peer.name} <NickMarks {...activityOf(snap, peer.id, false)} t={t} /></div><div className="sub"><span className={`status-word ${view.kind}`}>{view.label}</span> · {peer.ip}</div></span>
+              <span className="lan-acts">
+                <button className="btn ghost" onClick={() => openChat(dmChat(peer.id))}>{t("lan.chat")}</button>
+                <button className="btn" onClick={() => void engine.call(peer.id, false, peer.name)}>{t("lan.call")}</button>
+              </span>
+            </div>
+            );
+          })}
+        </div>
+      </section>
+      <section className="thread">
+        <header><strong>{t("lan.manual")}</strong></header>
+        <form className="settings" onSubmit={(event) => { event.preventDefault(); void api.invoke("manualConnect", { ip, port: Number(port) }); }}>
+          <label className="field">IP<input value={ip} onChange={(event) => setIp(event.target.value)} /></label>
+          <label className="field">Port<input value={port} onChange={(event) => setPort(event.target.value)} /></label>
+          <button className="btn" type="submit">{t("rooms.join")}</button>
+        </form>
+      </section>
+    </>
+  );
+}
+
+function StartConference({ snap, t, room, onClose, setError }: { snap: Snapshot; t: (key: Key) => string; room: RoomInfo | null; onClose: () => void; setError: (value: string) => void }) {
+  const fallback = `${snap.profile.name} ${t("rooms.confSuffix")}`.trim();
+  const [name, setName] = useState(room?.name || "");
+  const [password, setPassword] = useState("");
+  const [picked, setPicked] = useState<string[]>([]);
+  const people = snap.peers.filter((peer) => peer.online);
+  const toggle = (id: string) => setPicked((list) => (list.includes(id) ? list.filter((item) => item !== id) : [...list, id]));
+  const start = async () => {
+    try {
+      const title = name.trim() || fallback;
+      let roomId = room?.id || "";
+      let roomName = room?.name || title;
+      if (!room) {
+        const created = await api.invoke<{ id: string; name: string }>("createRoom", { name: title, password });
+        roomId = created.id;
+        roomName = created.name;
+      }
+      await engine.startConference(roomId, roomName);
+      for (const id of picked) {
+        await api.invoke("signal", {
+          peerId: id,
+          payload: { t: "conf-invite", roomId, name: roomName, password, hostId: snap.profile.id, from: snap.profile.name },
+        });
+      }
+      onClose();
+    } catch (reason) {
+      setError(String(reason));
+    }
+  };
+  return (
+    <div className="modal-back" onClick={onClose}>
+      <form className="modal" onClick={(event) => event.stopPropagation()} onSubmit={(event) => { event.preventDefault(); void start(); }}>
+        <h2>{t("rooms.startTitle")}</h2>
+        {room ? <p>{room.name}</p> : (
+          <label className="field">{t("rooms.name")}<input value={name} placeholder={fallback} onChange={(event) => setName(event.target.value)} /></label>
+        )}
+        <label className="field">{t("rooms.passwordOptional")}<input type="password" value={password} autoComplete="off" onChange={(event) => setPassword(event.target.value)} /></label>
+        <div className="field">{t("rooms.invite")}</div>
+        {people.length === 0 && <p className="hint">{t("rooms.noPeers")}</p>}
+        {people.length > 0 && <button type="button" className="btn ghost" onClick={() => setPicked(people.map((peer) => peer.id))}>{t("rooms.inviteAll")}</button>}
+        <div className="invite-list">
+          {people.map((peer) => (
+            <label key={peer.id} className="check-row">
+              <input type="checkbox" checked={picked.includes(peer.id)} onChange={() => toggle(peer.id)} />
+              {peer.name}
+            </label>
+          ))}
+        </div>
+        <div className="row">
+          <button type="button" className="btn ghost" onClick={onClose}>{t("composer.cancel")}</button>
+          <button className="btn" type="submit">{t("rooms.start")}</button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+function RoomList({ snap, t, openChat, setError }: { snap: Snapshot; t: (key: Key) => string; openChat: (id: string) => void; setError: (value: string) => void }) {
+  const [ask, setAsk] = useState<RoomInfo | null>(null);
+  const [entered, setEntered] = useState("");
+  const [startRoom, setStartRoom] = useState<RoomInfo | "new" | null>(null);
+  const liveRooms = snap.rooms.filter((room) => room.conference);
+  const idleRooms = snap.rooms.filter((room) => !room.conference);
+  return (
+    <>
+      <section className="list">
+        <header><strong>{t("rooms.title")}</strong> <button className="icon-btn" title={t("rooms.start")} onClick={() => setStartRoom("new")}><Plus size={22} /></button></header>
+        <div className="scroll">
+          {snap.rooms.length === 0 && (
+            <div className="empty">
+              <p>{t("rooms.empty")}</p>
+              <button className="btn" type="button" onClick={() => setStartRoom("new")}>{t("rooms.start")}</button>
+            </div>
+          )}
+          {liveRooms.length > 0 && <div className="list-label">{t("rooms.live")}</div>}
+          {liveRooms.map((room) => (
+            <button key={room.id} className="room-row live" onClick={() => {
+              if (!room.joined) { setAsk(room); return; }
+              if (room.conference && engine.state.phase === "idle") void engine.joinConference(room.id, room.conference.hostId, room.name);
+              else openChat(roomChat(room.id));
+            }}>
+              <Avatar name={room.name} color="#2f6fed" />
+              <span><div className="name">{room.name}</div><div className="sub"><span className="status-word conf">{t("status.inConf")}</span> · {room.conference?.count ?? room.onlineCount}</div></span>
+              {room.passwordHash ? <span className="pill">●</span> : <span />}
+            </button>
+          ))}
+          {idleRooms.map((room) => (
+            <button key={room.id} className="room-row" onClick={() => room.joined ? openChat(roomChat(room.id)) : setAsk(room)}>
+              <Avatar name={room.name} color="#2f6fed" />
+              <span><div className="name">{room.name}</div><div className="sub">{room.onlineCount} {t("conf.members")}{room.createdBy === snap.profile.id ? ` · ${t("rooms.youHost")}` : ""}</div></span>
+              {room.passwordHash ? <span className="pill">●</span> : <span />}
+            </button>
+          ))}
+        </div>
+        {snap.rooms.length > 0 && <div className="list-foot"><button className="btn wide" type="button" onClick={() => setStartRoom("new")}>{t("rooms.start")}</button></div>}
+      </section>
+      <section className="thread">
+        <div className="settings">
+          <h2>{t("rooms.start")}</h2>
+          <p className="hint">{t("rooms.hint")}</p>
+          <button className="btn" type="button" onClick={() => setStartRoom("new")}>{t("rooms.start")}</button>
+          {snap.rooms.filter((room) => room.joined).map((room) => (
+            <div key={room.id} className="row">
+              <span>{room.name}</span>
+              <span>
+                {!room.conference && <button type="button" className="btn" onClick={() => setStartRoom(room)}>{t("rooms.start")}</button>}
+                {room.conference && room.conference.hostId !== snap.profile.id && engine.state.phase === "idle" && <button type="button" className="btn" onClick={() => void engine.joinConference(room.id, room.conference!.hostId, room.name)}>{t("rooms.joinConf")}</button>}
+                <button type="button" className="btn ghost" onClick={() => {
+                  const inside = engine.state.roomId === room.id && engine.state.phase !== "idle";
+                  void api.invoke("leaveRoom", { roomId: room.id });
+                  if (inside) void engine.hangup();
+                }}>{t("rooms.leave")}</button>
+              </span>
+            </div>
+          ))}
+        </div>
+      </section>
+      {startRoom && <StartConference snap={snap} t={t} room={startRoom === "new" ? null : startRoom} onClose={() => setStartRoom(null)} setError={setError} />}
+      {ask && (
+        <div className="modal-back" onClick={() => setAsk(null)}>
+          <form className="modal" onClick={(event) => event.stopPropagation()} onSubmit={async (event) => {
+            event.preventDefault();
+            try {
+              await api.invoke("joinRoom", { roomId: ask.id, password: entered });
+              if (ask.conference && engine.state.phase === "idle") await engine.joinConference(ask.id, ask.conference.hostId, ask.name);
+              else openChat(roomChat(ask.id));
+              setAsk(null);
+            } catch {
+              setError(t("rooms.badPassword"));
+            }
+          }}>
+            <h2>{ask.name}</h2>
+            {ask.passwordHash && <label className="field">{t("rooms.password")}<input type="password" value={entered} onChange={(event) => setEntered(event.target.value)} /></label>}
+            <div className="row">
+              <button type="button" className="btn ghost" onClick={() => setAsk(null)}>{t("composer.cancel")}</button>
+              <button className="btn" type="submit">{t("rooms.join")}</button>
+            </div>
+          </form>
+        </div>
+      )}
+    </>
+  );
+}
+
+function CallList({ snap, t }: { snap: Snapshot; t: (key: Key) => string }) {
+  return (
+    <section className="list">
+      <header><strong>{t("nav.calls")}</strong></header>
+      <div className="scroll">
+        {snap.calls.length === 0 && <div className="empty">{t("calls.empty")}</div>}
+        {snap.calls.map((call) => (
+          <div key={call.id} className="call-row">
+            <Phone size={18} />
+            <span><div className="name">{call.title}</div><div className="sub">{call.direction === "missed" ? t("calls.missed") : call.direction === "out" ? t("calls.out") : t("calls.in")}</div></span>
+            <span className="time">{clock(call.ts)}</span>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function ChatPreview({ t, name }: { t: (key: Key) => string; name: string }) {
+  return (
+    <div className="chat-preview">
+      <div className="msg-row theirs">
+        <Avatar name={t("settings.chatPreviewPeer")} color="#5eead4" />
+        <div className="bubble-wrap theirs"><article className="bubble theirs"><div className="who">{t("settings.chatPreviewPeer")}</div>{t("settings.chatPreviewIn")}</article></div>
+      </div>
+      <div className="msg-row mine">
+        <div className="bubble-wrap mine"><article className="bubble mine">{t("settings.chatPreviewOut").replaceAll("{name}", name)}</article></div>
+      </div>
+      <div className="msg-row theirs">
+        <Avatar name={t("settings.chatPreviewPeer")} color="#5eead4" />
+        <div className="bubble-wrap theirs"><article className="bubble theirs"><div className="voice"><button type="button"><Play size={16} /></button><div className="wave">{[0.3, 0.7, 0.45, 0.9, 0.4, 0.8, 0.35, 0.6].map((peak, index) => <i key={index} style={{ height: `${8 + peak * 16}px` }} />)}</div><span>0:04</span></div></article></div>
+      </div>
+    </div>
+  );
+}
+
+function SettingsView({ snap, t, group, onGroup }: { snap: Snapshot; t: (key: Key) => string; group: SettingsGroup; onGroup: (group: SettingsGroup) => void }) {
+  const settings = snap.settings;
+  const patch = (partial: Partial<Settings>) => void api.invoke("setSettings", partial);
+  const groups = ["profile", "appearance", "chat", "notifications", "audio", "video", "files", "games", "about"] as const;
+  const groupLabel: Record<(typeof groups)[number], Key> = {
+    profile: "settings.group.profile",
+    appearance: "settings.group.appearance",
+    chat: "settings.group.chat",
+    notifications: "settings.group.notifications",
+    audio: "settings.group.audio",
+    video: "settings.group.video",
+    files: "settings.group.files",
+    games: "settings.group.games",
+    about: "settings.group.about",
+  };
+  const themes: ThemeId[] = ["ink", "graphite", "harbor", "porcelain", "sand", "iris", "clay", "grove", "ember", "sky", "dusk", "azure", "ice", "navy"];
+  return (
+    <section className="settings-shell">
+      <nav className="settings-nav">
+        {groups.map((item) => (
+          <button key={item} type="button" className={group === item ? "active" : ""} onClick={() => onGroup(item)}>
+            {t(groupLabel[item])}
+          </button>
+        ))}
+      </nav>
+      <div className="settings-body">
+        {group === "profile" && (
+          <div className="settings-card">
+            <AvatarStudio profile={snap.profile} color={snap.selfColor} t={t} />
+            <label className="field">{t("welcome.name")}<input value={snap.profile.name} onChange={(event) => void api.invoke("setProfile", { name: event.target.value })} /></label>
+            <div className="field">{t("welcome.status")}</div>
+            {(["online", "away", "busy", "invisible"] as const).map((item) => (
+              <button key={item} type="button" className={snap.profile.status === item ? "status-row active" : "status-row"} onClick={() => { autoAway.current = false; void api.invoke("setProfile", { status: item }); }}>
+                <i className={`presence ${item}`} />
+                <span><b className={`status-word ${item}`}>{t(presenceKey(item))}</b><small>{t(statusHint(item))}</small></span>
+              </button>
+            ))}
+          </div>
+        )}
+        {group === "appearance" && (
+          <div className="settings-card">
+            <h2>{t("settings.language")}</h2>
+            <div className="row">
+              <button className={settings.locale === "ru" ? "btn" : "btn ghost"} onClick={() => patch({ locale: "ru" })}>Русский</button>
+              <button className={settings.locale === "en" ? "btn" : "btn ghost"} onClick={() => patch({ locale: "en" })}>English</button>
+            </div>
+            <h2>{t("settings.theme")}</h2>
+            <div className="theme-grid">
+              {themes.map((theme) => (
+                <button key={theme} type="button" className={settings.theme === theme ? "theme-swatch active" : "theme-swatch"} onClick={() => patch({ theme })}>
+                  <div className={`swatch swatch-${theme}`} />
+                  <span>{t(`settings.theme.${theme}` as Key)}</span>
+                </button>
+              ))}
+            </div>
+            <Slider label={t("settings.fontScale")} min={0.85} max={1.3} step={0.05} value={settings.fontScale || 1} text={`${Math.round((settings.fontScale || 1) * 100)}%`} onChange={(fontScale) => patch({ fontScale })} />
+            <Toggle label={t("settings.reduceMotion")} on={Boolean(settings.reduceMotion)} onLabel={t("settings.on")} offLabel={t("settings.off")} set={(reduceMotion) => patch({ reduceMotion })} />
+            <h2>{t("settings.behavior")}</h2>
+            <Slider label={t("settings.away")} min={0} max={60} step={1} value={settings.awayMinutes ?? 10} text={(settings.awayMinutes ?? 10) === 0 ? t("settings.awayOff") : `${settings.awayMinutes ?? 10} ${t("settings.minutes")}`} onChange={(awayMinutes) => patch({ awayMinutes })} />
+            <p className="hint">{t("settings.awayHint")}</p>
+            <h2>{t("settings.layout")}</h2>
+            <p className="hint">{t("settings.layoutHint")}</p>
+            <Slider label={t("settings.layoutList")} min={LIST_MIN} max={560} step={10} value={Math.max(LIST_MIN, settings.layoutList || 400)} text={`${Math.round(Math.max(LIST_MIN, settings.layoutList || 400))}`} onChange={(layoutList) => patch({ layoutList })} />
+            <Slider label={t("settings.layoutRail")} min={150} max={320} step={10} value={settings.layoutRail || 220} text={`${Math.round(settings.layoutRail || 220)}`} onChange={(layoutRail) => patch({ layoutRail })} />
+            <Slider label={t("settings.layoutChat")} min={CHAT_MIN} max={520} step={10} value={Math.max(CHAT_MIN, settings.layoutChat || CHAT_MIN)} text={`${Math.round(Math.max(CHAT_MIN, settings.layoutChat || CHAT_MIN))}`} onChange={(layoutChat) => patch({ layoutChat })} />
+          </div>
+        )}
+        {group === "chat" && (
+          <div className="settings-card">
+            <h2>{t("settings.chatSize")}</h2>
+            <p className="hint">{t("settings.chatSizeHint")}</p>
+            <div className="row chat-size-row">
+              {(["s", "m", "l"] as const).map((item) => (
+                <button key={item} type="button" className={(settings.chatSize || "m") === item ? "btn" : "btn ghost"} onClick={() => patch({ chatSize: item })}>{t(`settings.chatSize.${item}` as Key)}</button>
+              ))}
+            </div>
+            <h2>{t("settings.chatPreview")}</h2>
+            <ChatPreview t={t} name={snap.profile.name || "LokaMeet"} />
+            <h2>{t("settings.chatLook")}</h2>
+            <Toggle label={t("settings.chatDense")} on={Boolean(settings.chatDense)} onLabel={t("settings.on")} offLabel={t("settings.off")} set={(chatDense) => patch({ chatDense })} />
+            <Toggle label={t("settings.chatAvatars")} on={settings.chatAvatars !== false} onLabel={t("settings.on")} offLabel={t("settings.off")} set={(chatAvatars) => patch({ chatAvatars })} />
+            <Toggle label={t("settings.enterToSend")} on={settings.enterToSend !== false} onLabel={t("settings.on")} offLabel={t("settings.off")} set={(enterToSend) => patch({ enterToSend })} />
+          </div>
+        )}
+        {group === "notifications" && (
+          <div className="settings-card">
+            <h2>{t("settings.group.notifications")}</h2>
+            <Toggle label={t("settings.callSound")} on={settings.callSound} onLabel={t("settings.on")} offLabel={t("settings.off")} set={(callSound) => patch({ callSound })} />
+            <Toggle label={t("settings.messageSound")} on={settings.messageSound} onLabel={t("settings.on")} offLabel={t("settings.off")} set={(messageSound) => patch({ messageSound })} />
+            <Toggle label={t("settings.notifyJoin")} on={settings.notifyJoin !== false} onLabel={t("settings.on")} offLabel={t("settings.off")} set={(notifyJoin) => patch({ notifyJoin })} />
+            <Toggle label={t("settings.notifyRecord")} on={settings.notifyRecord !== false} onLabel={t("settings.on")} offLabel={t("settings.off")} set={(notifyRecord) => patch({ notifyRecord })} />
+            <SoundPick kind="call" label={t("settings.tone.call")} value={settings.toneCall || "default"} volume={settings.volumeCall ?? settings.notifyVolume ?? 0.7} t={t} onChange={(toneCall) => patch({ toneCall })} onVolume={(volumeCall) => patch({ volumeCall })} />
+            <SoundPick kind="message" label={t("settings.tone.message")} value={settings.toneMessage || "default"} volume={settings.volumeMessage ?? settings.notifyVolume ?? 0.7} t={t} onChange={(toneMessage) => patch({ toneMessage })} onVolume={(volumeMessage) => patch({ volumeMessage })} />
+            <SoundPick kind="join" label={t("settings.tone.join")} value={settings.toneJoin || "default"} volume={settings.volumeJoin ?? settings.notifyVolume ?? 0.7} t={t} onChange={(toneJoin) => patch({ toneJoin })} onVolume={(volumeJoin) => patch({ volumeJoin })} />
+            <SoundPick kind="record" label={t("settings.tone.record")} value={settings.toneRecord || "default"} volume={settings.volumeRecord ?? settings.notifyVolume ?? 0.7} t={t} onChange={(toneRecord) => patch({ toneRecord })} onVolume={(volumeRecord) => patch({ volumeRecord })} />
+          </div>
+        )}
+        {group === "audio" && <AudioSettings settings={settings} t={t} patch={patch} />}
+        {group === "video" && <VideoSettings settings={settings} t={t} patch={patch} />}
+        {group === "files" && (
+          <div className="settings-card">
+            <h2>{t("settings.files")}</h2>
+            <label className="field">{t("settings.retention")}<select className="select" value={settings.retentionDays} onChange={(event) => patch({ retentionDays: Number(event.target.value) as 0 | 7 | 30 | 90 })}>
+              <option value={0}>{t("settings.never")}</option>
+              <option value={7}>7 {t("settings.days")}</option>
+              <option value={30}>30 {t("settings.days")}</option>
+              <option value={90}>90 {t("settings.days")}</option>
+            </select></label>
+            <button className="btn ghost" onClick={() => {
+              void (async () => {
+                const all = settings.retentionDays === 0;
+                if (all && !await askConfirm(t("settings.clearAll"), t("common.ok"), t("composer.cancel"))) return;
+                void api.invoke("cleanup", { all });
+              })();
+            }}>{t("settings.clear")}</button>
+            <h2>{t("settings.recordDir")}</h2>
+            <div className="row"><span className="sub">{settings.recordDir}</span><span><button className="btn ghost" onClick={() => void api.invoke("openPath", { path: settings.recordDir })}>{t("settings.openFolder")}</button> <button className="btn ghost" onClick={() => void api.invoke("pickRecordDir")}>{t("settings.choose")}</button></span></div>
+          </div>
+        )}
+        {group === "games" && (
+          <div className="settings-card">
+            <h2>{t("games.difficulty")}</h2>
+            <p className="hint">{t("games.settingsText")}</p>
+            <div className="skill-row settings-skill">
+              {(["easy", "normal", "hard"] as const).map((item) => (
+                <button key={item} type="button" className={(settings.gameDifficulty || "normal") === item ? `skill-card ${item} on` : `skill-card ${item}`} onClick={() => patch({ gameDifficulty: item })}>
+                  <strong>{t(item === "easy" ? "games.easy" : item === "hard" ? "games.hard" : "games.normal")}</strong>
+                  <small>{t(item === "easy" ? "games.easyBlurb" : item === "hard" ? "games.hardBlurb" : "games.normalBlurb")}</small>
+                </button>
+              ))}
+            </div>
+            <Toggle label={t("games.hints")} on={settings.gameHints !== false} onLabel={t("settings.on")} offLabel={t("settings.off")} set={(gameHints) => patch({ gameHints })} />
+            <h2>{t("games.notify")}</h2>
+            <p className="hint">{t("games.notifyText")}</p>
+            <Toggle label={t("games.inviteSound")} on={settings.gameInviteSound !== false} onLabel={t("settings.on")} offLabel={t("settings.off")} set={(gameInviteSound) => patch({ gameInviteSound })} />
+            <SoundPick kind="join" label={t("settings.tone.game")} value={settings.toneJoin || "default"} volume={settings.gameInviteVolume ?? settings.volumeJoin ?? 0.7} t={t} onChange={(toneJoin) => patch({ toneJoin })} onVolume={(gameInviteVolume) => patch({ gameInviteVolume })} />
+          </div>
+        )}
+        {group === "about" && (
+          <div className="settings-card about-card">
+            <AboutPanel locale={settings.locale} />
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function AudioSettings({ settings, t, patch }: { settings: Settings; t: (key: Key) => string; patch: (partial: Partial<Settings>) => void }) {
+  const devices = useDevices(true, false);
+  const mics = devices.filter((device) => device.kind === "audioinput");
+  const speakers = devices.filter((device) => device.kind === "audiooutput");
+  return (
+    <div className="settings-card">
+      <h2>{t("settings.audio")}</h2>
+      <p className="hint">{t("settings.devicesHint")}</p>
+      <DeviceField label={t("settings.mic")} value={settings.micId} devices={mics} fallback={t("settings.defaultDevice")} onChange={(micId) => patch({ micId })} />
+      <div className="field">{t("settings.level")}<MicMeter deviceId={settings.micId} /></div>
+      <DeviceField label={t("settings.speaker")} value={settings.speakerId} devices={speakers} fallback={t("settings.defaultDevice")} onChange={(speakerId) => patch({ speakerId })} />
+      <button className="btn ghost" type="button" onClick={() => playTone(settings.toneMessage || "message", settings.notifyVolume ?? 0.7)}>{t("settings.testSound")}</button>
+      <Toggle label={t("settings.noise")} on={settings.noiseSuppression} onLabel={t("settings.on")} offLabel={t("settings.off")} set={(noiseSuppression) => patch({ noiseSuppression })} />
+      <Toggle label={t("settings.echo")} on={settings.echoCancellation !== false} onLabel={t("settings.on")} offLabel={t("settings.off")} set={(echoCancellation) => patch({ echoCancellation })} />
+      <Toggle label={t("settings.autoGain")} on={settings.autoGain !== false} onLabel={t("settings.on")} offLabel={t("settings.off")} set={(autoGain) => patch({ autoGain })} />
+      <Toggle label={t("settings.joinMuted")} on={Boolean(settings.joinMuted)} onLabel={t("settings.on")} offLabel={t("settings.off")} set={(joinMuted) => patch({ joinMuted })} />
+      <Slider label={t("settings.micGain")} min={0} max={2} step={0.05} value={settings.micGain ?? 1} text={`${Math.round((settings.micGain ?? 1) * 100)}%`} onChange={(micGain) => patch({ micGain })} />
+      <Toggle label={t("settings.vad")} on={settings.vad} onLabel={t("settings.on")} offLabel={t("settings.off")} set={(vad) => patch({ vad })} />
+      <Slider label={t("settings.sensitivity")} min={0} max={100} step={1} value={settings.vadSensitivity} text={String(settings.vadSensitivity)} onChange={(vadSensitivity) => patch({ vadSensitivity })} />
+      <Slider label={t("settings.peerVol")} min={0} max={1} step={0.05} value={settings.peerVolume} text={`${Math.round(settings.peerVolume * 100)}%`} onChange={(peerVolume) => patch({ peerVolume })} />
+      <Slider label={t("settings.shareVol")} min={0} max={1} step={0.05} value={settings.shareVolume} text={`${Math.round(settings.shareVolume * 100)}%`} onChange={(shareVolume) => patch({ shareVolume })} />
+    </div>
+  );
+}
+
+function VideoSettings({ settings, t, patch }: { settings: Settings; t: (key: Key) => string; patch: (partial: Partial<Settings>) => void }) {
+  const devices = useDevices(false, false);
+  const cameras = devices.filter((device) => device.kind === "videoinput");
+  const [track, setTrack] = useState<MediaStreamTrack | null>(null);
+  const [actual, setActual] = useState("");
+  const presets = ["office", "meeting", "shelf", "loft", "abstract", "solid"];
+  const caps = (track?.getCapabilities?.() ?? {}) as Record<string, unknown>;
+  const resolutions = cameraSizes(caps);
+  const rates = cameraRates(caps);
+  const facing = Array.isArray(caps.facingMode) ? caps.facingMode.map(String) : [];
+  return (
+    <div className="settings-card">
+      <h2>{t("settings.cameraDevice")}</h2>
+      <div className="cam-layout">
+        <div>
+          <CameraPreview settings={settings} onTrack={(next, info) => { setTrack(next); setActual(info); }} />
+          <div className="sub">{actual ? `${t("settings.cameraActual")}: ${actual}` : t("settings.cameraWait")}</div>
+        </div>
+        <div>
+          <DeviceField label={t("settings.cameraDevice")} value={settings.cameraId} devices={cameras} fallback={t("settings.defaultDevice")} onChange={(cameraId) => patch({ cameraId })} />
+          <label className="field">{t("settings.resolution")}
+            <select className="select" value={`${settings.camWidth || 0}x${settings.camHeight || 0}`} onChange={(event) => {
+              const [width, height] = event.target.value.split("x").map(Number);
+              patch({ camWidth: width, camHeight: height });
+            }}>
+              <option value="0x0">{t("settings.auto")}</option>
+              {resolutions.map((size) => <option key={`${size.w}x${size.h}`} value={`${size.w}x${size.h}`}>{size.w}×{size.h}</option>)}
+            </select>
+          </label>
+          <label className="field">{t("settings.fps")}
+            <select className="select" value={settings.camFps || 0} onChange={(event) => patch({ camFps: Number(event.target.value) })}>
+              <option value={0}>{t("settings.auto")}</option>
+              {rates.map((rate) => <option key={rate} value={rate}>{rate}</option>)}
+            </select>
+          </label>
+          {facing.length > 0 && (
+            <label className="field">{t("settings.facing")}
+              <select className="select" value={settings.camFacing || ""} onChange={(event) => patch({ camFacing: event.target.value as Settings["camFacing"] })}>
+                <option value="">{t("settings.auto")}</option>
+                {facing.includes("user") && <option value="user">{t("settings.facingUser")}</option>}
+                {facing.includes("environment") && <option value="environment">{t("settings.facingEnv")}</option>}
+              </select>
+            </label>
+          )}
+          <Toggle label={t("settings.mirror")} on={settings.camMirror !== false} onLabel={t("settings.on")} offLabel={t("settings.off")} set={(camMirror) => patch({ camMirror })} />
+          <button className="btn ghost" type="button" onClick={() => patch({ camTune: {} })}>{t("settings.camReset")}</button>
+        </div>
+      </div>
+      <h2>{t("settings.camPicture")}</h2>
+      <p className="hint">{t("settings.cameraTuneHint")}</p>
+      <CameraCaps caps={caps} live={(track?.getSettings?.() ?? {}) as Record<string, unknown>} settings={settings} patch={patch} t={t} />
+      <h2>{t("settings.background")}</h2>
+      <div className="row">
+        <button className={settings.bgMode === "off" ? "btn" : "btn ghost"} onClick={() => patch({ bgMode: "off" })}>{t("settings.bgOff")}</button>
+        <button className={settings.bgMode === "blur" ? "btn" : "btn ghost"} onClick={() => patch({ bgMode: "blur" })}>{t("settings.bgBlur")}</button>
+        <button className={settings.bgMode === "image" ? "btn" : "btn ghost"} onClick={() => patch({ bgMode: "image" })}>{t("settings.bgImage")}</button>
+      </div>
+      {settings.bgMode === "blur" && <Slider label={t("settings.blur")} min={4} max={28} step={1} value={settings.bgBlur} text={String(settings.bgBlur)} onChange={(bgBlur) => patch({ bgBlur })} />}
+      {settings.bgMode === "image" && (
+        <>
+          <div className="row">{presets.map((preset) => <button key={preset} className="icon-btn" onClick={() => patch({ bgPreset: preset, bgCustom: "" })}><img alt="" src={`${import.meta.env.BASE_URL}backgrounds/${preset}.svg`} width={64} height={36} /></button>)}</div>
+          <label className="btn ghost">{t("settings.bgOwn")}<input hidden type="file" accept="image/*" onChange={(event) => {
+            const file = event.target.files?.[0];
+            event.target.value = "";
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = () => patch({ bgMode: "image", bgCustom: String(reader.result || "") });
+            reader.readAsDataURL(file);
+          }} /></label>
+        </>
+      )}
+    </div>
+  );
+}
+
+function DeviceField({ label, value, devices, fallback, onChange }: { label: string; value: string; devices: MediaDeviceInfo[]; fallback: string; onChange: (id: string) => void }) {
+  return (
+    <label className="field">{label}
+      <select className="select" value={value} onChange={(event) => onChange(event.target.value)}>
+        <option value="">{fallback}</option>
+        {devices.map((device) => <option key={device.deviceId} value={device.deviceId}>{device.label || device.deviceId}</option>)}
+      </select>
+    </label>
+  );
+}
+
+function useDevices(audio: boolean, video: boolean): MediaDeviceInfo[] {
+  const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
+  useEffect(() => {
+    let cancel = false;
+    const load = async () => {
+      if (audio || video) {
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({ audio, video });
+          stream.getTracks().forEach((track) => track.stop());
+        } catch {
+          /* labels stay empty until permission */
+        }
+      }
+      const found = await navigator.mediaDevices.enumerateDevices();
+      if (!cancel) setDevices(found);
+    };
+    void load();
+    const onChange = () => void load();
+    navigator.mediaDevices.addEventListener("devicechange", onChange);
+    return () => {
+      cancel = true;
+      navigator.mediaDevices.removeEventListener("devicechange", onChange);
+    };
+  }, [audio, video]);
+  return devices;
+}
+
+function MicMeter({ deviceId }: { deviceId: string }) {
+  const [level, setLevel] = useState(0);
+  useEffect(() => {
+    let stop = false;
+    let stream: MediaStream | null = null;
+    let timer = 0;
+    let ctx: AudioContext | null = null;
+    void (async () => {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: deviceId ? { deviceId: { exact: deviceId }, echoCancellation: true, noiseSuppression: true } : { echoCancellation: true, noiseSuppression: true },
+          video: false,
+        });
+      } catch {
+        return;
+      }
+      if (stop) {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
+      ctx = new AudioContext();
+      const analyser = ctx.createAnalyser();
+      ctx.createMediaStreamSource(stream).connect(analyser);
+      const data = new Uint8Array(analyser.fftSize);
+      timer = window.setInterval(() => {
+        analyser.getByteTimeDomainData(data);
+        let sum = 0;
+        for (const value of data) {
+          const x = (value - 128) / 128;
+          sum += x * x;
+        }
+        setLevel(Math.min(1, Math.sqrt(sum / data.length) * 5));
+      }, 80);
+    })();
+    return () => {
+      stop = true;
+      window.clearInterval(timer);
+      stream?.getTracks().forEach((track) => track.stop());
+      void ctx?.close();
+    };
+  }, [deviceId]);
+  return <div className="meter"><i style={{ width: `${Math.round(level * 100)}%` }} /></div>;
+}
+
+function CameraPreview({ settings, onTrack }: { settings: Settings; onTrack: (track: MediaStreamTrack | null, info: string) => void }) {
+  const ref = useRef<HTMLVideoElement>(null);
+  const trackRef = useRef<MediaStreamTrack | null>(null);
+  const onTrackRef = useRef(onTrack);
+  onTrackRef.current = onTrack;
+  useEffect(() => {
+    let stream: MediaStream | null = null;
+    let cancel = false;
+    void navigator.mediaDevices.getUserMedia({ audio: false, video: cameraConstraints(settings) }).then(async (media) => {
+      if (cancel) {
+        media.getTracks().forEach((item) => item.stop());
+        return;
+      }
+      stream = media;
+      const next = media.getVideoTracks()[0] ?? null;
+      trackRef.current = next;
+      if (next) await applyCameraTune(next, settings);
+      if (ref.current) ref.current.srcObject = media;
+      const got = next?.getSettings();
+      onTrackRef.current(next, got?.width ? `${got.width}×${got.height ?? "?"} · ${got.frameRate ? Math.round(got.frameRate) : "?"} fps` : "");
+    }).catch(() => onTrackRef.current(null, ""));
+    return () => {
+      cancel = true;
+      trackRef.current = null;
+      stream?.getTracks().forEach((item) => item.stop());
+      onTrackRef.current(null, "");
+    };
+  }, [settings.cameraId, settings.camWidth, settings.camHeight, settings.camFps, settings.camFacing]);
+  useEffect(() => {
+    const next = trackRef.current;
+    if (next) void applyCameraTune(next, settings);
+  }, [settings.camTune, settings]);
+  return (
+    <div className="cam-frame">
+      <video ref={ref} className={settings.camMirror === false ? "cam-preview" : "cam-preview mirror"} autoPlay muted playsInline />
+    </div>
+  );
+}
+
+function Slider({ label, min, max, step, value, text, onChange }: { label: string; min: number; max: number; step: number; value: number; text: string; onChange: (value: number) => void }) {
+  return (
+    <label className="field slider-field">
+      <span className="slider-top"><span>{label}</span><b>{text}</b></span>
+      <input type="range" min={min} max={max} step={step} value={value} onChange={(event) => onChange(Number(event.target.value))} />
+    </label>
+  );
+}
+
+function SoundPick({ kind, label, value, volume, t, onChange, onVolume }: { kind: "call" | "message" | "join" | "record"; label: string; value: string; volume: number; t: (key: Key) => string; onChange: (value: string) => void; onVolume: (value: number) => void }) {
+  const custom = value.startsWith("file:");
+  return (
+    <div className="sound-pick">
+      <div className="slider-top">
+        <span>{label}</span>
+        <button className="btn ghost" type="button" onClick={() => playTone(custom ? value : `pack-${kind}`, volume)}>{t("settings.soundPreview")}</button>
+      </div>
+      <Slider label={t("settings.tone.volume")} min={0} max={1} step={0.05} value={volume} text={`${Math.round(volume * 100)}%`} onChange={onVolume} />
+      <div className="choice-row">
+        <button type="button" className={!custom ? "btn" : "btn ghost"} onClick={() => onChange("default")}>{t("settings.tone.default")}</button>
+        <label className={custom ? "btn" : "btn ghost"}>
+          {t("settings.tone.custom")}
+          <input hidden type="file" accept="audio/*" onChange={(event) => {
+            const file = event.target.files?.[0];
+            event.target.value = "";
+            if (!file) return;
+            void file.arrayBuffer().then((buffer) => api.invoke<string>("storeFile", { name: file.name, bytes: new Uint8Array(buffer) })).then((path) => onChange(`file:${path}`));
+          }} />
+        </label>
+      </div>
+      {custom && <div className="sub">{value.slice(5).split(/[\\/]/).pop()}</div>}
+    </div>
+  );
+}
+
+function Toggle({ label, on, set, onLabel, offLabel }: { label: string; on: boolean; set: (value: boolean) => void; onLabel: string; offLabel: string }) {
+  return <div className="row"><span>{label}</span><button className="btn ghost" onClick={() => set(!on)}>{on ? onLabel : offLabel}</button></div>;
+}
+
+function presenceKey(status: Presence | undefined): Key {
+  if (status === "invisible") return "status.invisible";
+  if (status === "busy") return "status.busy";
+  if (status === "away") return "status.away";
+  return "status.online";
+}
+
+function statusHint(status: Presence): Key {
+  if (status === "invisible") return "status.hint.invisible";
+  if (status === "busy") return "status.hint.busy";
+  if (status === "away") return "status.hint.away";
+  return "status.hint.online";
+}
+
+function faceOf(snap: Snapshot, peerId: string, self: boolean, fallback: string): { name: string; color: string; photo?: string; focus?: AvatarFocus; status?: string } {
+  if (self || peerId === snap.profile.id) {
+    return { name: snap.profile.name, color: snap.selfColor, photo: snap.profile.avatar, focus: snap.profile.avatarFocus, status: snap.profile.status };
+  }
+  const peer = snap.peers.find((item) => item.id === peerId);
+  return {
+    name: fallback || peer?.name || "",
+    color: peer?.color || "#4c8dff",
+    photo: peer?.avatar,
+    focus: peer?.avatarFocus,
+    status: peer?.inCall ? (peer.callKind === "conf" ? "conf" : "call") : peer?.status,
+  };
+}
+
+function recPeerClock(live: { recTimes: Record<string, number> }): ReactNode {
+  const started = Object.values(live.recTimes)[0];
+  if (!started) return null;
+  return <Clock started={started} />;
+}
+
+function ChatRecStrip({ chatId, t }: { chatId: string; t: (key: Key) => string }) {
+  const live = useSyncExternalStore(engine.subscribe, () => engine.state);
+  const dm = chatId.startsWith("dm:") ? chatId.slice(3) : "";
+  const room = chatId.startsWith("room:") ? chatId.slice(5) : "";
+  let started = 0;
+  if (live.recording && live.recStarted) {
+    if (live.mode === "p2p" && live.peerId && dm === live.peerId) started = live.recStarted;
+    if (live.mode === "conf" && live.roomId && room === live.roomId) started = live.recStarted;
+  }
+  if (!started && dm && live.recTimes[dm]) started = live.recTimes[dm];
+  if (!started && room) {
+    const times = Object.values(live.recTimes);
+    if (times.length) started = Math.min(...times);
+  }
+  if (!started) return null;
+  return (
+    <div className="chat-rec-strip">
+      <span className="rec-dot" />
+      <strong>{t("conf.rec")}</strong>
+      <Clock started={started} />
+    </div>
+  );
+}
+
+function Clock({ started }: { started: number }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, []);
+  return <>{duration(started, now)}</>;
+}
+
+function useDismiss(open: boolean, close: () => void, root: RefObject<HTMLElement | null>) {
+  useEffect(() => {
+    if (!open) return;
+    const onPointer = (event: PointerEvent) => {
+      const node = root.current;
+      if (node && event.target instanceof Node && node.contains(event.target)) return;
+      close();
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") close();
+    };
+    document.addEventListener("pointerdown", onPointer);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("pointerdown", onPointer);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open, close, root]);
+}
+
+function chatFaces(snap: Snapshot, chatId: string): Array<{ id: string; name: string; color: string; photo?: string; focus?: AvatarFocus }> {
+  if (chatId.startsWith("dm:")) {
+    const peer = personById(snap, chatId.slice(3));
+    return peer ? [{ id: peer.id, name: peer.name, color: peer.color, photo: peer.avatar, focus: peer.avatarFocus }] : [];
+  }
+  const room = snap.rooms.find((item) => item.id === chatId.slice(5));
+  if (!room) return [];
+  const ids = room.members.length ? room.members : [room.createdBy, snap.profile.id];
+  const faces: Array<{ id: string; name: string; color: string; photo?: string; focus?: AvatarFocus }> = [];
+  for (const id of ids) {
+    if (faces.length >= 4) break;
+    if (id === snap.profile.id) faces.push({ id, name: snap.profile.name, color: snap.selfColor, photo: snap.profile.avatar, focus: snap.profile.avatarFocus });
+    else {
+      const peer = personById(snap, id);
+      if (peer) faces.push({ id, name: peer.name, color: peer.color, photo: peer.avatar, focus: peer.avatarFocus });
+    }
+  }
+  return faces;
+}
+
+function personById(snap: Snapshot, id: string): PeerInfo | undefined {
+  const live = snap.peers.find((peer) => peer.id === id);
+  if (live) return live;
+  const contact = snap.contacts?.[id];
+  if (!contact) return undefined;
+  return {
+    id: contact.id,
+    name: contact.name,
+    color: contact.color,
+    ip: "",
+    port: 0,
+    avatar: contact.avatar,
+    avatarFocus: contact.avatarFocus,
+    inCall: false,
+    recording: false,
+    sharing: false,
+    online: false,
+    status: "offline",
+    firstSeen: contact.ts,
+    lastSeen: contact.ts,
+  };
+}
+
+function activityOf(snap: Snapshot, id: string, self: boolean): { recording: boolean; sharing: boolean } {
+  const live = engine.state;
+  const peer = snap.peers.find((item) => item.id === id);
+  return {
+    recording: (self && live.recording) || live.recorders.includes(id) || Boolean(peer?.recording),
+    sharing: (self && live.shareOn) || live.tiles.some((tile) => tile.source === "screen" && tile.peerId === id) || Boolean(peer?.sharing),
+  };
+}
+
+function NickMarks({ recording, sharing, muted = false, t }: { recording: boolean; sharing: boolean; muted?: boolean; t: (key: Key) => string }) {
+  if (!recording && !sharing && !muted) return null;
+  return (
+    <span className="nick-marks">
+      {muted && <span className="mark-mute"><MicOff size={11} />{t("call.micOffShort")}</span>}
+      {recording && <span className="mark-rec">REC</span>}
+      {sharing && <span className="mark-live"><Monitor size={11} strokeWidth={2.4} />{t("status.sharing")}</span>}
     </span>
   );
 }
 
-function parentDirOf(filePath: string) {
-  const trimmed = filePath.trim();
-  if (!trimmed) return "";
-  const cut = Math.max(trimmed.lastIndexOf("\\"), trimmed.lastIndexOf("/"));
-  return cut > 0 ? trimmed.slice(0, cut) : trimmed;
-}
-
-export function App() {
-  const { t, i18n } = useTranslation();
-  const statusLabel = (s: AvailabilityStatus) => t(`status_${s}`);
-
-  const isBusyStatus = (s: AvailabilityStatus) => s === "in_call" || s === "in_conference";
-  const [profile, setProfile] = useState<UserProfile | null>(null);
-  const [bootProgress, setBootProgress] = useState(0);
-  const [bootLabel, setBootLabel] = useState("loading");
-  const [bootReady, setBootReady] = useState(false);
-  const [signalingPort, setSignalingPort] = useState<number>(0);
-  const [appVersion, setAppVersion] = useState("1.4.0");
-  const [localIps, setLocalIps] = useState<string[]>([]);
-  const [logFilePath, setLogFilePath] = useState<string | null>(null);
-  const [peers, setPeers] = useState<PeerInfo[]>([]);
-  const [rooms, setRooms] = useState<RoomInfo[]>([]);
-  const [chats, setChats] = useState<ChatMessage[]>([]);
-  const [chatReply, setChatReply] = useState<ChatReplyRef | null>(null);
-  const [chatMenu, setChatMenu] = useState<{ x: number; y: number; messageId: string } | null>(null);
-  const [remoteCameraOn, setRemoteCameraOn] = useState<Record<string, boolean>>({});
-  const [unreadPeerIds, setUnreadPeerIds] = useState<Set<string>>(new Set());
-  const [unreadMessageIds, setUnreadMessageIds] = useState<Set<string>>(new Set());
-  const [avatarUrls, setAvatarUrls] = useState<Record<string, string>>({});
-  const [avatarViewer, setAvatarViewer] = useState<{ peerId: string; name: string } | null>(null);
-  const [selectedPeer, setSelectedPeer] = useState<PeerInfo | null>(null);
-  const selectedPeerRef = useRef<PeerInfo | null>(null);
-  const [selectedRoom, setSelectedRoom] = useState<RoomInfo | null>(null);
-  const [incomingCall, setIncomingCall] = useState<{ peerId: string; userName: string } | null>(null);
-  const [incomingCallBlink, setIncomingCallBlink] = useState(false);
-  const incomingCallTimerRef = useRef<number | null>(null);
-  const incomingCallSoundIntervalRef = useRef<number | null>(null);
-  const incomingCallTimeoutRef = useRef<number | null>(null);
-  const [incomingRoomInvite, setIncomingRoomInvite] = useState<{
-    fromPeerId: string;
-    fromUserName: string;
-    room: RoomInfo;
-  } | null>(null);
-  const [incomingRoomInviteBlink, setIncomingRoomInviteBlink] = useState(false);
-  const incomingRoomInviteTimerRef = useRef<number | null>(null);
-  const incomingRoomInviteTimeoutRef = useRef<number | null>(null);
-  const [inviteRejectedNotice, setInviteRejectedNotice] = useState<{ userName: string; roomName: string } | null>(null);
-  const inviteRejectedTimeoutRef = useRef<number | null>(null);
-  const [pendingInvitePeerIds, setPendingInvitePeerIds] = useState<Set<string>>(new Set());
-  const pendingInviteTimeoutRef = useRef<Map<string, number>>(new Map());
-  const [pendingCallPeerIds, setPendingCallPeerIds] = useState<Set<string>>(new Set());
-  const pendingCallTimeoutRef = useRef<Map<string, number>>(new Map());
-  const [peerActionIndicators, setPeerActionIndicators] = useState<Map<string, "message" | "call">>(new Map());
-  const [flashingPeerActionIds, setFlashingPeerActionIds] = useState<Set<string>>(new Set());
-  const peerActionFlashTimeoutRef = useRef<Map<string, number>>(new Map());
-  const intentionalPeerDisconnectsRef = useRef<Set<string>>(new Set());
-  const fileTransferCancelRef = useRef<Set<string>>(new Set());
-  const sigFilesRef = useRef<
-    Map<
-      string,
-      {
-        id: string;
-        name: string;
-        size: number;
-        mime?: string;
-        fromPeerId: string;
-        fromUserName: string;
-        roomId?: string;
-        total: number;
-        parts: Array<Uint8Array | null>;
-        got: number;
-        received: number;
-      }
-    >
-  >(new Map());
-  const [fileBlobEpoch, setFileBlobEpoch] = useState(0);
-  const pasteLockRef = useRef(0);
-  const insertChatTextRef = useRef<(text: string) => void>(() => {});
-  const queueChatPasteRef = useRef<(files: File[]) => void>(() => {});
-  const [chatMediaView, setChatMediaView] = useState<ChatMediaView | null>(null);
-  const computerTimerRef = useRef<number | null>(null);
-  const [typingPeers, setTypingPeers] = useState<Set<string>>(new Set());
-  const typingTimeoutRef = useRef<Map<string, number>>(new Map());
-  const [fileTransfers, setFileTransfers] = useState<FileTransferItem[]>([]);
-  const fileTransferUiThrottleRef = useRef<Map<string, number>>(new Map());
-  const [chatFileDrop, setChatFileDrop] = useState(false);
-  const chatDropDepthRef = useRef(0);
-  const chatDropHideTimerRef = useRef<number | null>(null);
-  const chatDropScopeRef = useRef<ChatScope | null>(null);
-  const [call, setCall] = useState<CallContext | null>(null);
-  const callRef = useRef<CallContext | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [search, setSearch] = useState("");
-  const [isSharing, setIsSharing] = useState(false);
-  const isSharingRef = useRef(false);
-  const [recordingActive, setRecordingActive] = useState(false);
-  const recordingActiveRef = useRef(false);
-  const [remoteRecordings, setRemoteRecordings] = useState<Array<{ peerId: string; userName: string }>>([]);
-  const [recordingDir, setRecordingDir] = useState("");
-  const [lastRecordingPath, setLastRecordingPath] = useState("");
-  const [recordingFormat, setRecordingFormat] = useState<RecordingFormat>("mp4");
-  const [recordingQuality, setRecordingQuality] = useState<RecordingQuality>("1080p");
-  const [recordingFps, setRecordingFps] = useState<RecordingFps>(30);
-  const [recordingBitrate, setRecordingBitrate] = useState<RecordingBitrate>("high");
-  const callRecorderRef = useRef<CallRecorder | null>(null);
-  const [gamesMenuOpen, setGamesMenuOpen] = useState(false);
-  const [gameInvite, setGameInvite] = useState<IncomingGameInvite | null>(null);
-  const [outgoingGameInvite, setOutgoingGameInvite] = useState<{
-    sessionId: string;
-    gameId: GameId;
-    toPeerId: string;
-    toUserName: string;
-  } | null>(null);
-  const [gameSession, setGameSession] = useState<GameSession | null>(null);
-  const [watchOffer, setWatchOffer] = useState<WatchOffer | null>(null);
-  const gameSessionRef = useRef<GameSession | null>(null);
-  const outgoingGameInviteRef = useRef<{
-    sessionId: string;
-    gameId: GameId;
-    toPeerId: string;
-    toUserName: string;
-  } | null>(null);
-  const outgoingGameInviteTimerRef = useRef<number | null>(null);
-  const gameInviteRef = useRef<IncomingGameInvite | null>(null);
-  const handleGameMessageRef = useRef<(fromPeerId: string, msg: GameMessage) => void>(() => undefined);
-  const syncGameToPeerRef = useRef<(peerId: string) => void>(() => undefined);
-  const recordingSessionRef = useRef<string | null>(null);
-  const appWindowCaptureRef = useRef<MediaStream | null>(null);
-  const [remoteScreenShare, setRemoteScreenShare] = useState<{
-    peerId: string;
-    userName: string;
-    screenAudioTrackId?: string;
-    screenVideoTrackId?: string;
-  } | null>(null);
-  const [screenViewControlsHidden, setScreenViewControlsHidden] = useState(false);
-  const [screenShareViewCollapsed, setScreenShareViewCollapsed] = useState(false);
-  const [screenBroadcastMuted, setScreenBroadcastMuted] = useState(false);
-  const [videoDevices, setVideoDevices] = useState<MediaDeviceInfo[]>([]);
-  const [audioInputDevices, setAudioInputDevices] = useState<MediaDeviceInfo[]>([]);
-  const [audioOutputDevices, setAudioOutputDevices] = useState<MediaDeviceInfo[]>([]);
-  const [selectedVideoDeviceId, setSelectedVideoDeviceId] = useState<string>("");
-  const [selectedAudioInputId, setSelectedAudioInputId] = useState<string>("");
-  const [selectedAudioOutputId, setSelectedAudioOutputId] = useState<string>("");
-  const [manualHost, setManualHost] = useState("127.0.0.1");
-  const [manualPort, setManualPort] = useState("");
-  const [manualPeers, setManualPeers] = useState<PeerInfo[]>([]);
-  const [smilesFiles, setSmilesFiles] = useState<string[]>([]);
-  const [settingsOpen, setSettingsOpen] = useState(isSettingsWindow);
-  const [chatHeight, setChatHeight] = useState(380);
-  const [sidebarWidth, setSidebarWidth] = useState(380);
-  const [fontScale, setFontScale] = useState(0.95);
-  const [compactUi, setCompactUi] = useState(false);
-  const [showSeconds, setShowSeconds] = useState(false);
-  const [autoAwayMinutes, setAutoAwayMinutes] = useState(5);
-  const [autoSwitchToChat, setAutoSwitchToChat] = useState(true);
-  const [callStartedAt, setCallStartedAt] = useState<number | null>(null);
-  const [nowTick, setNowTick] = useState<number>(() => Date.now());
-  const [chatAutoScroll, setChatAutoScroll] = useState(true);
-  const [chatSmileSizePx, setChatSmileSizePx] = useState(24);
-  const [chatFontSize, setChatFontSize] = useState(14);
-  const [chatDisplayLimit, setChatDisplayLimit] = useState(0);
-  const [speakingIndicator, setSpeakingIndicator] = useState(true);
-  const [tileAspect, setTileAspect] = useState<"auto" | "16x9" | "4x3" | "1x1">("16x9");
-  const [tileObjectFit, setTileObjectFit] = useState<"cover" | "contain">("cover");
-  const [tileRadius, setTileRadius] = useState(12);
-  const [tileGap, setTileGap] = useState(5);
-  const [gamesSettings, setGamesSettings] = useState<GamesSettings>(DEFAULT_GAMES_SETTINGS);
-  const [microphoneVolume, setMicrophoneVolume] = useState(100);
-  const [speakerVolume, setSpeakerVolume] = useState(100); // legacy alias → remoteMicVolume
-  const [remoteMicVolume, setRemoteMicVolume] = useState(100);
-  const [remoteScreenShareVolume, setRemoteScreenShareVolume] = useState(100);
-  const [noiseSuppression, setNoiseSuppression] = useState(true);
-  const [noiseSuppressionSensitivity, setNoiseSuppressionSensitivity] = useState(65);
-  const [voiceActivation, setVoiceActivation] = useState(false);
-  const [voiceActivationSensitivity, setVoiceActivationSensitivity] = useState(50);
-  const [soundNotificationsEnabled, setSoundNotificationsEnabled] = useState(true);
-  const [soundNotificationVolume, setSoundNotificationVolume] = useState(50);
-  const [callSoundFile, setCallSoundFile] = useState("snds/call.mp3");
-  const [messageSoundFile, setMessageSoundFile] = useState("snds/sms.mp3");
-  const [callerSoundFile, setCallerSoundFile] = useState("snds/call_1.mp3");
-  const [connectionSoundFile, setConnectionSoundFile] = useState("snds/int.mp3");
-  const [recordingSoundFile, setRecordingSoundFile] = useState("");
-  const [callSoundVolume, setCallSoundVolume] = useState(50);
-  const [messageSoundVolume, setMessageSoundVolume] = useState(50);
-  const [callerSoundVolume, setCallerSoundVolume] = useState(50);
-  const [connectionSoundVolume, setConnectionSoundVolume] = useState(50);
-  const [recordingSoundVolume, setRecordingSoundVolume] = useState(50);
-  const [settingsTab, setSettingsTab] = useState<"media" | "camera" | "audio" | "ui" | "games" | "connection" | "help">("media");
-  const [cameraControls, setCameraControls] = useState<CameraControls>(defaultCameraControls);
-  const [cameraCaps, setCameraCaps] = useState<CameraCapabilityInfo | null>(null);
-  const cameraControlsRef = useRef<CameraControls>(defaultCameraControls);
-  const cameraCapsRef = useRef<CameraCapabilityInfo | null>(null);
-  const [screenShareFps, setScreenShareFpsLabel] = useState(SCREEN_SHARE_FPS_MIN);
-  const rememberCameraCaps = (info: CameraCapabilityInfo | null) => {
-    if (!info) return;
-    if (capsEqual(cameraCapsRef.current, info)) return;
-    cameraCapsRef.current = info;
-    setCameraCaps(info);
-    setCameraControls((current) => alignCameraControls(current, info));
-  };
-  const [cameraFx, setCameraFx] = useState<CameraFxOptions>(defaultCameraFxOptions);
-  const cameraFxRef = useRef<CameraFxOptions>(defaultCameraFxOptions);
-  const cameraFxNeedRef = useRef(false);
-  const cameraRawStreamRef = useRef<MediaStream | null>(null);
-  const [exitConfirmKind, setExitConfirmKind] = useState<"quit" | "leave" | null>(null);
-  const cameraPreviewRef = useRef<HTMLVideoElement | null>(null);
-  const [customCameraBgs, setCustomCameraBgs] = useState<Array<{ id: string; dataUrl: string }>>([]);
-  const [previewDragging, setPreviewDragging] = useState(false);
-  const previewDragRef = useRef<{ x: number; y: number; panX: number; panY: number; width: number; height: number } | null>(null);
-  const avatarDragRef = useRef<{
-    x: number;
-    y: number;
-    startX: number;
-    startY: number;
-    width: number;
-    height: number;
-  } | null>(null);
-  const testSoundAudioRef = useRef<HTMLAudioElement | null>(null);
-  const audioNotificationRef = useRef<HTMLAudioElement | null>(null);
-
-  const [micLevel, setMicLevel] = useState(0); // 0..1 (settings preview)
-  const [speakerLevelByPeerId, setSpeakerLevelByPeerId] = useState<Record<string, number>>({}); // peerId -> 0..1
-  const [localStreamVer, setLocalStreamVer] = useState(0);
-
-  const connectedPeersRef = useRef<Set<string>>(new Set());
-  const connectingPeerRef = useRef<Map<string, Promise<void>>>(new Map());
-  const disconnectTimersRef = useRef<Map<string, number>>(new Map());
-  const avatarRequestsRef = useRef<Set<string>>(new Set());
-
-  const onEnvelopeRef = useRef<(env: WsEnvelope) => void>(() => undefined);
-
-  const [nameDialogOpen, setNameDialogOpen] = useState(false);
-  /** При true крестик/Отмена на диалоге имени закрывают приложение (старт). */
-  const [nameDialogExitsApp, setNameDialogExitsApp] = useState(false);
-  const [pendingName, setPendingName] = useState("");
-  const [pendingStatus, setPendingStatus] = useState<AvailabilityStatus>("online");
-
-  const [roomDialogOpen, setRoomDialogOpen] = useState(false);
-  const [roomNameDraft, setRoomNameDraft] = useState("");
-  const [roomPassDraft, setRoomPassDraft] = useState("");
-
-  const [roomJoinPassOpen, setRoomJoinPassOpen] = useState(false);
-  const [roomJoinPassDraft, setRoomJoinPassDraft] = useState("");
-  const [roomJoinTarget, setRoomJoinTarget] = useState<RoomInfo | null>(null);
-  const [roomJoinFromInvite, setRoomJoinFromInvite] = useState<{ fromUserName: string } | null>(null);
-  const lastJoinRoomRef = useRef<RoomInfo | null>(null);
-  const joiningRoomFromInviteRef = useRef(false);
-
-  const [screenShareDialogOpen, setScreenShareDialogOpen] = useState(false);
-  const [screenSources, setScreenSources] = useState<Array<{ id: string; name: string; thumbnail: string }>>([]);
-  const [screenShareTab, setScreenShareTab] = useState<ScreenShareTab>("screen");
-  const [selectedScreenSource, setSelectedScreenSource] = useState<string | null>(null);
-  const [screenShareWithAudio, setScreenShareWithAudio] = useState(true);
-
-  const [mediaCfg, setMediaCfg] = useState<LocalMediaConfig>({
-    videoEnabled: false,
-    audioEnabled: true,
-    videoQuality: "auto"
-  });
-  const videoEnabledRef = useRef(false);
-  videoEnabledRef.current = mediaCfg.videoEnabled;
-  const audioEnabledRef = useRef(true);
-  audioEnabledRef.current = mediaCfg.audioEnabled;
-  const videoQualityRef = useRef<VideoQuality>(mediaCfg.videoQuality);
-  videoQualityRef.current = mediaCfg.videoQuality;
-  const restoringMicRef = useRef<Promise<void> | null>(null);
-  const lastMicForceAtRef = useRef(0);
-  const helloStatusRef = useRef(new Map<string, { status: AvailabilityStatus; at: number }>());
-  const applyHelloStatus = (peers: PeerInfo[]) => {
-    const hello = helloStatusRef.current;
-    if (hello.size === 0) return peers;
-    const now = Date.now();
-    return peers.map((p) => {
-      const h = hello.get(p.peerId);
-      if (!h || h.status === p.status) return p;
-      if (now - h.at < 4000) return { ...p, status: h.status };
-      hello.delete(p.peerId);
-      return p;
-    });
-  };
-  const displayPeerStatus = (peerId: string, discovered?: AvailabilityStatus): AvailabilityStatus => {
-    const hello = helloStatusRef.current.get(peerId);
-    const helloFresh = hello && Date.now() - hello.at < 4000 ? hello.status : undefined;
-    const active = callRef.current;
-    if (active?.mode === "direct" && active.peerId === peerId) {
-      if (helloFresh && !isBusyStatus(helloFresh)) return helloFresh;
-      return "in_call";
-    }
-    if (active?.mode === "room" && active.participants.some((x) => x.peerId === peerId)) {
-      if (helloFresh && !isBusyStatus(helloFresh)) return helloFresh;
-      return "in_conference";
-    }
-    if (helloFresh) return helloFresh;
-    return discovered ?? "online";
-  };
-
-  function isRemoteLeftChatStatus(text: string) {
-    return text === i18n.t("chatStatusLeft", { lng: "ru" }) || text === i18n.t("chatStatusLeft", { lng: "en" });
-  }
-
-  function isRecordingChatStatus(text: string) {
-    const plain = stripChatStatusEmoji(text);
-    return (
-      plain === i18n.t("chatStatusRecordingStart", { lng: "ru" }) ||
-      plain === i18n.t("chatStatusRecordingStart", { lng: "en" }) ||
-      plain === i18n.t("chatStatusRecordingStop", { lng: "ru" }) ||
-      plain === i18n.t("chatStatusRecordingStop", { lng: "en" })
-    );
-  }
-
-  function flashWindowAttention() {
-    void window.lokameet.app.flashFrame().catch(() => undefined);
-  }
-
-  function openChatEmbed(item: ChatEmbedOpen) {
-    const view = mediaViewFromEmbed(item);
-    if (view) setChatMediaView(view);
-    else openChatLink(item.href);
-  }
-
-  const localVideoRef = useRef<HTMLVideoElement | null>(null);
-  const localTileRef = useRef<HTMLDivElement | null>(null);
-  const localStreamRef = useRef<MediaStream | null>(null);
-  const shareTrackRef = useRef<MediaStreamTrack | null>(null);
-  const shareScreenAudioTrackRef = useRef<MediaStreamTrack | null>(null);
-  const micTrackIdRef = useRef<string | null>(null);
-  const micMuteTimerRef = useRef<number | null>(null);
-
-  const applyCameraToTrack = (track: MediaStreamTrack | null | undefined) => {
-    if (!track || track.kind !== "video") return;
-    if (shareTrackRef.current && (track === shareTrackRef.current || track.id === shareTrackRef.current.id)) return;
-    if (!isRawCameraTrack(track) && !track.getSettings()?.deviceId) return;
-    void applyCameraControlsDebounced(track, cameraControlsRef.current);
-  };
-
-  const applyCameraToStream = (stream: MediaStream | null | undefined) => {
-    if (!stream) return;
-    for (const track of stream.getVideoTracks()) applyCameraToTrack(track);
-  };
-
-  const stopRawCamera = () => {
-    const raw = cameraRawStreamRef.current;
-    cameraRawStreamRef.current = null;
-    raw?.getTracks().forEach((t) => {
-      try {
-        t.stop();
-      } catch {
-        // игнор
-      }
-    });
-    stopCameraFx({ stopOutput: true });
-  };
-
-  const prepareCameraTrack = async (raw: MediaStreamTrack | null): Promise<MediaStreamTrack | null> => {
-    if (!raw) return null;
-    markRawCameraTrack(raw);
-    const prevRaw = cameraRawStreamRef.current;
-    const rawStream = new MediaStream([raw]);
-    cameraRawStreamRef.current = rawStream;
-    void settleCameraTrack(raw, cameraControlsRef.current).then((info) => {
-      if (raw.readyState !== "live") return;
-      const current = cameraRawStreamRef.current?.getVideoTracks() ?? [];
-      if (!current.includes(raw)) return;
-      rememberCameraCaps(info);
-    });
-    const fx = cameraFxRef.current;
-    setCameraFxOptions(fx);
-    cameraFxNeedRef.current = cameraFxNeedsProcessing(fx);
-    if (!cameraFxNeedsProcessing(fx)) {
-      stopCameraFx({ stopOutput: true });
-      if (prevRaw && prevRaw !== rawStream) {
-        for (const t of prevRaw.getTracks()) {
-          if (t !== raw) {
-            try {
-              t.stop();
-            } catch {
-              // игнор
-            }
-          }
-        }
-      }
-      return raw;
-    }
-    await bindCameraFx(rawStream, { fitOutput: true });
-    if (prevRaw && prevRaw !== rawStream) {
-      for (const t of prevRaw.getTracks()) {
-        if (t !== raw) {
-          try {
-            t.stop();
-          } catch {
-            // игнор
-          }
-        }
-      }
-    }
-    return getCameraFxTrack() ?? raw;
-  };
-
-  const installProcessedCamera = (local: MediaStream, processed: MediaStreamTrack | null) => {
-    if (!processed) return;
-    const oldCams = local.getVideoTracks().filter((t) => t !== shareTrackRef.current && t !== processed);
-    for (const old of oldCams) {
-      local.removeTrack(old);
-      if (!isRawCameraTrack(old)) {
-        try {
-          old.stop();
-        } catch {
-          // игнор
-        }
-      }
-    }
-    if (!local.getVideoTracks().includes(processed)) local.addTrack(processed);
-  };
-  /** sourceId текущей демонстрации (screen:/window:). */
-  const shareSourceIdRef = useRef<string | null>(null);
-  const pendingRenegotiateRef = useRef<Map<string, string | undefined>>(new Map());
-  const pcsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
-  const screenPcsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
-  const screenPendingIceRef = useRef<Map<string, RTCIceCandidateInit[]>>(new Map());
-  const screenRemoteStreamsRef = useRef<Map<string, MediaStream>>(new Map());
-  const [screenRemoteEpoch, setScreenRemoteEpoch] = useState(0);
-  const pcInitRef = useRef<Map<string, Promise<RTCPeerConnection>>>(new Map());
-  const pcInitiatorRef = useRef<Map<string, boolean>>(new Map());
-  const offerHandlingRef = useRef<Set<string>>(new Set());
-  const makingOfferRef = useRef<Set<string>>(new Set());
-  const rtcSignalChainRef = useRef<Map<string, Promise<void>>>(new Map());
-  const pendingIceRef = useRef<Map<string, RTCIceCandidateInit[]>>(new Map());
-  const peerRecoverCountRef = useRef<Map<string, number>>(new Map());
-  const peerRecoveringRef = useRef<Set<string>>(new Set());
-  const dcsRef = useRef<Map<string, RTCDataChannel>>(new Map());
-  const remoteRef = useRef<Map<string, RemoteTrack>>(new Map());
-  const fileUrlByIdRef = useRef<Map<string, string>>(new Map());
-  const micEnhancerRef = useRef(new MicEnhancer());
-  const incomingFileRef = useRef<
-    Map<
-      string,
-      {
-        id: string;
-        name: string;
-        size: number;
-        mime?: string;
-        received: number;
-        chunks: ArrayBuffer[];
-      }
-    >
-  >(new Map());
-  const earlyFileChunksRef = useRef<Map<string, ArrayBuffer[]>>(new Map());
-  const finishingFileIdsRef = useRef(new Set<string>());
-  const lastNoiseSuppressionRef = useRef(true);
-  const lastVoiceActivationRef = useRef(false);
-  const [remoteTracks, setRemoteTracks] = useState<RemoteTrack[]>([]);
-  const prevStatusRef = useRef<AvailabilityStatus | null>(null);
-  const lastActivityRef = useRef(Date.now());
-  const autoAwayAppliedRef = useRef(false);
-  const autoAwayMinutesRef = useRef(5);
-  const profileStatusRef = useRef<AvailabilityStatus>("online");
-  profileStatusRef.current = profile?.status ?? "online";
-  autoAwayMinutesRef.current = autoAwayMinutes;
-  const chatLogRef = useRef<HTMLDivElement | null>(null);
-  const chatEndRef = useRef<HTMLDivElement | null>(null);
-  const speakerPrevRef = useRef<Record<string, number>>({});
-
-  // Функция для преобразования пути к файлу в URL для Electron
-  function getSoundFileUrl(filePath: string): string {
-    if (!filePath) return "";
-    
-    // Если уже URL (http://, https://, file://), возвращаем как есть
-    if (filePath.startsWith("http://") || filePath.startsWith("https://") || filePath.startsWith("file://")) {
-      return filePath;
-    }
-    
-    // Проверяем, является ли путь абсолютным Windows путем (C:\ или C:/)
-    const windowsPathMatch = filePath.match(/^([A-Za-z]):[\\/]/);
-    if (windowsPathMatch) {
-      // Windows путь: C:\path\to\file.mp3 или C:/path/to/file.mp3 -> file:///C:/path/to/file.mp3
-      const normalizedPath = filePath.replace(/\\/g, "/");
-      return `file:///${normalizedPath}`;
-    }
-    
-    // Проверяем, является ли путь абсолютным Unix путем (начинается с /)
-    if (filePath.startsWith("/")) {
-      // Unix путь: /path/to/file.mp3 -> file:///path/to/file.mp3
-      return `file://${filePath}`;
-    }
-    
-    // Относительный путь: используем текущее местоположение как базу
-    // В Electron это будет работать относительно текущего HTML файла
-    try {
-      const baseUrl = window.location.href;
-      const basePath = baseUrl.substring(0, baseUrl.lastIndexOf("/") + 1);
-      return new URL(filePath, basePath).href;
-    } catch {
-      // Если не удалось создать URL, возвращаем исходный путь
-      return filePath;
-    }
-  }
-
-  // Функция для воспроизведения звуковых уведомлений
-  function playNotificationSound(soundFile: string, volume?: number) {
-    if (!soundNotificationsEnabled) return;
-    try {
-      const fileUrl = getSoundFileUrl(soundFile);
-      const audio = new Audio(fileUrl);
-      audio.volume = (volume ?? soundNotificationVolume) / 100;
-      audio.play().catch(() => {
-        // Игнорируем ошибки воспроизведения (например, если файл не найден)
-      });
-    } catch {
-      // Игнорируем ошибки
-    }
-  }
-
-  function playRecordingAnnouncement(kind: "start" | "stop") {
-    if (recordingSoundFile) {
-      playNotificationSound(recordingSoundFile, recordingSoundVolume);
-      return;
-    }
-    speakRecordAnnouncement(kind);
-  }
-
-  function statusBadgeClass(s: AvailabilityStatus) {
-    if (s === "online") return "badgeOk";
-    if (s === "in_call") return "badgeInCall";
-    if (s === "in_conference") return "badgeInConference";
-    if (s === "away") return "badgeAway";
-    if (s === "dnd") return "badgeDnd";
-    return "badgeOffline";
-  }
-
-  // Единые ограничения для микрофона: ideal вместо strict, чтобы браузер не давал «тихий» трек при шумоподавлении
-  function getAudioConstraintsForMic(deviceId = selectedAudioInputId): MediaTrackConstraints {
-    return getEnhancedAudioConstraints(noiseSuppression, noiseSuppressionSensitivity, deviceId || undefined);
-  }
-
-  function isNotFoundMediaError(err: unknown) {
-    const name = err instanceof Error ? err.name : "";
-    const msg = err instanceof Error ? err.message : String(err);
-    return name === "NotFoundError" || /requested device not found/i.test(msg) || /device not found/i.test(msg);
-  }
-
-  function clearStaleMediaDeviceIds(kind?: "audio" | "video" | "both") {
-    const clearAudio = kind !== "video";
-    const clearVideo = kind !== "audio";
-    if (clearAudio && selectedAudioInputId) {
-      setSelectedAudioInputId("");
-      void window.lokameet.app.updateProfile({ audioInputDeviceId: "" }).catch(() => undefined);
-    }
-    if (clearVideo && selectedVideoDeviceId) {
-      setSelectedVideoDeviceId("");
-      void window.lokameet.app.updateProfile({ videoInputDeviceId: "" }).catch(() => undefined);
-    }
-  }
-
-  function getKnownPeerHost(peerId: string): string | null {
-    const p = peers.find((x) => x.peerId === peerId) ?? manualPeers.find((x) => x.peerId === peerId) ?? null;
-    return p?.host ?? null;
-  }
-
-  function ipv4Prefix24(ip: string | null | undefined): string | null {
-    if (!ip) return null;
-    const m = /^(\d{1,3}\.\d{1,3}\.\d{1,3})\.\d{1,3}$/.exec(ip.trim());
-    return m ? m[1] : null;
-  }
-
-  function extractCandidateIp(cand: string): string | null {
-    // candidate:... <ip> <port> typ ...
-    const m = /candidate:\S+ \d+ (udp|tcp) \d+ (\d{1,3}(?:\.\d{1,3}){3}) \d+ typ/.exec(cand);
-    return m ? m[2] : null;
-  }
-
-  function shouldSendIceCandidate(remotePeerId: string, cand: RTCIceCandidateInit): boolean {
-    const s = cand.candidate ?? "";
-    if (!s) return true;
-    if (/\btcp\b/i.test(s)) return false;
-
-    const ip = extractCandidateIp(s);
-    if (!ip) return true;
-    if (ip === "127.0.0.1" || ip === "0.0.0.0" || ip.startsWith("127.")) return true;
-    if (localIps.includes(ip)) return true;
-
-    const remoteHost = getKnownPeerHost(remotePeerId) ?? call?.signalHubHost ?? null;
-    if (remoteHost && (remoteHost === "127.0.0.1" || localIps.includes(remoteHost))) return true;
-    const pref = ipv4Prefix24(remoteHost);
-    if (!pref) return true;
-
-    const ipPref = ipv4Prefix24(ip);
-    if (!ipPref) return true;
-    return ipPref === pref;
-  }
-
-  function tileGridColumns(count: number) {
-    if (count <= 1) return 1;
-    if (count === 2) return 2;
-    if (count <= 4) return 2;
-    if (count <= 6) return 3;
-    if (count <= 9) return 3;
-    if (count <= 12) return 4;
-    if (count <= 16) return 4;
-    return Math.max(4, Math.ceil(Math.sqrt(count)));
-  }
-
-  function tileAspectCss(aspect: typeof tileAspect) {
-    if (aspect === "16x9") return "16 / 9";
-    if (aspect === "4x3") return "4 / 3";
-    if (aspect === "1x1") return "1 / 1";
-    return "auto";
-  }
-
-  function speakingVars(level: number): React.CSSProperties {
-    const lv = Number.isFinite(level) ? Math.max(0, Math.min(1, level)) : 0;
-    // Чуть ярче: выше floor и круче кривая, чтобы кольцо и квадрат у ника лучше читались.
-    const intensity = lv <= 0.01 ? 0 : Math.min(1, 0.34 + Math.pow(lv, 0.75) * 0.78);
-    return { ["--speak-level" as string]: String(intensity) };
-  }
-
-  function quitApp() {
-    void window.lokameet.app.quit().catch(() => undefined);
-  }
-
-  function closeNameDialog() {
-    if (nameDialogExitsApp) {
-      quitApp();
-      return;
-    }
-    setNameDialogOpen(false);
-  }
-
-  useEffect(() => {
-    // Тик таймера во время звонка/конференции
-    if (!callStartedAt) return;
-    const id = setInterval(() => setNowTick(Date.now()), 1000);
-    return () => clearInterval(id);
-  }, [callStartedAt]);
-
-  useEffect(() => {
-    // Сразу применяем UI-настройки
-    document.documentElement.style.fontSize = `${Math.round(16 * (fontScale || 1))}px`;
-    document.documentElement.dataset.compact = compactUi ? "1" : "0";
-    document.documentElement.style.setProperty("--chatSmileSize", `${Math.max(16, Math.min(128, chatSmileSizePx || 24))}px`);
-    document.documentElement.style.setProperty("--tile-gap", `${Math.max(4, Math.min(24, tileGap))}px`);
-    document.documentElement.style.setProperty("--tile-radius", `${Math.max(4, Math.min(28, tileRadius))}px`);
-    document.documentElement.style.setProperty("--tile-fit", tileObjectFit);
-    document.documentElement.style.setProperty("--tile-aspect", tileAspectCss(tileAspect));
-  }, [fontScale, compactUi, chatSmileSizePx, tileGap, tileRadius, tileObjectFit, tileAspect]);
-
-  useEffect(() => {
-    // Превью уровня мика, пока открыты настройки.
-    // Используем существующий локальный поток, если он есть, чтобы не открывать второй getUserMedia
-    // с другими ограничениями — иначе звук может пропадать при переключении шумоподавления.
-    if (!settingsOpen) return;
-    let stopped = false;
-    let ctx: AudioContext | null = null;
-    let tempStream: MediaStream | null = null;
-    let timer: number | null = null;
-
-    (async () => {
-      try {
-        const local = localStreamRef.current ?? null;
-        const useLocal = (local?.getAudioTracks()?.length ?? 0) > 0;
-        let stream: MediaStream;
-
-        if (useLocal && local) {
-          stream = local;
-        } else {
-          const ac = getAudioConstraintsForMic();
-          tempStream = await navigator.mediaDevices.getUserMedia({ audio: ac, video: false });
-          if (!tempStream) {
-            setMicLevel(0);
-            return;
-          }
-          stream = tempStream;
-        }
-        if (stopped) return;
-        ctx = new AudioContext();
-        await ctx.resume().catch(() => undefined);
-        const src = ctx.createMediaStreamSource(stream);
-        const analyser = ctx.createAnalyser();
-        analyser.fftSize = 1024;
-        analyser.smoothingTimeConstant = 0.85;
-        src.connect(analyser);
-        const buf = new Uint8Array(analyser.fftSize);
-        timer = window.setInterval(() => {
-          if (stopped) return;
-          analyser.getByteTimeDomainData(buf);
-          let sum = 0;
-          for (let i = 0; i < buf.length; i++) {
-            const v = (buf[i] - 128) / 128;
-            sum += v * v;
-          }
-          const rms = Math.sqrt(sum / buf.length);
-          const norm = Math.max(0, Math.min(1, (rms - 0.01) / 0.15));
-          setMicLevel(norm);
-        }, 80);
-      } catch {
-        setMicLevel(0);
-      }
-    })();
-
-    return () => {
-      stopped = true;
-      if (timer) window.clearInterval(timer);
-      setMicLevel(0);
-      try {
-        tempStream?.getTracks().forEach((t) => t.stop());
-      } catch {
-        // игнор
-      }
-      try {
-        void ctx?.close();
-      } catch {
-        // игнор
-      }
-    };
-  }, [settingsOpen, selectedAudioInputId, noiseSuppression, noiseSuppressionSensitivity, localStreamVer]);
-
-  useEffect(() => {
-    cameraControlsRef.current = cameraControls;
-    applyCameraToStream(cameraRawStreamRef.current);
-  }, [cameraControls]);
-
-  useEffect(() => {
-    let cancelled = false;
-    void ensureScreenShareFps().then((fps) => {
-      if (!cancelled) setScreenShareFpsLabel(fps);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!cameraCaps) return;
-    const bc = new BroadcastChannel("lokameet-settings-sync");
-    bc.postMessage({ type: "cameraCaps", payload: cameraCaps });
-    bc.close();
-  }, [cameraCaps]);
-
-  useEffect(() => {
-    cameraFxRef.current = cameraFx;
-    setCameraFxOptions(cameraFx);
-    const need = cameraFxNeedsProcessing(cameraFx);
-    if (need === cameraFxNeedRef.current) return;
-    cameraFxNeedRef.current = need;
-    if (!videoEnabledRef.current) return;
-    const raw = cameraRawStreamRef.current?.getVideoTracks().find((t) => t.readyState === "live") ?? null;
-    if (!raw) return;
-    void (async () => {
-      const processed = await prepareCameraTrack(raw);
-      const local = localStreamRef.current;
-      if (!local || !processed) return;
-      await publishLocalCameraTrack(processed, local);
-      syncLocalVideoPreview();
-    })().catch(() => undefined);
-  }, [cameraFx]);
-
-  useEffect(() => {
-    if (isSettingsWindow) document.documentElement.dataset.settingsWindow = "1";
-    else delete document.documentElement.dataset.settingsWindow;
-  }, []);
-
-  useEffect(() => {
-    return window.lokameet.chat.onCleared(() => setChats([]));
-  }, []);
-
-  const settingsDraftReadyRef = useRef(!isSettingsWindow);
-  const settingsLiveRef = useRef({
-    cameraFx,
-    cameraControls,
-    videoQuality: mediaCfg.videoQuality,
-    selectedVideoDeviceId,
-    selectedAudioInputId,
-    selectedAudioOutputId,
-    microphoneVolume,
-    remoteMicVolume,
-    remoteScreenShareVolume,
-    noiseSuppression,
-    noiseSuppressionSensitivity,
-    voiceActivation,
-    voiceActivationSensitivity,
-    chatHeight,
-    sidebarWidth,
-    fontScale,
-    compactUi,
-    showSeconds,
-    autoAwayMinutes,
-    autoSwitchToChat,
-    chatAutoScroll,
-    chatSmileSizePx,
-    chatFontSize,
-    chatDisplayLimit,
-    speakingIndicator,
-    tileAspect,
-    tileObjectFit,
-    tileRadius,
-    tileGap,
-    recordingFormat,
-    recordingQuality,
-    recordingFps,
-    recordingBitrate,
-    recordingDir,
-    lastRecordingPath,
-    gamesSettings
-  });
-  settingsLiveRef.current = {
-    cameraFx,
-    cameraControls,
-    videoQuality: mediaCfg.videoQuality,
-    selectedVideoDeviceId,
-    selectedAudioInputId,
-    selectedAudioOutputId,
-    microphoneVolume,
-    remoteMicVolume,
-    remoteScreenShareVolume,
-    noiseSuppression,
-    noiseSuppressionSensitivity,
-    voiceActivation,
-    voiceActivationSensitivity,
-    chatHeight,
-    sidebarWidth,
-    fontScale,
-    compactUi,
-    showSeconds,
-    autoAwayMinutes,
-    autoSwitchToChat,
-    chatAutoScroll,
-    chatSmileSizePx,
-    chatFontSize,
-    chatDisplayLimit,
-    speakingIndicator,
-    tileAspect,
-    tileObjectFit,
-    tileRadius,
-    tileGap,
-    recordingFormat,
-    recordingQuality,
-    recordingFps,
-    recordingBitrate,
-    recordingDir,
-    lastRecordingPath,
-    gamesSettings
-  };
-
-  useEffect(() => {
-    const bc = new BroadcastChannel("lokameet-settings-sync");
-    const applyLive = (payload: Partial<typeof settingsLiveRef.current>) => {
-      if (payload.cameraFx) setCameraFx(payload.cameraFx);
-      if (payload.cameraControls) setCameraControls(payload.cameraControls);
-      if (payload.videoQuality) setMediaCfg((c) => ({ ...c, videoQuality: payload.videoQuality! }));
-      if (typeof payload.selectedVideoDeviceId === "string") setSelectedVideoDeviceId(payload.selectedVideoDeviceId);
-      if (typeof payload.selectedAudioInputId === "string") setSelectedAudioInputId(payload.selectedAudioInputId);
-      if (typeof payload.selectedAudioOutputId === "string") setSelectedAudioOutputId(payload.selectedAudioOutputId);
-      if (typeof payload.microphoneVolume === "number") setMicrophoneVolume(payload.microphoneVolume);
-      if (typeof payload.remoteMicVolume === "number") setRemoteMicVolume(payload.remoteMicVolume);
-      if (typeof payload.remoteScreenShareVolume === "number") setRemoteScreenShareVolume(payload.remoteScreenShareVolume);
-      if (typeof payload.noiseSuppression === "boolean") setNoiseSuppression(payload.noiseSuppression);
-      if (typeof payload.noiseSuppressionSensitivity === "number") setNoiseSuppressionSensitivity(payload.noiseSuppressionSensitivity);
-      if (typeof payload.voiceActivation === "boolean") setVoiceActivation(payload.voiceActivation);
-      if (typeof payload.voiceActivationSensitivity === "number") setVoiceActivationSensitivity(payload.voiceActivationSensitivity);
-      if (typeof payload.chatHeight === "number") setChatHeight(payload.chatHeight);
-      if (typeof payload.sidebarWidth === "number") setSidebarWidth(payload.sidebarWidth);
-      if (typeof payload.fontScale === "number") setFontScale(payload.fontScale);
-      if (typeof payload.compactUi === "boolean") setCompactUi(payload.compactUi);
-      if (typeof payload.showSeconds === "boolean") setShowSeconds(payload.showSeconds);
-      if (typeof payload.autoAwayMinutes === "number") setAutoAwayMinutes(payload.autoAwayMinutes);
-      if (typeof payload.autoSwitchToChat === "boolean") setAutoSwitchToChat(payload.autoSwitchToChat);
-      if (typeof payload.chatAutoScroll === "boolean") setChatAutoScroll(payload.chatAutoScroll);
-      if (typeof payload.chatSmileSizePx === "number") setChatSmileSizePx(payload.chatSmileSizePx);
-      if (typeof payload.chatFontSize === "number") setChatFontSize(payload.chatFontSize);
-      if (typeof payload.chatDisplayLimit === "number") setChatDisplayLimit(payload.chatDisplayLimit);
-      if (typeof payload.speakingIndicator === "boolean") setSpeakingIndicator(payload.speakingIndicator);
-      if (payload.tileAspect) setTileAspect(payload.tileAspect);
-      if (payload.tileObjectFit) setTileObjectFit(payload.tileObjectFit);
-      if (typeof payload.tileRadius === "number") setTileRadius(payload.tileRadius);
-      if (typeof payload.tileGap === "number") setTileGap(payload.tileGap);
-      if (payload.recordingFormat === "avi" || payload.recordingFormat === "mp4") setRecordingFormat(payload.recordingFormat);
-      if (payload.recordingQuality === "480p" || payload.recordingQuality === "720p" || payload.recordingQuality === "1080p" || payload.recordingQuality === "1440p") {
-        setRecordingQuality(payload.recordingQuality);
-      }
-      if (payload.recordingFps === 15 || payload.recordingFps === 24 || payload.recordingFps === 30) setRecordingFps(payload.recordingFps);
-      if (payload.recordingBitrate === "low" || payload.recordingBitrate === "medium" || payload.recordingBitrate === "high" || payload.recordingBitrate === "max") {
-        setRecordingBitrate(payload.recordingBitrate);
-      }
-      if (typeof payload.recordingDir === "string") setRecordingDir(payload.recordingDir);
-      if (typeof payload.lastRecordingPath === "string") setLastRecordingPath(payload.lastRecordingPath);
-      if (payload.gamesSettings) setGamesSettings(normalizeGamesSettings(payload.gamesSettings));
-    };
-    bc.onmessage = (ev) => {
-      const data = ev.data as { type?: string; payload?: Partial<typeof settingsLiveRef.current> } | undefined;
-      if (!data) return;
-      if (isSettingsWindow && data.type === "draft" && data.payload) {
-        settingsDraftReadyRef.current = true;
-        applyLive(data.payload);
-      }
-      if (!isSettingsWindow && data.type === "live" && data.payload) applyLive(data.payload);
-      if (data.type === "cameraCaps" && data.payload) {
-        const info = data.payload as CameraCapabilityInfo;
-        if (capsEqual(cameraCapsRef.current, info)) return;
-        cameraCapsRef.current = info;
-        setCameraCaps(info);
-        setCameraControls((current) => alignCameraControls(current, info));
-      }
-      if (!isSettingsWindow && data.type === "requestDraft") {
-        bc.postMessage({ type: "draft", payload: settingsLiveRef.current });
-        if (cameraCapsRef.current) bc.postMessage({ type: "cameraCaps", payload: cameraCapsRef.current });
-      }
-    };
-    if (isSettingsWindow && bootReady) bc.postMessage({ type: "requestDraft" });
-    return () => bc.close();
-  }, [bootReady]);
-
-  useEffect(() => {
-    if (!isSettingsWindow || !bootReady || !settingsDraftReadyRef.current) return;
-    const bc = new BroadcastChannel("lokameet-settings-sync");
-    bc.postMessage({ type: "live", payload: settingsLiveRef.current });
-    bc.close();
-  }, [
-    cameraFx,
-    cameraControls,
-    mediaCfg.videoQuality,
-    selectedVideoDeviceId,
-    selectedAudioInputId,
-    selectedAudioOutputId,
-    microphoneVolume,
-    remoteMicVolume,
-    remoteScreenShareVolume,
-    noiseSuppression,
-    noiseSuppressionSensitivity,
-    voiceActivation,
-    voiceActivationSensitivity,
-    chatHeight,
-    sidebarWidth,
-    fontScale,
-    compactUi,
-    showSeconds,
-    autoAwayMinutes,
-    autoSwitchToChat,
-    chatAutoScroll,
-    chatSmileSizePx,
-    chatFontSize,
-    chatDisplayLimit,
-    speakingIndicator,
-    tileAspect,
-    tileObjectFit,
-    tileRadius,
-    tileGap,
-    recordingFormat,
-    recordingQuality,
-    recordingFps,
-    recordingBitrate,
-    recordingDir,
-    bootReady,
-    gamesSettings
-  ]);
-
-  async function addCustomCameraBackground() {
-    try {
-      const sourcePath = await window.lokameet.app.showOpenDialog({
-        filters: [{ name: "Images", extensions: ["jpg", "jpeg", "png", "webp"] }]
-      });
-      if (!sourcePath) return;
-      const saved = await window.lokameet.cameraBg.saveFromPath(sourcePath);
-      setCustomCameraBgs((list) => [...list, saved]);
-      setCameraFx((c) => ({ ...c, backgroundMode: "custom", customId: saved.id, customDataUrl: saved.dataUrl }));
-    } catch {
-      setError(t("errPickFile"));
-    }
-  }
-
-  async function deleteCustomCameraBackground(id: string) {
-    await window.lokameet.cameraBg.remove(id).catch(() => undefined);
-    setCustomCameraBgs((list) => list.filter((item) => item.id !== id));
-    setCameraFx((c) => (c.customId === id ? { ...c, backgroundMode: "none", customId: null, customDataUrl: null } : c));
-  }
-
-  useEffect(() => {
-    if (!settingsOpen || settingsTab !== "camera") {
-      if (cameraPreviewRef.current) cameraPreviewRef.current.srcObject = null;
-      if (!videoEnabledRef.current) stopRawCamera();
-      return;
-    }
-
-    let cancelled = false;
-    (async () => {
-      try {
-        const liveRaw =
-          cameraRawStreamRef.current?.getVideoTracks().find((t) => t.readyState === "live") ?? null;
-        if (liveRaw && cameraRawStreamRef.current) {
-          const info = await settleCameraTrack(liveRaw, cameraControlsRef.current);
-          if (cancelled) return;
-          rememberCameraCaps(info);
-          setCameraControls((current) => seedCameraControls(current, liveRaw.getSettings?.()));
-          setCameraFxOptions(cameraFxRef.current);
-          await bindCameraFx(cameraRawStreamRef.current);
-          if (cancelled) return;
-          if (cameraPreviewRef.current) {
-            cameraPreviewRef.current.srcObject = getCameraFxStream();
-            await cameraPreviewRef.current.play().catch(() => undefined);
-          }
-          return;
-        }
-
-        const vc = await resolveQualityConstraints(mediaCfg.videoQuality);
-        if (selectedVideoDeviceId) (vc as MediaTrackConstraints & { deviceId?: ConstrainDOMString }).deviceId = { ideal: selectedVideoDeviceId };
-        let stream: MediaStream;
-        try {
-          stream = await navigator.mediaDevices.getUserMedia({ video: cameraVideoConstraints(vc), audio: false });
-        } catch {
-          stream = await navigator.mediaDevices.getUserMedia({ video: vc, audio: false });
-        }
-        if (cancelled) {
-          stream.getTracks().forEach((t) => t.stop());
-          return;
-        }
-        const camTrack = stream.getVideoTracks()[0] ?? null;
-        if (camTrack) {
-          markRawCameraTrack(camTrack);
-          cameraRawStreamRef.current = stream;
-          const info = await settleCameraTrack(camTrack, cameraControlsRef.current);
-          if (cancelled) return;
-          rememberCameraCaps(info);
-          setCameraControls((current) => seedCameraControls(current, camTrack.getSettings?.()));
-          setCameraFxOptions(cameraFxRef.current);
-          await bindCameraFx(stream);
-        }
-        if (cancelled) return;
-        if (cameraPreviewRef.current) {
-          cameraPreviewRef.current.srcObject = getCameraFxStream();
-          await cameraPreviewRef.current.play().catch(() => undefined);
-        }
-      } catch {
-        if (!cancelled && cameraPreviewRef.current) cameraPreviewRef.current.srcObject = null;
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-      if (cameraPreviewRef.current) cameraPreviewRef.current.srcObject = null;
-      if (!videoEnabledRef.current) stopRawCamera();
-    };
-  }, [settingsOpen, settingsTab, selectedVideoDeviceId]);
-
-  useEffect(() => {
-    // Индикатор говорящего (локальный + удалённый)
-    if (!call || !speakingIndicator) {
-      setSpeakerLevelByPeerId({});
-      speakerPrevRef.current = {};
-      return;
-    }
-
-    let stopped = false;
-    const ctx = new AudioContext();
-    void ctx.resume().catch(() => undefined);
-    const analysers = new Map<string, AnalyserNode>();
-    const sources: Array<MediaStreamAudioSourceNode> = [];
-    const bufById = new Map<string, Uint8Array>();
-
-    const addStream = (id: string, stream: MediaStream | null) => {
-      if (!stream) return;
-      if (analysers.has(id)) return;
-      const liveAudio = stream.getAudioTracks().find((t) => t.readyState === "live");
-      if (!liveAudio) return;
-      try {
-        const src = ctx.createMediaStreamSource(new MediaStream([liveAudio]));
-        const analyser = ctx.createAnalyser();
-        analyser.fftSize = 512;
-        analyser.smoothingTimeConstant = 0.35;
-        src.connect(analyser);
-        sources.push(src);
-        analysers.set(id, analyser);
-        bufById.set(id, new Uint8Array(analyser.fftSize));
-      } catch {
-        // игнор
-      }
-    };
-
-    const local = localStreamRef.current;
-    const rawMic = micEnhancerRef.current.getInputTrack();
-    const screenAudioId = shareScreenAudioTrackRef.current?.id;
-    const selfMic =
-      rawMic && rawMic.readyState === "live"
-        ? rawMic
-        : local
-          ? getMicAudioTrack(local, screenAudioId)
-          : null;
-    if (selfMic && selfMic.readyState === "live") {
-      addStream("self", new MediaStream([selfMic]));
-    }
-    for (const r of remoteTracks) {
-      const tile = createPeerTileStream(
-        r.stream,
-        remoteScreenShare?.peerId === r.peerId ? remoteScreenShare.screenAudioTrackId : undefined
-      );
-      addStream(r.peerId, tile);
-    }
-
-    const timer = window.setInterval(() => {
-      if (stopped) return;
-      const next: Record<string, number> = {};
-      for (const [id, analyser] of analysers) {
-        const buf = bufById.get(id);
-        if (!buf) continue;
-        analyser.getByteTimeDomainData(buf as unknown as Uint8Array<ArrayBuffer>);
-        let sum = 0;
-        for (let i = 0; i < buf.length; i++) {
-          const v = (buf[i] - 128) / 128;
-          sum += v * v;
-        }
-        const rms = Math.sqrt(sum / buf.length);
-        // Типичный RMS речи → 0..1; тихая комната около 0.
-        const raw = Math.max(0, Math.min(1, (rms - 0.015) / 0.14));
-        const prev = speakerPrevRef.current[id] ?? 0;
-        // Мягче attack; короткое плавное затухание в тишине.
-        const smoothed = raw >= prev ? prev * 0.42 + raw * 0.58 : prev * 0.72 + raw * 0.28;
-        next[id] = smoothed < 0.012 ? 0 : smoothed;
-      }
-      speakerPrevRef.current = next;
-      setSpeakerLevelByPeerId(next);
-    }, 40);
-
-    return () => {
-      stopped = true;
-      window.clearInterval(timer);
-      try {
-        for (const src of sources) src.disconnect();
-      } catch {
-        // игнор
-      }
-      try {
-        void ctx.close();
-      } catch {
-        // игнор
-      }
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    call?.mode,
-    call ? (call.mode === "room" ? call.roomId : call.peerId) : "none",
-    localStreamVer,
-    remoteTracks.map((r) => r.peerId).join("|"),
-    remoteScreenShare?.peerId,
-    remoteScreenShare?.screenAudioTrackId,
-    speakingIndicator,
-    voiceActivation
-  ]);
-
-  const scope = useMemo(() => {
-    if (call?.mode === "room") return { type: "room" as const, roomId: call.roomId };
-    if (call?.mode === "direct") return { type: "direct" as const, peerId: call.peerId };
-    if (selectedPeer) return { type: "direct" as const, peerId: selectedPeer.peerId };
-    if (selectedRoom) return { type: "room" as const, roomId: selectedRoom.roomId };
-    return null;
-  }, [call, selectedPeer, selectedRoom]);
-  chatDropScopeRef.current = scope;
-
-  useEffect(() => {
-    setChatReply(null);
-    setChatMenu(null);
-  }, [scope?.type, scope && scope.type === "direct" ? scope.peerId : scope && scope.type === "room" ? scope.roomId : "none"]);
-
-  useEffect(() => {
-    if (!chatMenu) return;
-    const close = (event: Event) => {
-      const target = event.target as Node | null;
-      if (target && (target as HTMLElement).closest?.(".chatCtxMenu")) return;
-      setChatMenu(null);
-    };
-    window.addEventListener("mousedown", close);
-    window.addEventListener("scroll", close, true);
-    return () => {
-      window.removeEventListener("mousedown", close);
-      window.removeEventListener("scroll", close, true);
-    };
-  }, [chatMenu]);
-
-  const scopedMessages = useMemo(() => {
-    if (!scope) return [];
-    const base = chats.filter((m) => {
-      if (scope.type === "direct" && m.scope.type === "direct") return m.scope.peerId === scope.peerId;
-      if (scope.type === "room" && m.scope.type === "room") return m.scope.roomId === scope.roomId;
-      return false;
-    });
-    const q = search.trim().toLowerCase();
-    if (!q) return base;
-    return base.filter((m) => (m.text ?? "").toLowerCase().includes(q) || (m.attachment && "name" in m.attachment ? (m.attachment.name ?? "").toLowerCase().includes(q) : false));
-  }, [chats, scope, search]);
-
-  const visibleMessages = useMemo(() => {
-    const lim = Math.max(0, Number(chatDisplayLimit || 0) || 0);
-    if (!lim) return scopedMessages;
-    if (scopedMessages.length <= lim) return scopedMessages;
-    return scopedMessages.slice(scopedMessages.length - lim);
-  }, [scopedMessages, chatDisplayLimit]);
-
-  const activeGameInviteMessageId = useMemo(() => {
-    const activeSessionId = gameInvite?.sessionId ?? outgoingGameInvite?.sessionId;
-    if (!activeSessionId) return null;
-    for (let i = visibleMessages.length - 1; i >= 0; i--) {
-      const att = visibleMessages[i].attachment;
-      if (att?.kind === "game-invite" && att.status === "pending" && att.sessionId === activeSessionId) {
-        return visibleMessages[i].id;
-      }
-    }
-    return null;
-  }, [visibleMessages, gameInvite?.sessionId, outgoingGameInvite?.sessionId]);
-
-  useEffect(() => {
-    // Автопрокрутка к последнему сообщению (настраивается)
-    if (!scope || !chatAutoScroll) return;
-    const id = requestAnimationFrame(() => {
-      chatEndRef.current?.scrollIntoView({ block: "end" });
-    });
-    return () => cancelAnimationFrame(id);
-  }, [
-    chatAutoScroll,
-    scope?.type,
-    scope && scope.type === "direct" ? (scope as any).peerId : scope && scope.type === "room" ? (scope as any).roomId : "none",
-    visibleMessages.length
-  ]);
-
-  // Периодически обновляем состояние треков для корректной индикации микрофона/камеры
-  useEffect(() => {
-    if (!call || remoteTracks.length === 0) return;
-    const interval = setInterval(() => {
-      const next = Array.from(remoteRef.current.values());
-      setRemoteTracks((prev) => {
-        if (prev.length !== next.length) return next;
-        for (let i = 0; i < prev.length; i++) {
-          const p = prev[i];
-          const n = next[i];
-          if (p.peerId !== n.peerId || p.stream.id !== n.stream.id) return next;
-          const pt = p.stream.getTracks();
-          const nt = n.stream.getTracks();
-          if (pt.length !== nt.length) return next;
-          for (let j = 0; j < pt.length; j++) {
-            if (pt[j].id !== nt[j].id || pt[j].enabled !== nt[j].enabled || pt[j].readyState !== nt[j].readyState) {
-              return next;
-            }
-          }
-        }
-        return prev;
-      });
-    }, 1500);
-    return () => clearInterval(interval);
-  }, [call, remoteTracks.length]);
-
-  useEffect(() => {
-    if (!remoteScreenShare) return;
-    const remote = remoteRef.current.get(remoteScreenShare.peerId);
-    if (!remote) return;
-    const screenAudio = findScreenBroadcastAudioTrack(remote.stream, remoteScreenShare.screenAudioTrackId);
-    if (!screenAudio) return;
-    screenAudio.enabled = !screenBroadcastMuted;
-  }, [remoteScreenShare, screenBroadcastMuted, remoteTracks]);
-
-  const smilesSet = useMemo(() => new Set(smilesFiles.map((f) => f.toLowerCase())), [smilesFiles]);
-  const categorizedScreenSources = useMemo(() => categorizeScreenSources(screenSources), [screenSources]);
-
-  useEffect(() => {
-    callRef.current = call;
-    if (!call) setRemoteCameraOn({});
-  }, [call]);
-
-  useEffect(() => {
-    gameSessionRef.current = gameSession;
-  }, [gameSession]);
-
-  useEffect(() => {
-    outgoingGameInviteRef.current = outgoingGameInvite;
-  }, [outgoingGameInvite]);
-
-  useEffect(() => {
-    gameInviteRef.current = gameInvite;
-  }, [gameInvite]);
-
-  useEffect(() => {
-    selectedPeerRef.current = selectedPeer;
-  }, [selectedPeer]);
-
-  function setConferenceCall(next: CallContext | null) {
-    callRef.current = next;
-    setCall(next);
-    if (!next) {
-      resetScreenShareViewState();
-      clearChatSelection();
-      resetGames();
-    }
-  }
-
-  function clearChatSelection() {
-    setSelectedPeer(null);
-    selectedPeerRef.current = null;
-    setSelectedRoom(null);
-    setSearch("");
-  }
-
-  function resetScreenShareViewState() {
-    setRemoteScreenShare(null);
-    setScreenViewControlsHidden(false);
-    setScreenBroadcastMuted(false);
-    setScreenShareViewCollapsed(false);
-    if (document.fullscreenElement) {
-      void document.exitFullscreen().catch(() => undefined);
-    }
-  }
-
-  async function broadcastScreenShareSignal(
-    payload:
-      | { type: "screen-share-start"; userName: string; screenAudioTrackId?: string; screenVideoTrackId?: string }
-      | { type: "screen-share-stop" }
-  ) {
-    const activeCall = callRef.current;
-    if (!activeCall || !profile) return;
-
-    if (isDirectCall(activeCall)) {
-      await sendRtc({
-        ...payload,
-        fromPeerId: profile.peerId,
-        toPeerId: activeCall.peerId
-      });
-      return;
-    }
-
-    if (isConferenceCall(activeCall)) {
-      const roomId = activeCall.roomId;
-      for (const participant of activeCall.participants) {
-        if (participant.peerId === profile.peerId) continue;
-        await sendRtc({
-          ...payload,
-          roomId,
-          fromPeerId: profile.peerId,
-          toPeerId: participant.peerId
-        });
-      }
-    }
-  }
-
-  async function broadcastCameraVisibility(enabled: boolean) {
-    const activeCall = callRef.current;
-    const me = profile?.peerId;
-    if (!activeCall || !me) return;
-    if (isDirectCall(activeCall)) {
-      await sendRtc({
-        type: "camera-visibility",
-        fromPeerId: me,
-        toPeerId: activeCall.peerId,
-        enabled
-      });
-      return;
-    }
-    if (isConferenceCall(activeCall)) {
-      for (const participant of activeCall.participants) {
-        if (participant.peerId === me) continue;
-        await sendRtc({
-          type: "camera-visibility",
-          roomId: activeCall.roomId,
-          fromPeerId: me,
-          toPeerId: participant.peerId,
-          enabled
-        });
-      }
-    }
-  }
-
-  async function broadcastRecordingSignal(
-    payload: { type: "recording-start"; userName: string } | { type: "recording-stop" }
-  ) {
-    const activeCall = callRef.current;
-    if (!activeCall || !profile) return;
-    if (isDirectCall(activeCall)) {
-      await sendRtc({
-        ...payload,
-        fromPeerId: profile.peerId,
-        toPeerId: activeCall.peerId
-      });
-      return;
-    }
-    if (isConferenceCall(activeCall)) {
-      const roomId = activeCall.roomId;
-      for (const participant of activeCall.participants) {
-        if (participant.peerId === profile.peerId) continue;
-        await sendRtc({
-          ...payload,
-          roomId,
-          fromPeerId: profile.peerId,
-          toPeerId: participant.peerId
-        });
-      }
-    }
-  }
-
-  async function chooseRecordingFolder() {
-    const dir = await window.lokameet.app.showOpenDialog({
-      properties: ["openDirectory", "createDirectory"],
-      defaultPath: recordingDir || undefined
-    });
-    if (!dir) return null;
-    setRecordingDir(dir);
-    void window.lokameet.app.updateProfile({ recordingDir: dir }).catch(() => undefined);
-    return dir;
-  }
-
-  function getLocalCameraTrack() {
-    const local = localStreamRef.current;
-    if (!local) return null;
-    const screenId = shareTrackRef.current?.id;
-    return (
-      local.getVideoTracks().find(
-        (t) => t !== shareTrackRef.current && t.readyState === "live" && !isScreenVideoTrack(t, screenId)
-      ) ?? null
-    );
-  }
-
-  async function ensurePresenterCamera() {
-    if (!isSharingRef.current || !videoEnabledRef.current) return;
-    const local = localStreamRef.current;
-    if (!local) return;
-    let cam = getLocalCameraTrack();
-    let recaptured = false;
-    if (!cam) {
-      try {
-        const liveRaw = cameraRawStreamRef.current?.getVideoTracks().find((t) => t.readyState === "live") ?? null;
-        if (liveRaw) {
-          cam = await prepareCameraTrack(liveRaw);
-        } else {
-          const captured = await captureCameraStream();
-          cam = await prepareCameraTrack(captured.getVideoTracks()[0] ?? null);
-          recaptured = true;
-        }
-      } catch (err) {
-        void window.lokameet.log.write({
-          level: "WARN",
-          scope: "renderer/screen",
-          msg: "Failed to reacquire presenter camera",
-          data: { error: String(err) }
-        });
-        return;
-      }
-    }
-    if (!cam || !isSharingRef.current || !videoEnabledRef.current) return;
-    installProcessedCamera(local, cam);
-    setLocalStreamVer((v) => v + 1);
-    const roomId = callRef.current && isConferenceCall(callRef.current) ? callRef.current.roomId : undefined;
-    const peersNeedingRenegotiation = new Set<string>();
-    for (const [peerId, pc] of pcsRef.current.entries()) {
-      if (replaceVideoTrack(pc, cam, local)) peersNeedingRenegotiation.add(peerId);
-    }
-    for (const peerId of peersNeedingRenegotiation) {
-      await renegotiatePeerConnection(peerId, roomId);
-    }
-    if (recaptured) await restoreMicAfterCameraChange();
-    cam.onended = () => {
-      if (!isSharingRef.current || !videoEnabledRef.current) return;
-      window.setTimeout(() => {
-        void ensurePresenterCamera();
-      }, 400);
-    };
-  }
-
-  async function publishLocalCameraTrack(processed: MediaStreamTrack, local: MediaStream) {
-    installProcessedCamera(local, processed);
-    setLocalStreamVer((v) => v + 1);
-    const roomId = callRef.current && isConferenceCall(callRef.current) ? callRef.current.roomId : undefined;
-    const peersNeedingRenegotiation = new Set<string>();
-    for (const [peerId, pc] of pcsRef.current.entries()) {
-      if (replaceVideoTrack(pc, processed, local)) peersNeedingRenegotiation.add(peerId);
-    }
-    for (const peerId of peersNeedingRenegotiation) {
-      await renegotiatePeerConnection(peerId, roomId);
-    }
-  }
-
-  function stopAppWindowCapture() {
-    const stream = appWindowCaptureRef.current;
-    appWindowCaptureRef.current = null;
-    if (!stream) return;
-    for (const track of stream.getTracks()) {
-      try {
-        track.stop();
-      } catch {
-        // игнор
-      }
-    }
-  }
-
-  async function ensureAppWindowCapture() {
-    const live = appWindowCaptureRef.current?.getVideoTracks().some((t) => t.readyState === "live");
-    if (live && appWindowCaptureRef.current) return appWindowCaptureRef.current;
-    stopAppWindowCapture();
-    try {
-      const sourceId = await window.lokameet.screen.getAppWindowSourceId();
-      if (!sourceId) return null;
-      const stream = await captureDesktopMedia(sourceId, false);
-      const track = stream.getVideoTracks()[0];
-      if (!track || track.readyState !== "live") {
-        for (const t of stream.getTracks()) t.stop();
-        return null;
-      }
-      track.onended = () => {
-        if (appWindowCaptureRef.current === stream) appWindowCaptureRef.current = null;
-      };
-      appWindowCaptureRef.current = stream;
-      return stream;
-    } catch (err) {
-      void window.lokameet.log.write({
-        level: "WARN",
-        scope: "renderer/media",
-        msg: "App window capture failed",
-        data: { error: String(err) }
-      });
-      return null;
-    }
-  }
-
-  function collectRecordingInputs(): { sources: RecordSource[]; audio: MediaStream[] } {
-    const sources: RecordSource[] = [];
-    const audio: MediaStream[] = [];
-    const local = localStreamRef.current;
-    if (local) audio.push(local);
-    for (const remote of remoteRef.current.values()) audio.push(remote.stream);
-
-    const localShare = shareTrackRef.current?.readyState === "live" ? shareTrackRef.current : null;
-    const remoteShare = remoteScreenShare;
-
-    if (localShare) {
-      const screenTracks: MediaStreamTrack[] = [localShare];
-      if (shareScreenAudioTrackRef.current?.readyState === "live") {
-        screenTracks.push(shareScreenAudioTrackRef.current);
-      }
-      sources.push({
-        id: `local-screen-${localShare.id}`,
-        label: `${profile?.userName ?? "You"} · screen`,
-        stream: new MediaStream(screenTracks),
-        role: "screen"
-      });
-      const cam = getLocalCameraTrack();
-      if (cam) {
-        sources.push({
-          id: `local-cam-${cam.id}`,
-          label: profile?.userName ?? "You",
-          stream: new MediaStream([cam]),
-          role: "camera"
-        });
-      }
-      for (const remote of remoteRef.current.values()) {
-        const camVideo = remote.stream.getVideoTracks().find((t) => t.readyState === "live");
-        if (camVideo) {
-          sources.push({
-            id: `remote-cam-${remote.peerId}-${camVideo.id}`,
-            label: remote.userName,
-            stream: new MediaStream([camVideo]),
-            role: "camera"
-          });
-        }
-      }
-      return { sources, audio };
-    }
-
-    if (remoteShare) {
-      const remote = remoteRef.current.get(remoteShare.peerId);
-      if (remote) {
-        sources.push({
-          id: `remote-screen-${remote.peerId}`,
-          label: `${remote.userName} · screen`,
-          stream: screenRemoteStreamsRef.current.get(remoteShare.peerId) ?? createScreenShareViewStream(remote.stream, remoteShare.screenAudioTrackId, remoteShare.screenVideoTrackId),
-          role: "screen"
-        });
-      }
-      const localCam = getLocalCameraTrack();
-      if (localCam) {
-        sources.push({
-          id: `local-cam-${localCam.id}`,
-          label: profile?.userName ?? "You",
-          stream: new MediaStream([localCam]),
-          role: "camera"
-        });
-      }
-      for (const other of remoteRef.current.values()) {
-        const camVideo =
-          other.peerId === remoteShare.peerId
-            ? findPresenterCameraTrack(other.stream, remoteShare.screenVideoTrackId)
-            : other.stream.getVideoTracks().find((t) => t.readyState === "live") ?? null;
-        if (camVideo) {
-          sources.push({
-            id: `remote-cam-${other.peerId}-${camVideo.id}`,
-            label: other.userName,
-            stream: new MediaStream([camVideo]),
-            role: "camera"
-          });
-        }
-      }
-      return { sources, audio };
-    }
-
-    const localCam = videoEnabledRef.current ? getLocalCameraTrack() : null;
-    if (localCam) {
-      sources.push({
-        id: `local-cam-${localCam.id}`,
-        label: profile?.userName ?? "You",
-        stream: new MediaStream([localCam]),
-        role: "camera"
-      });
-      for (const remote of remoteRef.current.values()) {
-        const camVideo = remote.stream.getVideoTracks().find((t) => t.readyState === "live");
-        if (camVideo) {
-          sources.push({
-            id: `remote-cam-${remote.peerId}-${camVideo.id}`,
-            label: remote.userName,
-            stream: new MediaStream([camVideo]),
-            role: "camera"
-          });
-        }
-      }
-      return { sources, audio };
-    }
-
-    const appWindow = appWindowCaptureRef.current;
-    const appTrack = appWindow?.getVideoTracks().find((t) => t.readyState === "live");
-    if (appTrack && appWindow) {
-      sources.push({
-        id: `app-window-${appTrack.id}`,
-        label: "LokaMeet",
-        stream: appWindow,
-        role: "screen"
-      });
-    }
-    return { sources, audio };
-  }
-
-  async function stopCallRecording(opts?: { silent?: boolean }) {
-    if (!recordingActiveRef.current && !callRecorderRef.current) return;
-    recordingActiveRef.current = false;
-    setRecordingActive(false);
-    const recorder = callRecorderRef.current;
-    callRecorderRef.current = null;
-    const sessionId = recordingSessionRef.current;
-    let wrote = false;
-    try {
-      wrote = (await recorder?.stop()) === true;
-    } catch {
-      // останавливаем даже если кадр не успел записаться
-    }
-    recordingSessionRef.current = null;
-    stopAppWindowCapture();
-    if (sessionId) {
-      const filePath = await window.lokameet.recording.finish(sessionId).catch(() => null);
-      if (filePath) {
-        setLastRecordingPath(filePath);
-        void window.lokameet.app.updateProfile({ lastRecordingPath: filePath }).catch(() => undefined);
-        void window.lokameet.log.write({ level: "INFO", scope: "renderer/media", msg: "Recording saved", data: { filePath } });
-      }
-      if (!wrote && !opts?.silent) setError(t("errRecordingEmpty"));
-    }
-    if (!opts?.silent) {
-      playRecordingAnnouncement("stop");
-      await broadcastRecordingSignal({ type: "recording-stop" }).catch(() => undefined);
-      await sendRecordingChatStatus("stop").catch(() => undefined);
-    }
-  }
-
-  async function sendRecordingChatStatus(kind: "start" | "stop") {
-    const activeCall = callRef.current;
-    if (!activeCall || !profile) return;
-    const text = kind === "start" ? t("chatStatusRecordingStart") : t("chatStatusRecordingStop");
-    if (isDirectCall(activeCall)) {
-      await sendChatStatus({ type: "direct", peerId: activeCall.peerId }, text);
-      return;
-    }
-    if (isConferenceCall(activeCall)) {
-      await sendChatStatus({ type: "room", roomId: activeCall.roomId }, text);
-    }
-  }
-
-  async function startCallRecording() {
-    if (!callRef.current || recordingActiveRef.current) return;
-    let dir = recordingDir;
-    if (!dir) dir = (await chooseRecordingFolder()) ?? "";
-    if (!dir) return;
-    const settings = normalizeRecordingSettings({
-      format: recordingFormat,
-      quality: recordingQuality,
-      fps: recordingFps,
-      bitrate: recordingBitrate
-    });
-    const size = RECORDING_SIZE[settings.quality];
-    const begun = await window.lokameet.recording.begin(
-      dir,
-      recordingFileName(new Date(), settings.format),
-      settings.format === "avi"
-        ? { format: "avi", width: size.width, height: size.height, fps: settings.fps, sampleRate: 48000 }
-        : undefined
-    );
-    if (!begun) {
-      setError(t("errRecording"));
-      return;
-    }
-    const sharingNow = Boolean(shareTrackRef.current) || Boolean(remoteScreenShare);
-    const camOn = Boolean(videoEnabledRef.current && getLocalCameraTrack());
-    if (!sharingNow && !camOn) await ensureAppWindowCapture();
-    else stopAppWindowCapture();
-    const { sources, audio } = collectRecordingInputs();
-    void window.lokameet.log.write({
-      level: "INFO",
-      scope: "renderer/media",
-      msg: "Recording begin",
-      data: {
-        dir,
-        format: settings.format,
-        quality: settings.quality,
-        fps: settings.fps,
-        bitrate: settings.bitrate,
-        width: size.width,
-        height: size.height,
-        sources: sources.length,
-        audioStreams: audio.length,
-        sourceLabels: sources.map((s) => `${s.role}:${s.label}`),
-        filePath: begun.filePath
-      }
-    });
-    const recorder = new CallRecorder();
-    recorder.setInputs(sources, audio);
-    const sessionId = begun.id;
-    recordingSessionRef.current = sessionId;
-    callRecorderRef.current = recorder;
-    recordingActiveRef.current = true;
-    setRecordingActive(true);
-    try {
-      await recorder.start(
-        {
-          writeBytes: (data) => window.lokameet.recording.append(sessionId, data),
-          writeJpeg: (data) => window.lokameet.recording.aviJpeg(sessionId, data),
-          writePcm: (data) => window.lokameet.recording.aviPcm(sessionId, data)
-        },
-        settings,
-        (level, msg, data) => {
-          void window.lokameet.log.write({ level, scope: "renderer/media", msg, data });
-        }
-      );
-    } catch {
-      recordingActiveRef.current = false;
-      setRecordingActive(false);
-      callRecorderRef.current = null;
-      const sessionId = recordingSessionRef.current;
-      recordingSessionRef.current = null;
-      stopAppWindowCapture();
-      if (sessionId) await window.lokameet.recording.finish(sessionId).catch(() => null);
-      setError(t("errRecording"));
-      return;
-    }
-    playRecordingAnnouncement("start");
-    await broadcastRecordingSignal({ type: "recording-start", userName: profile?.userName ?? "User" }).catch(() => undefined);
-    await sendRecordingChatStatus("start").catch(() => undefined);
-  }
-
-  async function toggleCallRecording() {
-    if (recordingActiveRef.current) await stopCallRecording();
-    else await startCallRecording();
-  }
-
-  async function renegotiatePeerConnection(peerId: string, roomId?: string) {
-    const pc = pcsRef.current.get(peerId);
-    if (!pc || !profile) return;
-    if (pc.signalingState !== "stable" || makingOfferRef.current.has(peerId)) {
-      // Glare: дождёмся stable и повторим (не ломаем входящий offer)
-      pendingRenegotiateRef.current.set(peerId, roomId);
-      return;
-    }
-    makingOfferRef.current.add(peerId);
-    try {
-      const offer = await pc.createOffer(
-        pc.iceConnectionState === "checking" || pc.iceConnectionState === "failed" || pc.iceConnectionState === "disconnected"
-          ? { iceRestart: true }
-          : undefined
-      );
-      // Пока ждали createOffer, мог прийти remote offer
-      if (pc.signalingState !== "stable" || offerHandlingRef.current.has(peerId)) {
-        pendingRenegotiateRef.current.set(peerId, roomId);
-        return;
-      }
-      await pc.setLocalDescription(offer);
-      await sendRtc({
-        type: "rtc-offer",
-        roomId,
-        fromPeerId: profile.peerId,
-        toPeerId: peerId,
-        sdp: { type: offer.type, sdp: offer.sdp ?? undefined }
-      });
-      pendingRenegotiateRef.current.delete(peerId);
-    } catch (err) {
-      const msg = String(err);
-      if (msg.includes("have-remote-offer") || msg.includes("wrong state")) {
-        pendingRenegotiateRef.current.set(peerId, roomId);
-        void window.lokameet.log.write({
-          level: "INFO",
-          scope: "renderer/screen",
-          msg: "Peer renegotiation deferred (signaling glare)",
-          data: { peerId, roomId, signalingState: pc.signalingState }
-        });
-        return;
-      }
-      void window.lokameet.log.write({
-        level: "WARN",
-        scope: "renderer/screen",
-        msg: "Peer renegotiation failed",
-        data: { peerId, roomId, error: msg }
-      });
-    } finally {
-      makingOfferRef.current.delete(peerId);
-    }
-  }
-
-  function flushPendingRenegotiation(peerId: string) {
-    if (!pendingRenegotiateRef.current.has(peerId)) return;
-    const roomId = pendingRenegotiateRef.current.get(peerId);
-    pendingRenegotiateRef.current.delete(peerId);
-    void renegotiatePeerConnection(peerId, roomId);
-  }
-
-  function isScreenShareCall(callState: CallContext | null | undefined) {
-    return isDirectCall(callState) || isConferenceCall(callState);
-  }
-
-  function shouldSendLocalTrack(track: MediaStreamTrack, _local: MediaStream) {
-    if (track.readyState !== "live") return false;
-    // Экран и системный звук идут только по отдельному screen-PC.
-    if (shareTrackRef.current && (track === shareTrackRef.current || track.id === shareTrackRef.current.id)) {
-      return false;
-    }
-    if (shareScreenAudioTrackRef.current && track === shareScreenAudioTrackRef.current) return false;
-    if (track.kind === "video" && !mediaCfg.videoEnabled) return false;
-    if (track.kind === "audio" && !mediaCfg.audioEnabled) return false;
-    return true;
-  }
-
-  async function restoreMicOnPeerConnections(screenAudioTrackId?: string) {
-    const local = localStreamRef.current;
-    const needing: string[] = [];
-    if (!local || !audioEnabledRef.current) return needing;
-    const micTrack = localMicTrack(local);
-    if (!micTrack || micTrack.readyState !== "live") return needing;
-    const isScreenAudio = (track: MediaStreamTrack) => isScreenBroadcastAudioTrack(track, local, screenAudioTrackId);
-    for (const [peerId, pc] of pcsRef.current.entries()) {
-      if (await replaceMicAudioTrack(pc, micTrack, isScreenAudio, local)) needing.push(peerId);
-    }
-    return needing;
-  }
-
-  function localMicTrack(stream: MediaStream | null | undefined) {
-    if (!stream) return undefined;
-    const remembered = micTrackIdRef.current
-      ? stream.getAudioTracks().find((t) => t.id === micTrackIdRef.current && t.readyState === "live")
-      : undefined;
-    if (remembered) return remembered;
-    return getMicAudioTrack(stream, shareScreenAudioTrackRef.current?.id);
-  }
-
-  function isUsableMicTrack(track: MediaStreamTrack | null | undefined): track is MediaStreamTrack {
-    return Boolean(track && track.kind === "audio" && track.readyState === "live");
-  }
-
-  function adoptMicrophoneTrack(micTrack: MediaStreamTrack | null | undefined) {
-    const local = localStreamRef.current;
-    if (!local || !micTrack || micTrack.kind !== "audio") return;
-    const screenAudioId = shareScreenAudioTrackRef.current?.id;
-    const old = localMicTrack(local);
-    if (old && old !== micTrack) {
-      try {
-        local.removeTrack(old);
-      } catch {
-        // игнор
-      }
-      try {
-        old.stop();
-      } catch {
-        // игнор
-      }
-    }
-    if (!local.getAudioTracks().includes(micTrack)) local.addTrack(micTrack);
-    micTrack.enabled = audioEnabledRef.current;
-    micTrackIdRef.current = micTrack.id;
-    watchLocalMicTracks(local);
-    setLocalStreamVer((v) => v + 1);
-  }
-
-  function micIsDead(track: MediaStreamTrack | null | undefined) {
-    return !track || track.readyState !== "live" || track.muted;
-  }
-
-  async function restoreMicAfterCameraChange(opts?: { force?: boolean; fromMute?: boolean }) {
-    const job = (restoringMicRef.current ?? Promise.resolve()).then(() => doRestoreMic(opts));
-    restoringMicRef.current = job.then(
-      () => undefined,
-      () => undefined
-    );
-    await job;
-  }
-
-  async function doRestoreMic(opts?: { force?: boolean; fromMute?: boolean }) {
-    if (!audioEnabledRef.current) return;
-    const screenAudioId = shareScreenAudioTrackRef.current?.id;
-    const local = localStreamRef.current;
-    const mic = localMicTrack(local);
-    const dead = micIsDead(mic);
-    if (opts?.fromMute) {
-      if (!dead) return;
-      const now = Date.now();
-      if (now - lastMicForceAtRef.current < 1200) return;
-      lastMicForceAtRef.current = now;
-    }
-    if (!opts?.force && !dead && mic) {
-      mic.enabled = true;
-      micTrackIdRef.current = mic.id;
-      watchLocalMicTracks(local);
-      const needing = await restoreMicOnPeerConnections(screenAudioId);
-      await flushMicRenegotiation(needing);
-      return;
-    }
-    if (mic && local) {
-      try {
-        local.removeTrack(mic);
-      } catch {
-        // игнор
-      }
-      if (mic !== micEnhancerRef.current.getInputTrack()) {
-        try {
-          mic.stop();
-        } catch {
-          // игнор
-        }
-      }
-      if (micTrackIdRef.current === mic.id) micTrackIdRef.current = null;
-    }
-    void window.lokameet.log.write({
-      level: "WARN",
-      scope: "renderer/media",
-      msg: "Microphone track ended after camera change; reacquiring",
-      data: { hadTrack: Boolean(mic), readyState: mic?.readyState ?? "missing", muted: mic?.muted ?? null, force: Boolean(opts?.force) }
-    });
-    micEnhancerRef.current.detach(true);
-    await ensureAudioTrackPresent();
-    const needing = await restoreMicOnPeerConnections(screenAudioId);
-    watchLocalMicTracks(localStreamRef.current);
-    await flushMicRenegotiation(needing);
-  }
-
-  async function flushMicRenegotiation(peerIds: string[]) {
-    if (peerIds.length === 0) return;
-    const roomId = callRef.current && isConferenceCall(callRef.current) ? callRef.current.roomId : undefined;
-    for (const peerId of peerIds) await renegotiatePeerConnection(peerId, roomId);
-  }
-
-  function watchLocalMicTracks(stream: MediaStream | null | undefined) {
-    if (!stream) return;
-    const mic = localMicTrack(stream);
-    if (!mic || mic.readyState !== "live") return;
-    micTrackIdRef.current = mic.id;
-    mic.onended = () => {
-      if (!audioEnabledRef.current) return;
-      void restoreMicAfterCameraChange({ force: true });
-    };
-    mic.onmute = () => {
-      if (!audioEnabledRef.current) return;
-      if (micMuteTimerRef.current) window.clearTimeout(micMuteTimerRef.current);
-      micMuteTimerRef.current = window.setTimeout(() => {
-        micMuteTimerRef.current = null;
-        const current = localMicTrack(localStreamRef.current);
-        if (!audioEnabledRef.current) return;
-        if (current && current.readyState === "live" && !current.muted) return;
-        void restoreMicAfterCameraChange({ force: true, fromMute: true });
-      }, 500);
-    };
-  }
-
-  function refreshRemotePeerVideo(peerId: string, opts?: { dropMutedVideo?: boolean }) {
-    const remote = remoteRef.current.get(peerId);
-    if (!remote) return;
-    pruneStaleRemoteStreamTracks(remote.stream, opts);
-    setRemoteTracks(Array.from(remoteRef.current.values()));
-  }
-
-  async function applyCallPresenceStatus(busy: "in_call" | "in_conference") {
-    const current = profileStatusRef.current;
-    if (!isBusyStatus(current) && prevStatusRef.current === null) {
-      prevStatusRef.current = current;
-    }
-    if (current === busy) return;
-    try {
-      const updated = await window.lokameet.app.updateProfile({ status: busy });
-      setProfile(updated);
-    } catch {
-      // повторно выставит useEffect по call
-    }
-  }
-
-  async function resolveQualityConstraints(quality = videoQualityRef.current): Promise<MediaTrackConstraints> {
-    if (quality !== "auto") return getVideoConstraints(quality);
-    let outgoing: { width: number; height: number } | null = null;
-    for (const pc of pcsRef.current.values()) {
-      const size = await getOutboundVideoSize(pc);
-      if (!size) continue;
-      if (!outgoing || size.width * size.height > outgoing.width * outgoing.height) outgoing = size;
-    }
-    return getAutoLanConstraints(outgoing);
-  }
-
-  async function captureCameraStream(quality = videoQualityRef.current, deviceId = selectedVideoDeviceId) {
-    const vc = await resolveQualityConstraints(quality);
-    if (deviceId) (vc as MediaTrackConstraints & { deviceId?: ConstrainDOMString }).deviceId = { ideal: deviceId };
-    const existingMic = localStreamRef.current ? localMicTrack(localStreamRef.current) : null;
-    const haveLiveMic = isUsableMicTrack(existingMic);
-    // Не открываем audio вместе с камерой, если мик уже живой: stop() видео из того же
-    // getUserMedia на Windows глушит и этот audio — собеседник перестаёт слышать после выкл. камеры.
-    const wantMic = audioEnabledRef.current && !haveLiveMic;
-    let stream: MediaStream;
-    const audio = wantMic ? getAudioConstraintsForMic() : false;
-    try {
-      stream = await navigator.mediaDevices.getUserMedia({ video: cameraVideoConstraints(vc), audio });
-    } catch {
-      try {
-        stream = await navigator.mediaDevices.getUserMedia({ video: vc, audio });
-      } catch {
-        stream = await navigator.mediaDevices.getUserMedia({ video: vc, audio: false });
-        if (wantMic) void restoreMicAfterCameraChange({ force: true });
-      }
-    }
-    for (const extraMic of stream.getAudioTracks()) {
-      stream.removeTrack(extraMic);
-      if (wantMic && localStreamRef.current) adoptMicrophoneTrack(extraMic);
-      else extraMic.stop();
-    }
-    return stream;
-  }
-
-  async function applyResolutionToLiveCamera(quality: VideoQuality) {
-    const liveRaw = cameraRawStreamRef.current?.getVideoTracks().find((t) => t.readyState === "live") ?? null;
-    if (!liveRaw || !cameraRawStreamRef.current) return false;
-    const next = await resolveQualityConstraints(quality);
-    const cur = typeof liveRaw.getSettings === "function" ? liveRaw.getSettings() : {};
-    const idealW = Number((next.width as ConstrainULongRange | undefined)?.ideal);
-    const idealH = Number((next.height as ConstrainULongRange | undefined)?.ideal);
-    const curW = Number(cur.width) || 0;
-    const curH = Number(cur.height) || 0;
-    const closeEnough =
-      quality === "auto" &&
-      curW > 0 &&
-      idealW > 0 &&
-      Math.abs(curW * curH - idealW * idealH) / Math.max(1, curW * curH) < 0.18;
-    if (!closeEnough) {
-      await applyTrackResolution(liveRaw, next);
-      await applyCameraControls(liveRaw, cameraControlsRef.current);
-    }
-    setCameraFxOptions(cameraFxRef.current);
-    await bindCameraFx(cameraRawStreamRef.current, { fitOutput: !closeEnough });
-    if (cameraPreviewRef.current && settingsOpen && settingsTab === "camera") {
-      cameraPreviewRef.current.srcObject = getCameraFxStream();
-      await cameraPreviewRef.current.play().catch(() => undefined);
-    }
-    return true;
-  }
-
-  useEffect(() => {
-    if (!profile) return;
-    const busyStatus: AvailabilityStatus | null = call
-      ? call.mode === "room"
-        ? "in_conference"
-        : "in_call"
-      : null;
-
-    if (busyStatus) {
-      if (profile.status !== busyStatus) {
-        if (!isBusyStatus(profile.status) && prevStatusRef.current === null) {
-          prevStatusRef.current = profile.status;
-        }
-        window.lokameet.app
-          .updateProfile({ status: busyStatus })
-          .then((p) => setProfile(p))
-          .catch(() => undefined);
-      }
-    } else if (isBusyStatus(profile.status)) {
-      const restore = prevStatusRef.current && !isBusyStatus(prevStatusRef.current) ? prevStatusRef.current : "online";
-      prevStatusRef.current = null;
-      window.lokameet.app
-        .updateProfile({ status: restore })
-        .then((p) => setProfile(p))
-        .catch(() => undefined);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [call?.mode, call ? (call.mode === "room" ? call.roomId : call.peerId) : "none", profile?.status]);
-
-  // Авто-статус «Отошел» при отсутствии активности
-  useEffect(() => {
-    if (isSettingsWindow) return;
-    const markActivity = () => {
-      lastActivityRef.current = Date.now();
-      if (autoAwayAppliedRef.current && profileStatusRef.current === "away" && !callRef.current) {
-        autoAwayAppliedRef.current = false;
-        window.lokameet.app
-          .updateProfile({ status: "online" })
-          .then((p) => setProfile(p))
-          .catch(() => undefined);
-      }
-    };
-    const opts: AddEventListenerOptions = { capture: true, passive: true };
-    const events = ["mousemove", "mousedown", "keydown", "touchstart", "wheel", "focus"] as const;
-    for (const ev of events) window.addEventListener(ev, markActivity, opts);
-    const interval = window.setInterval(() => {
-      const mins = autoAwayMinutesRef.current;
-      if (!mins || mins <= 0) return;
-      if (callRef.current) return;
-      if (profileStatusRef.current !== "online") return;
-      if (Date.now() - lastActivityRef.current < mins * 60_000) return;
-      autoAwayAppliedRef.current = true;
-      window.lokameet.app
-        .updateProfile({ status: "away" })
-        .then((p) => setProfile(p))
-        .catch(() => undefined);
-    }, 10_000);
-    return () => {
-      for (const ev of events) window.removeEventListener(ev, markActivity, opts);
-      clearInterval(interval);
-    };
-  }, []);
-
-  useEffect(() => {
-    let unsubDisc: (() => void) | null = null;
-    let unsubEnv: (() => void) | null = null;
-    let cancelled = false;
-
-    const markBoot = (pct: number, labelKey: string) => {
-      if (cancelled) return;
-      setBootProgress(Math.max(0, Math.min(100, Math.round(pct))));
-      setBootLabel(labelKey);
-    };
-
-    (async () => {
-      markBoot(4, "bootStarting");
-      document.getElementById("boot-splash")?.remove();
-
-      markBoot(12, "bootState");
-      const s = await window.lokameet.app.getState();
-      if (cancelled) return;
-
-      markBoot(28, "bootProfile");
-      if (!isSettingsWindow && (s.profile.status === "in_call" || s.profile.status === "in_conference")) {
-        const normalized = await window.lokameet.app.updateProfile({ status: "online" });
-        if (cancelled) return;
-        setProfile(normalized);
-      } else {
-        setProfile(s.profile);
-      }
-
-      markBoot(38, "bootAvatar");
-      if (s.profile.avatarHash) {
-        const ownAvatar = await window.lokameet.avatar.get(s.profile.peerId, s.profile.avatarHash).catch(() => null);
-        if (cancelled) return;
-        if (ownAvatar) setAvatarUrls((current) => ({ ...current, [s.profile.peerId]: ownAvatar.dataUrl }));
-      }
-
-      markBoot(48, "bootSettings");
-      setChats(s.chats);
-      setSignalingPort(s.signalingPort);
-      if (s.appVersion) {
-        setAppVersion(s.appVersion);
-        document.title = `LokaMeet ${s.appVersion}`;
-      }
-      document.documentElement.dataset.theme = s.profile.theme;
-      await i18n.changeLanguage(s.profile.language);
-      document.documentElement.lang = s.profile.language;
-      if (cancelled) return;
-      setChatHeight(Math.max(360, Math.min(440, s.profile.uiChatHeight ?? 380)));
-      setSidebarWidth(Math.max(360, Math.min(420, s.profile.uiSidebarWidth ?? 380)));
-      setFontScale(s.profile.uiFontScale ?? 0.95);
-      setCompactUi(Boolean(s.profile.uiCompact));
-      setShowSeconds(Boolean(s.profile.uiShowSeconds));
-      setAutoAwayMinutes(Math.max(0, Math.min(120, Number(s.profile.autoAwayMinutes ?? 5) || 0)));
-      setGamesSettings(normalizeGamesSettings(s.profile.gamesSettings));
-      setAutoSwitchToChat(s.profile.autoSwitchToChatOnAccept ?? true);
-      setSelectedAudioInputId(s.profile.audioInputDeviceId ?? "");
-      setSelectedAudioOutputId(s.profile.audioOutputDeviceId ?? "");
-      setSelectedVideoDeviceId(s.profile.videoInputDeviceId ?? "");
-      const loadedCameraControls = normalizeCameraControls(s.profile.cameraControls);
-      cameraControlsRef.current = loadedCameraControls;
-      setCameraControls(loadedCameraControls);
-      const listed = await window.lokameet.cameraBg.list().catch(() => []);
-      if (cancelled) return;
-      setCustomCameraBgs(listed);
-      const loadedFx = normalizeCameraFxOptions({
-        cropZoom: s.profile.cameraFx?.cropZoom,
-        cropPanX: s.profile.cameraFx?.cropPanX,
-        cropPanY: s.profile.cameraFx?.cropPanY,
-        backgroundMode: s.profile.cameraFx?.backgroundMode,
-        presetId: s.profile.cameraFx?.backgroundPreset,
-        customId: s.profile.cameraFx?.backgroundCustomId,
-        blurAmount: s.profile.cameraFx?.blurAmount
-      });
-      if (loadedFx.backgroundMode === "custom") {
-        const chosen = listed.find((item) => item.id === loadedFx.customId) ?? listed[0];
-        loadedFx.customId = chosen?.id ?? null;
-        loadedFx.customDataUrl = chosen?.dataUrl ?? null;
-        if (!loadedFx.customDataUrl) loadedFx.backgroundMode = "none";
-      }
-      cameraFxRef.current = loadedFx;
-      cameraFxNeedRef.current = cameraFxNeedsProcessing(loadedFx);
-      setCameraFx(loadedFx);
-      setCameraFxOptions(loadedFx);
-      setChatAutoScroll(s.profile.chatAutoScroll ?? true);
-      setChatSmileSizePx(Math.max(16, Math.min(128, Number(s.profile.chatSmileSizePx ?? 24) || 24)));
-      setChatFontSize(Math.max(10, Math.min(24, Number(s.profile.chatFontSize ?? 14) || 14)));
-      setChatDisplayLimit(Number(s.profile.chatDisplayLimit ?? 0) || 0);
-      setSpeakingIndicator(s.profile.uiSpeakingIndicator ?? true);
-      // Стандартный вид 1920×1080 (как на референс-скриншотах)
-      const layoutV = Number(s.profile.uiLayoutVersion ?? 0) || 0;
-      if (layoutV < 2) {
-        setTileAspect("16x9");
-        setTileObjectFit("cover");
-        setTileRadius(12);
-        setTileGap(5);
-        setFontScale(0.95);
-        setChatHeight(380);
-        setSidebarWidth(360);
-        void window.lokameet.app
-          .updateProfile({
-            uiTileAspect: "16x9",
-            uiTileObjectFit: "cover",
-            uiTileRadius: 12,
-            uiTileGap: 5,
-            uiFontScale: 0.95,
-            uiChatHeight: 380,
-            uiSidebarWidth: 380,
-            uiLayoutVersion: 2
-          })
-          .catch(() => undefined);
-      } else {
-        setTileAspect(s.profile.uiTileAspect ?? "16x9");
-        setTileObjectFit(s.profile.uiTileObjectFit ?? "cover");
-        setTileRadius(Math.max(4, Math.min(28, Number(s.profile.uiTileRadius ?? 12) || 12)));
-        setTileGap(Math.max(4, Math.min(24, Number(s.profile.uiTileGap ?? 5) || 5)));
-      }
-      setMicrophoneVolume(Math.max(0, Math.min(100, Number(s.profile.microphoneVolume ?? 100) || 100)));
-      const micVol = Math.max(
-        0,
-        Math.min(100, Number(s.profile.remoteMicVolume ?? s.profile.speakerVolume ?? 100) || 100)
-      );
-      setSpeakerVolume(micVol);
-      setRemoteMicVolume(micVol);
-      setRemoteScreenShareVolume(
-        Math.max(0, Math.min(100, Number(s.profile.remoteScreenShareVolume ?? 100) || 100))
-      );
-      setNoiseSuppression(s.profile.noiseSuppression ?? true);
-      lastNoiseSuppressionRef.current = s.profile.noiseSuppression ?? true;
-      setNoiseSuppressionSensitivity(Math.max(0, Math.min(100, Number(s.profile.noiseSuppressionSensitivity ?? 65) || 65)));
-      setVoiceActivation(Boolean(s.profile.voiceActivation));
-      lastVoiceActivationRef.current = Boolean(s.profile.voiceActivation);
-      setVoiceActivationSensitivity(Math.max(0, Math.min(100, Number(s.profile.voiceActivationSensitivity ?? 50) || 50)));
-      setSoundNotificationsEnabled(s.profile.soundNotificationsEnabled ?? true);
-      setSoundNotificationVolume(Math.max(0, Math.min(100, Number(s.profile.soundNotificationVolume ?? 50) || 50)));
-      setCallSoundFile(s.profile.callSoundFile ?? "snds/call.mp3");
-      setMessageSoundFile(s.profile.messageSoundFile ?? "snds/sms.mp3");
-      setCallerSoundFile(s.profile.callerSoundFile ?? "snds/call_1.mp3");
-      setConnectionSoundFile(s.profile.connectionSoundFile ?? "snds/int.mp3");
-      setRecordingSoundFile(typeof s.profile.recordingSoundFile === "string" ? s.profile.recordingSoundFile : "");
-      setCallSoundVolume(Math.max(0, Math.min(100, Number(s.profile.callSoundVolume ?? 50) || 50)));
-      setMessageSoundVolume(Math.max(0, Math.min(100, Number(s.profile.messageSoundVolume ?? 50) || 50)));
-      setCallerSoundVolume(Math.max(0, Math.min(100, Number(s.profile.callerSoundVolume ?? 50) || 50)));
-      setConnectionSoundVolume(Math.max(0, Math.min(100, Number(s.profile.connectionSoundVolume ?? 50) || 50)));
-      setRecordingSoundVolume(Math.max(0, Math.min(100, Number(s.profile.recordingSoundVolume ?? 50) || 50)));
-      setRecordingDir(typeof s.profile.recordingDir === "string" ? s.profile.recordingDir : "");
-      setLastRecordingPath(typeof s.profile.lastRecordingPath === "string" ? s.profile.lastRecordingPath : "");
-      const rec = normalizeRecordingSettings({
-        format: s.profile.recordingFormat === "avi" ? "avi" : "mp4",
-        quality: s.profile.recordingQuality,
-        fps: s.profile.recordingFps,
-        bitrate: s.profile.recordingBitrate
-      });
-      setRecordingFormat(rec.format);
-      setRecordingQuality(rec.quality);
-      setRecordingFps(rec.fps);
-      setRecordingBitrate(rec.bitrate);
-      if (s.profile.defaultVideoQuality && isVideoQuality(s.profile.defaultVideoQuality)) {
-        setMediaCfg((c) => ({ ...c, videoQuality: s.profile.defaultVideoQuality as VideoQuality }));
-      } else {
-        setMediaCfg((c) => ({ ...c, videoQuality: "auto" }));
-      }
-
-      markBoot(62, "bootNetwork");
-      // Параллельная инициализация для быстрого старта
-      const [li, ips, smileList] = await Promise.all([
-        window.lokameet.log.getInfo().catch(() => ({ logFilePath: null, logDirPath: null })),
-        window.lokameet.net.getLocalIPv4().catch(() => []),
-        window.lokameet.smiles.list().catch(() => [])
-      ]);
-      if (cancelled) return;
-
-      markBoot(78, "bootSmiles");
-      setLogFilePath(li.logFilePath);
-      setLocalIps(ips);
-      setSmilesFiles(smileList);
-
-      void window.lokameet.log.write({ level: "INFO", scope: "renderer", msg: "Renderer started", data: { signalingPort: s.signalingPort } });
-
-      // Всегда спрашиваем имя при старте
-      setPendingName(s.profile.userName || "User");
-      setPendingStatus(
-        s.profile.status === "in_call" || s.profile.status === "in_conference" ? "online" : s.profile.status
-      );
-
-      if (isSettingsWindow) {
-        markBoot(100, "bootReady");
-        setSettingsOpen(true);
-        setBootReady(true);
-        return;
-      }
-
-      markBoot(88, "bootDiscovery");
-      const snap = await window.lokameet.discovery.getSnapshot();
-      if (cancelled) return;
-      const discoveredPeers = snap.peers.filter((p) => p.peerId !== s.profile.peerId);
-      setPeers(applyHelloStatus(discoveredPeers));
-      setRooms(snap.rooms.filter((r) => r.hostPeerId !== s.profile.peerId));
-      void Promise.all(discoveredPeers.map((peer) => refreshPeerAvatar(peer, s.profile.peerId)));
-
-      unsubDisc = window.lokameet.discovery.onUpdate((u) => {
-        const updatedPeers = u.peers.filter((p) => p.peerId !== s.profile.peerId);
-        setPeers(applyHelloStatus(updatedPeers));
-        setRooms(u.rooms.filter((r) => r.hostPeerId !== s.profile.peerId));
-        void Promise.all(updatedPeers.map((peer) => refreshPeerAvatar(peer, s.profile.peerId)));
-      });
-
-      unsubEnv = window.lokameet.net.onEnvelope((env) => onEnvelopeRef.current(env));
-
-      markBoot(100, "bootReady");
-      setNameDialogExitsApp(true);
-      setNameDialogOpen(true);
-      setBootReady(true);
-    })().catch((e) => {
-      if (!cancelled) {
-        setError(String(e?.message ?? e));
-        setBootProgress(100);
-        setBootReady(true);
-      }
-    });
-
-    return () => {
-      cancelled = true;
-      unsubDisc?.();
-      unsubEnv?.();
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  useEffect(() => {
-    let mounted = true;
-    async function refreshDevices() {
-      try {
-        const list = await navigator.mediaDevices.enumerateDevices();
-        const vids = list.filter((d) => d.kind === "videoinput");
-        const aIns = list.filter((d) => d.kind === "audioinput");
-        const aOuts = list.filter((d) => d.kind === "audiooutput");
-        if (!mounted) return;
-        setVideoDevices(vids);
-        setAudioInputDevices(aIns);
-        setAudioOutputDevices(aOuts);
-        if (selectedVideoDeviceId && !vids.some((d) => d.deviceId === selectedVideoDeviceId)) {
-          setSelectedVideoDeviceId(vids[0]?.deviceId ?? "");
-          void window.lokameet.app.updateProfile({ videoInputDeviceId: vids[0]?.deviceId ?? "" }).catch(() => undefined);
-        } else if (!selectedVideoDeviceId && vids[0]?.deviceId) {
-          setSelectedVideoDeviceId(vids[0].deviceId);
-        }
-        if (selectedAudioInputId && !aIns.some((d) => d.deviceId === selectedAudioInputId)) {
-          setSelectedAudioInputId(aIns[0]?.deviceId ?? "");
-          void window.lokameet.app.updateProfile({ audioInputDeviceId: aIns[0]?.deviceId ?? "" }).catch(() => undefined);
-        } else if (!selectedAudioInputId && aIns[0]?.deviceId) {
-          setSelectedAudioInputId(aIns[0].deviceId);
-        }
-        if (selectedAudioOutputId && !aOuts.some((d) => d.deviceId === selectedAudioOutputId)) {
-          setSelectedAudioOutputId(aOuts[0]?.deviceId ?? "");
-        } else if (!selectedAudioOutputId && aOuts[0]?.deviceId) {
-          setSelectedAudioOutputId(aOuts[0].deviceId);
-        }
-      } catch {
-        // игнор
-      }
-    }
-    void refreshDevices();
-    const handler = () => void refreshDevices();
-    navigator.mediaDevices.addEventListener("devicechange", handler);
-    return () => {
-      mounted = false;
-      navigator.mediaDevices.removeEventListener("devicechange", handler);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedVideoDeviceId, selectedAudioInputId, selectedAudioOutputId]);
-
-  useEffect(() => {
-    if (!bootReady || isSettingsWindow) return;
-    let cancelled = false;
-    (async () => {
-      const hasMic = async () => {
-        try {
-          const list = await navigator.mediaDevices.enumerateDevices();
-          return list.some((d) => d.kind === "audioinput");
-        } catch {
-          return false;
-        }
-      };
-      if (await hasMic()) return;
-      try {
-        const probe = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-        probe.getTracks().forEach((track) => {
-          try {
-            track.stop();
-          } catch {
-            // зонд не должен держать устройство
-          }
-        });
-        if (cancelled || (await hasMic())) return;
-      } catch (err) {
-        const name = String((err as DOMException)?.name ?? "");
-        if (name === "NotAllowedError" || name === "PermissionDeniedError") return;
-      }
-      if (!cancelled) setError(t("micNotDetected"));
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [bootReady]);
-
-  function syncLocalVideoPreview(opts?: { videoEnabled?: boolean }) {
-    const el = localVideoRef.current;
-    if (!el) return;
-    const local = localStreamRef.current;
-    const share = shareTrackRef.current;
-    if (share && share.readyState === "live") {
-      const current = el.srcObject;
-      const already =
-        current instanceof MediaStream && current.getVideoTracks().length === 1 && current.getVideoTracks()[0] === share;
-      if (!already) el.srcObject = new MediaStream([share]);
-      void el.play().catch(() => undefined);
-      return;
-    }
-    const videoOn = opts?.videoEnabled ?? mediaCfg.videoEnabled;
-    const hasLiveVideo =
-      videoOn && local && local.getVideoTracks().some((t) => t.readyState === "live");
-    if (hasLiveVideo && local) {
-      if (el.srcObject !== local) el.srcObject = local;
-      void el.play().catch(() => undefined);
-      return;
-    }
-    el.srcObject = null;
-  }
-
-  async function ensureLocalMedia() {
-    const wantAudio = audioEnabledRef.current;
-    const wantVideo = videoEnabledRef.current;
-    const existing = localStreamRef.current;
-    if (existing) {
-      const hasLiveAudio = existing.getAudioTracks().some((t) => t.readyState === "live");
-      const hasLiveVideo = existing.getVideoTracks().some((t) => t.readyState === "live");
-      if ((!wantAudio || hasLiveAudio) && (!wantVideo || hasLiveVideo)) return existing;
-      if (!hasLiveAudio && !hasLiveVideo) localStreamRef.current = null;
-      else return existing;
-    }
-
-    // getUserMedia запрещает {audio:false, video:false}
-    if (!wantAudio && !wantVideo) {
-      const empty = new MediaStream();
-      localStreamRef.current = empty;
-      setLocalStreamVer((v) => v + 1);
-      return empty;
-    }
-
-    const buildConstraints = async (audioDeviceId: string, videoDeviceId: string) => {
-      let video: boolean | MediaTrackConstraints = false;
-      if (wantVideo) {
-        const vc = await resolveQualityConstraints(mediaCfg.videoQuality);
-        if (videoDeviceId) (vc as any).deviceId = { ideal: videoDeviceId };
-        video = vc;
-      }
-      let audio: boolean | MediaTrackConstraints = false;
-      if (wantAudio) {
-        audio = getAudioConstraintsForMic(audioDeviceId);
-      }
-      return { video, audio };
-    };
-
-    const tryGet = async (audioDeviceId: string, videoDeviceId: string) => {
-      const { video, audio } = await buildConstraints(audioDeviceId, videoDeviceId);
-      if (!video && !audio) return new MediaStream();
-      // Микрофон и камера отдельными захватами: stop() видео из общего getUserMedia
-      // на Windows глушит звук того же вызова.
-      const merged = new MediaStream();
-      if (audio) {
-        const mic = await navigator.mediaDevices.getUserMedia({ audio, video: false });
-        for (const track of mic.getAudioTracks()) merged.addTrack(track);
-      }
-      if (video && typeof video === "object") {
-        try {
-          let cam: MediaStream;
-          try {
-            cam = await navigator.mediaDevices.getUserMedia({ audio: false, video: cameraVideoConstraints(video) });
-          } catch {
-            cam = await navigator.mediaDevices.getUserMedia({ audio: false, video });
-          }
-          for (const track of cam.getVideoTracks()) merged.addTrack(track);
-        } catch (err) {
-          if (!audio) throw err;
-        }
-      }
-      return merged;
-    };
-
-    try {
-      const stream = await tryGet(selectedAudioInputId, selectedVideoDeviceId);
-      const rawVideo = stream.getVideoTracks()[0] ?? null;
-      if (rawVideo) {
-        const processed = await prepareCameraTrack(rawVideo);
-        if (processed && processed !== rawVideo) {
-          stream.removeTrack(rawVideo);
-          stream.addTrack(processed);
-        }
-      }
-      localStreamRef.current = stream;
-      const mic = getMicAudioTrack(stream);
-      if (mic) micTrackIdRef.current = mic.id;
-      watchLocalMicTracks(stream);
-      setLocalStreamVer((v) => v + 1);
-      if (localVideoRef.current) {
-        localVideoRef.current.srcObject = stream;
-        await localVideoRef.current.play().catch(() => undefined);
-      }
-      return stream;
-    } catch (err) {
-
-      // Устаревший deviceId (часто после перезагрузки Windows / смены USB) → fallback без exact id
-      if (isNotFoundMediaError(err) && (selectedAudioInputId || selectedVideoDeviceId)) {
-        void window.lokameet.log.write({
-          level: "WARN",
-          scope: "renderer/media",
-          msg: "Stale media deviceId, retrying defaults",
-          data: { error: String(err), audioInputDeviceId: selectedAudioInputId || null, videoInputDeviceId: selectedVideoDeviceId || null }
-        });
-        clearStaleMediaDeviceIds("both");
-        try {
-          const stream = await tryGet("", "");
-          const rawVideo = stream.getVideoTracks()[0] ?? null;
-          if (rawVideo) {
-            const processed = await prepareCameraTrack(rawVideo);
-            if (processed && processed !== rawVideo) {
-              stream.removeTrack(rawVideo);
-              stream.addTrack(processed);
-            }
-          }
-          localStreamRef.current = stream;
-          const mic = getMicAudioTrack(stream);
-          if (mic) micTrackIdRef.current = mic.id;
-          watchLocalMicTracks(stream);
-          setLocalStreamVer((v) => v + 1);
-          if (localVideoRef.current) {
-            localVideoRef.current.srcObject = stream;
-            await localVideoRef.current.play().catch(() => undefined);
-          }
-          return stream;
-        } catch (retryErr) {
-          err = retryErr;
-        }
-      }
-
-      if (mediaCfg.videoEnabled && mediaCfg.audioEnabled) {
-        void window.lokameet.log.write({ level: "WARN", scope: "renderer/media", msg: "Failed to get video+audio, retrying with audio only", data: { error: String(err) } });
-        try {
-          const stream = await navigator.mediaDevices.getUserMedia({
-            video: false,
-            audio: getAudioConstraintsForMic("")
-          });
-          localStreamRef.current = stream;
-          const mic = getMicAudioTrack(stream);
-          if (mic) micTrackIdRef.current = mic.id;
-          watchLocalMicTracks(stream);
-          setLocalStreamVer((v) => v + 1);
-          if (localVideoRef.current) {
-            localVideoRef.current.srcObject = stream;
-            await localVideoRef.current.play().catch(() => undefined);
-          }
-          setMediaCfg((c) => ({ ...c, videoEnabled: false }));
-          return stream;
-        } catch (audioErr) {
-          // крайний случай: пустой local stream, чтобы answer/offer всё же прошли
-          if (isNotFoundMediaError(audioErr) || isNotFoundMediaError(err)) {
-            const empty = new MediaStream();
-            localStreamRef.current = empty;
-            setLocalStreamVer((v) => v + 1);
-            // Не сбрасываем mediaCfg.audioEnabled — иначе следующий join упрётся в audio:false+video:false
-            void window.lokameet.log.write({
-              level: "WARN",
-              scope: "renderer/media",
-              msg: "No local A/V devices; continuing with empty stream",
-              data: { error: String(audioErr) }
-            });
-            return empty;
-          }
-          throw audioErr;
-        }
-      }
-
-      if (isNotFoundMediaError(err)) {
-        const empty = new MediaStream();
-        localStreamRef.current = empty;
-        setLocalStreamVer((v) => v + 1);
-        void window.lokameet.log.write({
-          level: "WARN",
-          scope: "renderer/media",
-          msg: "No local media device; continuing with empty stream",
-          data: { error: String(err) }
-        });
-        return empty;
-      }
-      throw err;
-    }
-  }
-
-  async function ensureVideoTrackPresent() {
-    if (!mediaCfg.videoEnabled) return;
-    try {
-      const local = await ensureLocalMedia();
-      if (local.getVideoTracks().length > 0) return;
-      const cam = await captureCameraStream();
-      const camTrack = cam.getVideoTracks()[0] ?? null;
-      if (!camTrack) return;
-      const processed = await prepareCameraTrack(camTrack);
-      installProcessedCamera(local, processed);
-      setLocalStreamVer((v) => v + 1);
-      const roomId = callRef.current && isConferenceCall(callRef.current) ? callRef.current.roomId : undefined;
-      for (const [peerId, pc] of pcsRef.current.entries()) {
-        const needsRenegotiate = replaceVideoTrack(pc, processed, local);
-        if (needsRenegotiate) await renegotiatePeerConnection(peerId, roomId);
-      }
-      if (localVideoRef.current) {
-        localVideoRef.current.srcObject = local;
-        await localVideoRef.current.play().catch(() => undefined);
-      }
-    } catch (err) {
-      // Если камера недоступна, отключаем видео в настройках и логируем ошибку
-      void window.lokameet.log.write({ level: "WARN", scope: "renderer/media", msg: "Failed to get video track, disabling video", data: { error: String(err) } });
-      setMediaCfg((c) => ({ ...c, videoEnabled: false }));
-    }
-  }
-
-  async function ensureAudioTrackPresent(excludePeerId?: string) {
-    if (!audioEnabledRef.current) return;
-    const local = await ensureLocalMedia();
-    const screenAudioId = shareScreenAudioTrackRef.current?.id;
-    let existingTrack = localMicTrack(local);
-
-    if (existingTrack && existingTrack.readyState !== "live") {
-      try {
-        local.removeTrack(existingTrack);
-      } catch {
-        // игнор
-      }
-      try {
-        existingTrack.stop();
-      } catch {
-        // игнор
-      }
-      existingTrack = undefined;
-    }
-
-    // Проверяем, нужно ли пересоздать трек из-за изменения шумоподавления
-    if (existingTrack) {
-      let currentNoiseSuppression = noiseSuppression;
-      try {
-        currentNoiseSuppression = existingTrack.getSettings().noiseSuppression ?? noiseSuppression;
-      } catch {
-        currentNoiseSuppression = noiseSuppression;
-      }
-      if (currentNoiseSuppression !== noiseSuppression) {
-        // Настройки изменились - пересоздаем трек
-        local.removeTrack(existingTrack);
-        try {
-          existingTrack.stop();
-        } catch {
-          // игнор
-        }
-        // Продолжаем создание нового трека ниже
-      } else {
-        // Настройки захвата не изменились. Обработку (громкость, шумодав, голос) вешаем на уже живой трек,
-        // без нового getUserMedia — иначе на Windows портится воспроизведение собеседника.
-        const opts = {
-          enabled: noiseSuppression,
-          sensitivity: noiseSuppressionSensitivity,
-          volume: microphoneVolume,
-          voiceActivation,
-          voiceSensitivity: voiceActivationSensitivity
-        };
-        const rememberedInput = micEnhancerRef.current.getInputTrack();
-        const source = rememberedInput && rememberedInput.readyState === "live" ? rememberedInput : existingTrack;
-        let outgoing = existingTrack;
-        if (source.readyState === "live" && (micEnhancerRef.current.needsRebuild(opts) || micEnhancerRef.current.getOutputTrack()?.readyState !== "live")) {
-          outgoing = await micEnhancerRef.current.attach(source, opts);
-        } else {
-          micEnhancerRef.current.setOptions(opts);
-          outgoing = micEnhancerRef.current.getOutputTrack() ?? existingTrack;
-        }
-        if (outgoing !== existingTrack && local.getAudioTracks().includes(existingTrack)) {
-          try {
-            local.removeTrack(existingTrack);
-          } catch {
-            // игнор
-          }
-          if (existingTrack !== micEnhancerRef.current.getInputTrack()) {
-            try {
-              existingTrack.stop();
-            } catch {
-              // игнор
-            }
-          }
-        }
-        if (!local.getAudioTracks().includes(outgoing)) local.addTrack(outgoing);
-        outgoing.enabled = true;
-        micTrackIdRef.current = outgoing.id;
-        watchLocalMicTracks(local);
-        const isScreenAudio = (track: MediaStreamTrack) => isScreenBroadcastAudioTrack(track, local, screenAudioId);
-        const needing: string[] = [];
-        for (const [peerId, pc] of pcsRef.current.entries()) {
-          if (peerId === excludePeerId) continue;
-          if (await replaceMicAudioTrack(pc, outgoing, isScreenAudio, local)) needing.push(peerId);
-        }
-        await flushMicRenegotiation(needing);
-        return;
-      }
-    }
-
-    // Создаем новый трек с текущими настройками (как в v01.1.2)
-    const ac = getAudioConstraintsForMic();
-    const mic = await navigator.mediaDevices.getUserMedia({ audio: ac, video: false });
-    const rawTrack = mic.getAudioTracks()[0] ?? null;
-    if (!rawTrack) return;
-    micEnhancerRef.current.detach(true);
-    const micTrack = await micEnhancerRef.current.attach(rawTrack, {
-      enabled: noiseSuppression,
-      sensitivity: noiseSuppressionSensitivity,
-      volume: microphoneVolume,
-      voiceActivation,
-      voiceSensitivity: voiceActivationSensitivity
-    });
-    local.addTrack(micTrack);
-    micTrackIdRef.current = micTrack.id;
-    watchLocalMicTracks(local);
-    setLocalStreamVer((v) => v + 1);
-    await applyMicrophoneVolume();
-    const isScreenAudio = (track: MediaStreamTrack) => isScreenBroadcastAudioTrack(track, local, screenAudioId);
-    const needing: string[] = [];
-    for (const [peerId, pc] of pcsRef.current.entries()) {
-      if (peerId === excludePeerId) continue;
-      if (await replaceMicAudioTrack(pc, micTrack, isScreenAudio, local)) needing.push(peerId);
-    }
-    await flushMicRenegotiation(needing);
-  }
-
-  async function ensureOutgoingMic(pc: RTCPeerConnection) {
-    if (!audioEnabledRef.current) return;
-    await ensureAudioTrackPresent().catch(() => undefined);
-    const local = localStreamRef.current;
-    if (!local) return;
-    const mic = localMicTrack(local);
-    if (!mic || mic.readyState !== "live") return;
-    mic.enabled = audioEnabledRef.current;
-    const screenAudioId = shareScreenAudioTrackRef.current?.id;
-    const hasMicSender = pc.getSenders().some((sender) => {
-      const track = sender.track;
-      return Boolean(track && track.kind === "audio" && track.readyState === "live" && !isScreenBroadcastAudioTrack(track, local, screenAudioId));
-    });
-    if (!hasMicSender) {
-      bindLocalTracks(pc, local, (track) => track.id === mic.id, true);
-    }
-  }
-
-  async function recreateAudioTrack() {
-    if (!mediaCfg.audioEnabled) return;
-    const local = await ensureLocalMedia();
-    const oldTrack = localMicTrack(local);
-    if (oldTrack) {
-      if (micTrackIdRef.current === oldTrack.id) micTrackIdRef.current = null;
-      local.removeTrack(oldTrack);
-      if (oldTrack !== micEnhancerRef.current.getInputTrack()) {
-        try {
-          oldTrack.stop();
-        } catch {
-          // игнор
-        }
-      }
-    }
-    micEnhancerRef.current.detach(true);
-    await ensureAudioTrackPresent();
-  }
-
-  async function applyMicrophoneVolume() {
-    micEnhancerRef.current.setOptions({
-      enabled: noiseSuppression,
-      sensitivity: noiseSuppressionSensitivity,
-      volume: microphoneVolume,
-      voiceActivation,
-      voiceSensitivity: voiceActivationSensitivity
-    });
-  }
-
-  async function applyMicProcessing() {
-    if (!audioEnabledRef.current) return;
-    const local = localStreamRef.current;
-    if (!local) return;
-    const input = micEnhancerRef.current.getInputTrack();
-    const raw = input && input.readyState === "live" ? input : null;
-    const opts = {
-      enabled: noiseSuppression,
-      sensitivity: noiseSuppressionSensitivity,
-      volume: microphoneVolume,
-      voiceActivation,
-      voiceSensitivity: voiceActivationSensitivity
-    };
-    const currentOut = micEnhancerRef.current.getOutputTrack();
-    if (!raw) {
-      await ensureAudioTrackPresent();
-      return;
-    }
-    let outgoing = currentOut;
-    if (!outgoing || outgoing.readyState !== "live" || micEnhancerRef.current.needsRebuild(opts)) {
-      outgoing = await micEnhancerRef.current.attach(raw, opts);
-    } else {
-      micEnhancerRef.current.setOptions(opts);
-    }
-    if (!outgoing) return;
-    if (outgoing === currentOut && local.getAudioTracks().includes(outgoing)) return;
-    if (currentOut && currentOut !== outgoing && currentOut !== raw && local.getAudioTracks().includes(currentOut)) {
-      try {
-        local.removeTrack(currentOut);
-      } catch {
-        // игнор
-      }
-    }
-    if (raw !== outgoing && local.getAudioTracks().includes(raw)) {
-      try {
-        local.removeTrack(raw);
-      } catch {
-        // сырой трек остаётся входом обработчика и не останавливается
-      }
-    }
-    if (!local.getAudioTracks().includes(outgoing)) local.addTrack(outgoing);
-    micTrackIdRef.current = outgoing.id;
-    outgoing.enabled = true;
-    watchLocalMicTracks(local);
-    const screenAudioId = shareScreenAudioTrackRef.current?.id;
-    const isScreenAudio = (track: MediaStreamTrack) => isScreenBroadcastAudioTrack(track, local, screenAudioId);
-    const needing: string[] = [];
-    for (const [peerId, pc] of pcsRef.current.entries()) {
-      if (await replaceMicAudioTrack(pc, outgoing, isScreenAudio, local)) needing.push(peerId);
-    }
-    await flushMicRenegotiation(needing);
-    setLocalStreamVer((v) => v + 1);
-  }
-
-  useEffect(() => {
-    const nsChanged = lastNoiseSuppressionRef.current !== noiseSuppression;
-    lastNoiseSuppressionRef.current = noiseSuppression;
-    lastVoiceActivationRef.current = voiceActivation;
-    if (!localStreamRef.current || !mediaCfg.audioEnabled) {
-      micEnhancerRef.current.setOptions({
-        enabled: noiseSuppression,
-        sensitivity: noiseSuppressionSensitivity,
-        volume: microphoneVolume,
-        voiceActivation,
-        voiceSensitivity: voiceActivationSensitivity
-      });
-      return;
-    }
-    if (nsChanged) {
-      void recreateAudioTrack().catch(() => undefined);
-      return;
-    }
-    void applyMicProcessing().catch(() => undefined);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [microphoneVolume, noiseSuppression, noiseSuppressionSensitivity, voiceActivation, voiceActivationSensitivity]);
-
-  useEffect(() => {
-    if (!bootReady) return;
-    void window.lokameet.app
-      .updateProfile({ voiceActivation, voiceActivationSensitivity, noiseSuppression, noiseSuppressionSensitivity })
-      .catch(() => undefined);
-  }, [bootReady, voiceActivation, voiceActivationSensitivity, noiseSuppression, noiseSuppressionSensitivity]);
-
-  useEffect(() => {
-    if (!recordingActive || !callRecorderRef.current) return;
-    let cancelled = false;
-    void (async () => {
-      const sharingNow = Boolean(isSharing) || Boolean(remoteScreenShare);
-      const camOn = Boolean(videoEnabledRef.current && getLocalCameraTrack());
-      if (sharingNow || camOn) stopAppWindowCapture();
-      else await ensureAppWindowCapture();
-      if (cancelled || !callRecorderRef.current) return;
-      const { sources, audio } = collectRecordingInputs();
-      callRecorderRef.current.setInputs(sources, audio);
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [recordingActive, localStreamVer, remoteTracks, isSharing, remoteScreenShare, mediaCfg.videoEnabled]);
-
-  useEffect(() => {
-    if (!isSharing) return;
-    const share = shareTrackRef.current;
-    if (!share || share.readyState !== "live") return;
-    for (const pc of screenPcsRef.current.values()) {
-      tuneScreenShareSender(pc, share);
-    }
-  }, [isSharing]);
-
-  useEffect(() => {
-    const keepCamera = () => {
-      if (!isSharingRef.current || !videoEnabledRef.current) return;
-      const raw = cameraRawStreamRef.current?.getVideoTracks()[0];
-      if (raw && raw.readyState === "live") {
-        raw.enabled = true;
-      }
-      void ensurePresenterCamera();
-    };
-    const onVis = () => {
-      if (document.visibilityState === "visible") keepCamera();
-    };
-    document.addEventListener("visibilitychange", onVis);
-    window.addEventListener("focus", keepCamera);
-    const id = window.setInterval(() => {
-      if (!isSharingRef.current || !videoEnabledRef.current) return;
-      const cam = getLocalCameraTrack();
-      if (!cam || cam.readyState !== "live") void ensurePresenterCamera();
-    }, 2000);
-    return () => {
-      document.removeEventListener("visibilitychange", onVis);
-      window.removeEventListener("focus", keepCamera);
-      window.clearInterval(id);
-    };
-  }, []);
-
-  async function switchCamera(deviceId: string) {
-    setSelectedVideoDeviceId(deviceId);
-    if (!mediaCfg.videoEnabled) return;
-
-    const cam = await captureCameraStream(mediaCfg.videoQuality, deviceId);
-    const camTrack = cam.getVideoTracks()[0] ?? null;
-    const processed = await prepareCameraTrack(camTrack);
-    const local = await ensureLocalMedia();
-    if (processed) await publishLocalCameraTrack(processed, local);
-    await restoreMicAfterCameraChange();
-    syncLocalVideoPreview({ videoEnabled: true });
-  }
-
-  async function applyVideoQuality(quality: VideoQuality) {
-    videoQualityRef.current = quality;
-    setMediaCfg((c) => ({ ...c, videoQuality: quality }));
-    try {
-      if (await applyResolutionToLiveCamera(quality)) {
-        if (videoEnabledRef.current) {
-          const processed = getCameraFxTrack();
-          const local = localStreamRef.current;
-          if (processed && local) await publishLocalCameraTrack(processed, local);
-        }
-        return;
-      }
-      if (!videoEnabledRef.current) return;
-      const cam = await captureCameraStream(quality);
-      const camTrack = cam.getVideoTracks()[0] ?? null;
-      const processed = await prepareCameraTrack(camTrack);
-      const local = await ensureLocalMedia();
-      if (processed) await publishLocalCameraTrack(processed, local);
-      await restoreMicAfterCameraChange();
-      syncLocalVideoPreview({ videoEnabled: true });
-    } catch (err) {
-      void window.lokameet.log.write({
-        level: "WARN",
-        scope: "renderer/media",
-        msg: "Failed to apply camera resolution",
-        data: { quality, error: String(err) }
-      });
-    }
-  }
-
-  useEffect(() => {
-    if (!call || mediaCfg.videoQuality !== "auto") return;
-    let cancelled = false;
-    const sync = () => {
-      if (cancelled) return;
-      void applyResolutionToLiveCamera("auto")
-        .then((ok) => {
-          if (!ok || !videoEnabledRef.current) return;
-          const processed = getCameraFxTrack();
-          const local = localStreamRef.current;
-          if (processed && local) return publishLocalCameraTrack(processed, local);
-        })
-        .catch(() => undefined);
-    };
-    const start = window.setTimeout(sync, 1200);
-    const id = window.setInterval(sync, 4000);
-    return () => {
-      cancelled = true;
-      window.clearTimeout(start);
-      window.clearInterval(id);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [call?.mode, mediaCfg.videoQuality]);
-
-  async function switchMicrophone(deviceId: string) {
-    setSelectedAudioInputId(deviceId);
-    if (!mediaCfg.audioEnabled) return;
-    const ac = getAudioConstraintsForMic(deviceId);
-    const mic = await navigator.mediaDevices.getUserMedia({ audio: ac, video: false });
-    const micTrack = mic.getAudioTracks()[0] ?? null;
-    const local = await ensureLocalMedia();
-    const screenAudioId = shareScreenAudioTrackRef.current?.id;
-    const old = localMicTrack(local);
-    if (old) {
-      local.removeTrack(old);
-      if (old !== micEnhancerRef.current.getInputTrack()) {
-        try {
-          old.stop();
-        } catch {
-          // игнор
-        }
-      }
-    }
-    micEnhancerRef.current.detach(true);
-    if (micTrack) {
-      const outgoing = await micEnhancerRef.current.attach(micTrack, {
-        enabled: noiseSuppression,
-        sensitivity: noiseSuppressionSensitivity,
-        volume: microphoneVolume,
-        voiceActivation,
-        voiceSensitivity: voiceActivationSensitivity
-      });
-      local.addTrack(outgoing);
-      micTrackIdRef.current = outgoing.id;
-    }
-    watchLocalMicTracks(local);
-    setLocalStreamVer((v) => v + 1);
-    await applyMicrophoneVolume();
-    const isScreenAudio = (track: MediaStreamTrack) => isScreenBroadcastAudioTrack(track, local, screenAudioId);
-    const needing: string[] = [];
-    const sendTrack = localMicTrack(local) ?? null;
-    for (const [peerId, pc] of pcsRef.current.entries()) {
-      if (await replaceMicAudioTrack(pc, sendTrack, isScreenAudio, local)) needing.push(peerId);
-    }
-    await flushMicRenegotiation(needing);
-  }
-
-  async function startScreenShare() {
-    if (isSharingRef.current) return;
-    if (!isScreenShareCall(callRef.current)) {
-      setError(t("screenShareInCallOnly"));
-      return;
-    }
-
-    try {
-      // Загружаем источники экрана через Electron API
-      if (window.lokameet?.screen?.getSources) {
-        try {
-          const sources = await window.lokameet.screen.getSources();
-          setScreenSources(sources ?? []);
-          setScreenShareTab(sources?.some((s) => s.id.startsWith("screen:")) ? "screen" : "app");
-          setSelectedScreenSource(null);
-          setScreenShareDialogOpen(true);
-          return;
-        } catch (err) {
-          try {
-            if (window.lokameet?.log?.write) {
-              void window.lokameet.log.write({ level: "WARN", scope: "renderer/screen", msg: "Failed to get screen sources, using getDisplayMedia", data: { error: String(err) } });
-            }
-          } catch {
-            // Игнорируем ошибки логирования
-          }
-        }
-      }
-      
-      // Fallback: используем стандартный getDisplayMedia если нет доступа к Electron API
-      await startScreenShareWithSource(null, screenShareWithAudio);
-    } catch (err) {
-      console.error("Error in startScreenShare:", err);
-      const errorMsg = err instanceof Error ? err.message : String(err);
-      setError(t("errScreenShareStart", { msg: errorMsg }));
-      isSharingRef.current = false;
-      setIsSharing(false);
-    }
-  }
-
-  async function startScreenShareWithSource(sourceId: string | null, withAudio: boolean) {
-    if (isSharingRef.current) {
-      console.warn("Screen share already active");
-      return;
-    }
-    if (!isScreenShareCall(callRef.current)) {
-      setError(t("screenShareInCallOnly"));
-      return;
-    }
-
-    try {
-      if (!navigator || !navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
-        setError(t("errScreenShareUnsupported"));
-        try {
-          if (window.lokameet?.log?.write) {
-            void window.lokameet.log.write({ level: "ERROR", scope: "renderer/screen", msg: "getDisplayMedia not supported" });
-          }
-        } catch {
-          // Игнорируем ошибки логирования
-        }
-        return;
-      }
-      
-      let display: MediaStream;
-      try {
-        display = await captureDesktopMedia(sourceId, withAudio);
-      } catch (err) {
-        const errorName = err instanceof Error ? err.name : String(err);
-        const errorMsg = err instanceof Error ? err.message : String(err);
-        if (
-          errorName === "NotAllowedError" ||
-          errorName === "AbortError" ||
-          errorMsg.toLowerCase().includes("cancel") ||
-          errorMsg.toLowerCase().includes("denied") ||
-          errorMsg.toLowerCase().includes("not allowed") ||
-          errorMsg.toLowerCase().includes("permission")
-        ) {
-          try {
-            if (window.lokameet?.log?.write) {
-              void window.lokameet.log.write({ level: "INFO", scope: "renderer/screen", msg: "User cancelled screen share selection", data: { errorName } });
-            }
-          } catch {
-            // Игнорируем ошибки логирования
-          }
-          return;
-        }
-        throw err;
-      }
-      
-      const videoTrack = display.getVideoTracks()[0];
-        if (!videoTrack) {
-        isSharingRef.current = false;
-        setIsSharing(false);
-        setError(t("errScreenShareNoVideo"));
-        try {
-          if (window.lokameet?.log?.write) {
-            void window.lokameet.log.write({ level: "WARN", scope: "renderer/screen", msg: "No video track in display media" });
-          }
-        } catch {
-          // Игнорируем ошибки логирования
-        }
-        return;
-      }
-      
-      shareTrackRef.current = videoTrack;
-      shareSourceIdRef.current = sourceId;
-      isSharingRef.current = true;
-      setIsSharing(true);
-
-      videoTrack.onended = () => {
-        void stopScreenShare();
-      };
-
-      // Аудио трек экрана (не заменяет микрофон — голос остаётся)
-      const audioTracks = display.getAudioTracks();
-      const screenAudioTrack = audioTracks[0] ?? null;
-      shareScreenAudioTrackRef.current = screenAudioTrack;
-      for (const audioTrack of audioTracks) {
-        audioTrack.onended = () => {
-          if (!isSharingRef.current) return;
-          if (shareScreenAudioTrackRef.current && audioTrack.id === shareScreenAudioTrackRef.current.id) {
-            shareScreenAudioTrackRef.current = null;
-            const localNow = localStreamRef.current;
-            if (localNow) {
-              try {
-                localNow.removeTrack(audioTrack);
-              } catch {
-                // игнор
-              }
-            }
-            for (const peerPc of screenPcsRef.current.values()) {
-              const sender = peerPc.getSenders().find((s) => s.track?.id === audioTrack.id);
-              if (sender) void sender.replaceTrack(null).catch(() => undefined);
-            }
-          }
-        };
-      }
-
-      // Меняем локальный preview и sender'ы у всех пиров.
-      // Не включаем камеру автоматически — уважаем mediaCfg.videoEnabled.
-      let local = localStreamRef.current;
-      if (!local) {
-        try {
-          local = await ensureLocalMedia();
-        } catch (err) {
-          // Захват экрана уже успешен — не роняем share из‑за устаревшего deviceId мика/камеры.
-          void window.lokameet.log.write({
-            level: "WARN",
-            scope: "renderer/screen",
-            msg: "ensureLocalMedia failed after display capture; using screen-only stream",
-            data: { error: String(err) }
-          });
-          local = new MediaStream();
-          localStreamRef.current = local;
-        }
-      }
-      if (screenAudioTrack && !local.getAudioTracks().includes(screenAudioTrack)) {
-        local.addTrack(screenAudioTrack);
-      }
-      if (!local.getVideoTracks().includes(videoTrack)) {
-        local.addTrack(videoTrack);
-      }
-      setLocalStreamVer((v) => v + 1);
-      syncLocalVideoPreview();
-
-      if (!mediaCfg.audioEnabled) {
-        const micTrack = getMicAudioTrack(local, screenAudioTrack?.id);
-        if (micTrack) micTrack.enabled = false;
-      }
-
-      const activeCall = callRef.current;
-      await offerScreenShareToConnectedPeers();
-
-      setRemoteScreenShare(null);
-      if (activeCall && isScreenShareCall(activeCall) && profile) {
-        await broadcastScreenShareSignal({
-          type: "screen-share-start",
-          userName: profile.userName,
-          screenAudioTrackId: screenAudioTrack?.id,
-          screenVideoTrackId: videoTrack.id
-        });
-      }
-      try {
-        if (window.lokameet?.log?.write) {
-          void window.lokameet.log.write({
-            level: "INFO",
-            scope: "renderer/screen",
-            msg: "Screen share started",
-            data: {
-              hasAudio: audioTracks.length > 0,
-              sourceId,
-              micEnabled: mediaCfg.audioEnabled
-            }
-          });
-        }
-      } catch {
-        // Игнорируем ошибки логирования
-      }
-      if (mediaCfg.videoEnabled) {
-        await new Promise((resolve) => window.setTimeout(resolve, 250));
-        await ensurePresenterCamera();
-      }
-    } catch (err) {
-      // В случае ошибки сбрасываем все состояния
-      try {
-        isSharingRef.current = false;
-        setIsSharing(false);
-        shareTrackRef.current = null;
-        shareSourceIdRef.current = null;
-      } catch (stateErr) {
-        console.error("Error resetting state:", stateErr);
-      }
-      
-      const errorMsg = err instanceof Error ? err.message : String(err);
-      const errorName = err instanceof Error ? err.name : "";
-      
-      // Проверяем, не отменил ли пользователь выбор экрана
-      if (errorName === "NotAllowedError" || errorName === "AbortError" || 
-          errorMsg.toLowerCase().includes("cancel") || 
-          errorMsg.toLowerCase().includes("denied") || 
-          errorMsg.toLowerCase().includes("not allowed") ||
-          errorMsg.toLowerCase().includes("permission")) {
-        // Пользователь отменил или отказал в доступе - это нормально, не показываем ошибку
-        try {
-          if (window.lokameet?.log?.write) {
-            void window.lokameet.log.write({ level: "INFO", scope: "renderer/screen", msg: "User cancelled or denied screen share", data: { errorName } });
-          }
-        } catch {
-          // Игнорируем ошибки логирования
-        }
-        return; // Выходим без ошибки
-      }
-      
-      console.error("Failed to start screen share:", errorMsg, err);
-      
-      try {
-        setError(t("errScreenShareStart", { msg: errorMsg }));
-      } catch (errorStateErr) {
-        console.error("Error setting error message:", errorStateErr);
-      }
-      
-      try {
-        if (window.lokameet?.log?.write) {
-          void window.lokameet.log.write({ level: "ERROR", scope: "renderer/screen", msg: "Failed to start screen share", data: { error: errorMsg, errorName } });
-        }
-      } catch {
-        // Игнорируем ошибки логирования
-      }
-    }
-  }
-
-  async function stopScreenShare() {
-    if (!isSharingRef.current && !shareTrackRef.current) return;
-    if (document.fullscreenElement) {
-      void document.exitFullscreen().catch(() => undefined);
-    }
-    const activeCall = callRef.current;
-    const me = profile?.peerId;
-    isSharingRef.current = false;
-    setIsSharing(false);
-    const share = shareTrackRef.current;
-    const shareAudio = shareScreenAudioTrackRef.current;
-    shareTrackRef.current = null;
-    shareScreenAudioTrackRef.current = null;
-    shareSourceIdRef.current = null;
-
-    closeAllScreenSharePcs();
-
-    const local = localStreamRef.current;
-    if (local) {
-      const dropIds = new Set<string>();
-      if (share) dropIds.add(share.id);
-      if (shareAudio) dropIds.add(shareAudio.id);
-      for (const track of [...local.getTracks()]) {
-        if (!dropIds.has(track.id)) continue;
-        try {
-          local.removeTrack(track);
-        } catch {
-          // игнор
-        }
-      }
-    }
-    try {
-      share?.stop();
-    } catch {
-      // игнор
-    }
-    try {
-      shareAudio?.stop();
-    } catch {
-      // игнор
-    }
-
-    if (mediaCfg.videoEnabled) {
-      syncLocalVideoPreview({ videoEnabled: true });
-    } else {
-      const leftover = localStreamRef.current;
-      if (leftover) {
-        for (const t of [...leftover.getVideoTracks()]) {
-          leftover.removeTrack(t);
-          try {
-            t.stop();
-          } catch {
-            // игнор
-          }
-        }
-      }
-      setLocalStreamVer((v) => v + 1);
-      if (localVideoRef.current) localVideoRef.current.srcObject = null;
-      syncLocalVideoPreview({ videoEnabled: false });
-    }
-
-    if (activeCall && isScreenShareCall(activeCall) && me) {
-      await broadcastScreenShareSignal({ type: "screen-share-stop" });
-    }
-    void window.lokameet.log.write({ level: "INFO", scope: "renderer/screen", msg: "Screen share stopped" });
-  }
-
-  function stopAllPeerConnections() {
-    for (const pc of pcsRef.current.values()) {
-      try {
-        pc.close();
-      } catch {
-        // игнор
-      }
-    }
-    pcsRef.current.clear();
-    closeAllScreenSharePcs();
-    pcInitiatorRef.current.clear();
-    pendingRenegotiateRef.current.clear();
-    pendingIceRef.current.clear();
-    offerHandlingRef.current.clear();
-    makingOfferRef.current.clear();
-    rtcSignalChainRef.current.clear();
-    peerRecoverCountRef.current.clear();
-    peerRecoveringRef.current.clear();
-    for (const dc of dcsRef.current.values()) {
-      try {
-        dc.close();
-      } catch {
-        // игнор
-      }
-    }
-    dcsRef.current.clear();
-    remoteRef.current.clear();
-    setRemoteTracks([]);
-    resetScreenShareViewState();
-  }
-
-  function stopLocalMedia() {
-    const s = localStreamRef.current;
-    localStreamRef.current = null;
-    if (s) {
-      for (const t of s.getTracks()) t.stop();
-    }
-    stopRawCamera();
-    shareTrackRef.current = null;
-    shareScreenAudioTrackRef.current = null;
-    shareSourceIdRef.current = null;
-    isSharingRef.current = false;
-    setIsSharing(false);
-    stopAppWindowCapture();
-    micEnhancerRef.current.detach(true);
-    if (localVideoRef.current) localVideoRef.current.srcObject = null;
-  }
-
-  async function sendToHub(env: WsEnvelope) {
-    const activeCall = callRef.current;
-    if (!activeCall) return;
-    // Хост комнаты не должен слать через "hub" (это был бы он сам).
-    if (profile && activeCall.mode === "room" && activeCall.hostPeerId === profile.peerId && activeCall.signalHubPeerId === profile.peerId) return;
-    // Best-effort: шлём; reconnect+retry только при неудаче.
-    let ok = await window.lokameet.net.sendToPeer(activeCall.signalHubPeerId, env).catch(() => false);
-    if (!ok) {
-      if (activeCall.mode === "direct") {
-        await ensureDirectSignaling(activeCall.peerId);
-      } else if (activeCall.mode === "room" && activeCall.signalHubHost && activeCall.signalHubPort) {
-        await window.lokameet.net.connect(activeCall.signalHubHost, activeCall.signalHubPort).catch(() => undefined);
-      }
-      ok = await window.lokameet.net.sendToPeer(activeCall.signalHubPeerId, env).catch(() => false);
-    }
-    if (!ok) {
-      setError(t("errChatDeliver"));
-      void window.lokameet.log.write({
-        level: "WARN",
-        scope: "renderer/net",
-        msg: "sendToHub failed",
-        data: {
-          mode: activeCall.mode,
-          hubPeerId: activeCall.signalHubPeerId,
-          hubHost: activeCall.signalHubHost,
-          hubPort: activeCall.signalHubPort,
-          envType: env.type
-        }
-      });
-    }
-  }
-
-  async function sendToRoomIfHost(env: WsEnvelope) {
-    if (!profile || !call || call.mode !== "room") return false;
-    if (call.hostPeerId !== profile.peerId) return false;
-    // Хост шлёт напрямую (без "hub"-соединения к себе).
-    for (const p of call.participants) {
-      if (p.peerId === profile.peerId) continue;
-      await window.lokameet.net.sendToPeer(p.peerId, env).catch(() => undefined);
-    }
-    return true;
-  }
-
-  async function ensureDirectSignaling(peerId: string) {
-    // Если знаем host/port пира — убеждаемся, что signaling-соединение есть.
-    const p = peers.find((x) => x.peerId === peerId) ?? manualPeers.find((x) => x.peerId === peerId) ?? null;
-    if (!p) return;
-    if (connectedPeersRef.current.has(peerId)) return;
-    const existing = connectingPeerRef.current.get(peerId);
-    if (existing) return await existing;
-    const task = (async () => {
-      try {
-        await window.lokameet.net.connect(p.host, p.port);
-        connectedPeersRef.current.add(peerId);
-      } catch {
-        // игнор
-      } finally {
-        connectingPeerRef.current.delete(peerId);
-      }
-    })();
-    connectingPeerRef.current.set(peerId, task);
-    await task;
-  }
-
-  async function refreshPeerAvatar(peer: PeerInfo, recipientPeerId: string) {
-    if (!peer.avatarHash) {
-      setAvatarUrls((current) => {
-        const next = { ...current };
-        delete next[peer.peerId];
-        return next;
-      });
-      return;
-    }
-
-    const cached = await window.lokameet.avatar.get(peer.peerId, peer.avatarHash).catch(() => null);
-    if (cached) {
-      setAvatarUrls((current) => ({ ...current, [peer.peerId]: cached.dataUrl }));
-      return;
-    }
-
-    const requestKey = `${peer.peerId}:${peer.avatarHash}`;
-    if (avatarRequestsRef.current.has(requestKey)) return;
-    avatarRequestsRef.current.add(requestKey);
-    try {
-      await window.lokameet.net.connect(peer.host, peer.port);
-      await window.lokameet.net.sendToPeer(peer.peerId, {
-        type: "avatar-request",
-        peerId: recipientPeerId,
-        avatarHash: peer.avatarHash
-      });
-    } catch {
-      // Повтор при следующей смене аватара или перезапуске приложения.
-    }
-  }
-
-  function isPoliteToward(remotePeerId: string) {
-    const me = profile?.peerId;
-    if (!me) return true;
-    return me > remotePeerId;
-  }
-
-  function enqueuePeerSignal(peerId: string, task: () => void | Promise<void>) {
-    const prev = rtcSignalChainRef.current.get(peerId) ?? Promise.resolve();
-    const next = prev.catch(() => undefined).then(() => task());
-    rtcSignalChainRef.current.set(peerId, next.catch(() => undefined));
-    return next;
-  }
-
-  function bytesFromBase64(data: string) {
-    if (!data) return new Uint8Array();
-    const bin = atob(data);
-    const out = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-    return out;
-  }
-
-  function toArrayBuffer(bytes: Uint8Array) {
-    const copy = new ArrayBuffer(bytes.byteLength);
-    new Uint8Array(copy).set(bytes);
-    return copy;
-  }
-
-  function noteFileReady(fileId: string, blob: Blob) {
-    const url = URL.createObjectURL(blob);
-    fileUrlByIdRef.current.set(fileId, url);
-    setFileBlobEpoch((n) => n + 1);
-  }
-
-  async function onEnvelope(env: WsEnvelope) {
-    if (env.type === "file-chunk") {
-      const me = profile?.peerId;
-      if (!me || env.fromPeerId === me || fileTransferCancelRef.current.has(env.id)) return;
-      let session = sigFilesRef.current.get(env.id);
-      if (!session) {
-        const total = Math.max(1, env.total || 1);
-        session = {
-          id: env.id,
-          name: env.name,
-          size: env.size,
-          mime: env.mime,
-          fromPeerId: env.fromPeerId,
-          fromUserName: env.fromUserName,
-          roomId: env.roomId,
-          total,
-          parts: Array.from({ length: total }, () => null),
-          got: 0,
-          received: 0
-        };
-        sigFilesRef.current.set(env.id, session);
-      }
-      if (env.index >= 0 && env.index < session.total && !session.parts[env.index]) {
-        const bytes = bytesFromBase64(env.data);
-        session.parts[env.index] = bytes;
-        session.got += 1;
-        session.received += bytes.byteLength;
-      }
-      const recvKey = `recv:${env.fromPeerId}:${env.id}`;
-      const percent = session.total > 0 ? Math.min(100, Math.round((session.got / session.total) * 100)) : 0;
-      upsertFileTransfer(
-        {
-          key: recvKey,
-          direction: "receive",
-          peerId: env.fromPeerId,
-          fileId: env.id,
-          fileName: env.name,
-          transferred: session.received,
-          total: env.size,
-          percent
-        },
-        { force: session.got >= session.total }
-      );
-      if (session.got >= session.total) {
-        const blob = new Blob(
-          session.parts.filter((part): part is Uint8Array => Boolean(part)).map((part) => toArrayBuffer(part)),
-          {
-          type: session.mime || "application/octet-stream"
-        });
-        sigFilesRef.current.delete(env.id);
-        noteFileReady(env.id, blob);
-        removeFileTransfer(recvKey);
-        const mime = session.mime;
-        const attachment: ChatAttachment = isVideoAttachmentMime(mime, session.name)
-          ? { kind: "video", fileId: session.id, name: session.name, size: session.size, mime }
-          : isImageAttachmentMime(mime, session.name)
-            ? { kind: "image", fileId: session.id, name: session.name, size: session.size, mime }
-            : { kind: "file", fileId: session.id, name: session.name, size: session.size, mime };
-        const message: ChatMessage = {
-          id: session.id,
-          scope: session.roomId ? { type: "room", roomId: session.roomId } : { type: "direct", peerId: session.fromPeerId },
-          fromPeerId: session.fromPeerId,
-          fromUserName: session.fromUserName,
-          sentAt: Date.now(),
-          text: `Файл: ${session.name} (${Math.round(session.size / 1024)} KB)`,
-          attachment
-        };
-        setChats((prev) => (prev.some((item) => item.id === message.id) ? prev : [...prev, message]));
-        window.lokameet.chat.append(message).catch(() => undefined);
-      }
-      return;
-    }
-    if (env.type === "file-cancel") {
-      sigFilesRef.current.delete(env.id);
-      setFileTransfers((prev) => prev.filter((item) => item.fileId !== env.id));
-      return;
-    }
-    if (env.type === "direct-call-request" || env.type === "direct-call-accept" || env.type === "direct-call-reject" || env.type === "room-invite" || env.type === "room-invite-reject" || env.type === "room-join" || env.type === "room-welcome" || env.type === "room-peer-joined" || env.type === "room-peer-left" || env.type === "rtc-signal" || env.type === "chat-message" || env.type === "game-message") {
-      void window.lokameet.log.write({ level: "INFO", scope: "renderer/envelope", msg: env.type, data: env });
-    } else {
-      void window.lokameet.log.write({ level: "DEBUG", scope: "renderer/envelope", msg: env.type, data: env });
-    }
-    if (env.type === "hello") {
-      if (!env.peerId || env.peerId === profile?.peerId) return;
-      helloStatusRef.current.set(env.peerId, { status: env.status, at: Date.now() });
-      const patch = {
-        status: env.status,
-        userName: env.userName,
-        statusText: env.statusText,
-        avatarHash: env.avatarHash,
-        avatarPosition: env.avatarPosition,
-        lastSeenAt: Date.now()
-      };
-      const applyHello = (list: PeerInfo[]) =>
-        list.map((p) => (p.peerId === env.peerId ? { ...p, ...patch } : p));
-      setPeers((prev) => applyHello(prev));
-      setManualPeers((prev) => applyHello(prev));
-      return;
-    }
-    if (env.type === "avatar-request") {
-      if (!profile?.avatarHash) return;
-      const avatar = await window.lokameet.avatar.get(profile.peerId, profile.avatarHash).catch(() => null);
-      if (avatar) {
-        await window.lokameet.net
-          .sendToPeer(env.peerId, {
-            type: "avatar-data",
-            peerId: profile.peerId,
-            avatarHash: avatar.avatarHash,
-            dataUrl: avatar.dataUrl
-          })
-          .catch(() => undefined);
-      }
-      return;
-    }
-    if (env.type === "avatar-data") {
-      const avatar = await window.lokameet.avatar.storeRemote(env.peerId, env.avatarHash, env.dataUrl).catch(() => null);
-      if (avatar) setAvatarUrls((current) => ({ ...current, [env.peerId]: avatar.dataUrl }));
-      return;
-    }
-    if (env.type === "direct-call-request") {
-      const activeCall = callRef.current;
-      const alreadyCalling =
-        activeCall?.mode === "direct" &&
-        activeCall.peerId === env.fromPeerId &&
-        pendingCallTimeoutRef.current.has(env.fromPeerId);
-      if (alreadyCalling && profile) {
-        void window.lokameet.log.write({
-          level: "INFO",
-          scope: "renderer/call",
-          msg: "Mutual direct call; keeping outgoing",
-          data: { peerId: env.fromPeerId, fromUserName: env.fromUserName }
-        });
-        await window.lokameet.net
-          .sendToPeer(env.fromPeerId, { type: "direct-call-accept", fromPeerId: profile.peerId })
-          .catch(() => undefined);
-        return;
-      }
-      // Очищаем предыдущие таймеры если есть
-      if (incomingCallTimerRef.current) clearInterval(incomingCallTimerRef.current);
-      if (incomingCallSoundIntervalRef.current) clearInterval(incomingCallSoundIntervalRef.current);
-      if (incomingCallTimeoutRef.current) clearTimeout(incomingCallTimeoutRef.current);
-      
-      markPeerAction(env.fromPeerId, "call");
-      flashWindowAttention();
-      setIncomingCall({ peerId: env.fromPeerId, userName: env.fromUserName });
-      setIncomingCallBlink(true);
-      
-      // Мигание каждые 500мс
-      incomingCallTimerRef.current = window.setInterval(() => {
-        setIncomingCallBlink((b) => !b);
-      }, 500);
-      
-      // Звуковое уведомление каждые 1.5 секунды
-      const playSound = () => {
-        playNotificationSound(callSoundFile, callSoundVolume);
-      };
-      
-      playSound(); // Сразу один раз
-      incomingCallSoundIntervalRef.current = window.setInterval(playSound, 1500);
-      
-      // Таймер на 7 секунд для пропущенного звонка
-      incomingCallTimeoutRef.current = window.setTimeout(() => {
-        setIncomingCall(null);
-        setIncomingCallBlink(false);
-        if (incomingCallTimerRef.current) {
-          clearInterval(incomingCallTimerRef.current);
-          incomingCallTimerRef.current = null;
-        }
-        if (incomingCallSoundIntervalRef.current) {
-          clearInterval(incomingCallSoundIntervalRef.current);
-          incomingCallSoundIntervalRef.current = null;
-        }
-        // Добавляем уведомление о пропущенном звонке в чат
-        const peer = peers.find((x) => x.peerId === env.fromPeerId) ?? manualPeers.find((x) => x.peerId === env.fromPeerId);
-        if (peer && profile) {
-          const missedCallMsg: ChatMessage = {
-            id: `missed-call-${Date.now()}-${env.fromPeerId}`,
-            scope: { type: "direct", peerId: env.fromPeerId },
-            fromPeerId: env.fromPeerId,
-            fromUserName: env.fromUserName,
-            sentAt: Date.now(),
-            text: "❌ Пропущенный звонок"
-          };
-          void window.lokameet.chat.append(missedCallMsg);
-          setChats((prev) => [...prev, missedCallMsg]);
-        }
-      }, 7000);
-      return;
-    }
-    if (env.type === "direct-call-accept") {
-      // Мы инициатор звонка: начинаем offer.
-      const activeCall = callRef.current;
-      if (!activeCall || activeCall.mode !== "direct") return;
-      clearPendingCall(activeCall.peerId);
-      clearPeerAction(activeCall.peerId);
-      flashWindowAttention();
-      setCallStartedAt(Date.now());
-      // Воспроизводим звук установки соединения для звонящего
-      playNotificationSound(connectionSoundFile, connectionSoundVolume);
-      // Фокусируем UI на этом прямом чате/звонке (caller переключается при accept).
-      if (autoSwitchToChat) {
-        setSelectedRoom(null);
-        const p = peers.find((x) => x.peerId === activeCall.peerId) ?? manualPeers.find((x) => x.peerId === activeCall.peerId) ?? null;
-        if (p) setSelectedPeer(p);
-        setSearch("");
-      }
-      try {
-        await ensureLocalMedia();
-        // Треки должны быть до createOffer, иначе video может не попасть в SDP
-        await ensureAudioTrackPresent().catch(() => undefined);
-        await ensureVideoTrackPresent().catch(() => undefined);
-      } catch (err) {
-        void window.lokameet.log.write({ level: "WARN", scope: "renderer/call", msg: "Media ensure failed before offer", data: { error: String((err as Error)?.message ?? err) } });
-      }
-      await ensurePeerConnection(activeCall.peerId, activeCall.peerName, { initiator: true, roomId: undefined });
-      return;
-    }
-    if (env.type === "direct-call-reject") {
-      if (env.fromPeerId) clearPendingCall(env.fromPeerId);
-      if (call && isDirectCall(call)) clearPendingCall(call.peerId);
-      setError(conferenceRejectMessage(env.reason, t));
-      setIncomingCall(null);
-      if (call && isDirectCall(call)) {
-        intentionalPeerDisconnectsRef.current.add(call.peerId);
-        stopAllPeerConnections();
-        setConferenceCall(null);
-        setCallStartedAt(null);
-      }
-      if (env.fromPeerId) openPeerChat(env.fromPeerId);
-      return;
-    }
-
-    if (env.type === "room-invite") {
-      if (isBusyStatus(profile?.status ?? "online") || call) {
-        // Уже заняты — молча отклоняем, чтобы пригласивший получил отказ
-        const peer = peers.find((x) => x.peerId === env.fromPeerId) ?? manualPeers.find((x) => x.peerId === env.fromPeerId);
-        if (peer && profile) {
-          await window.lokameet.net.connect(peer.host, peer.port).catch(() => undefined);
-          await window.lokameet.net
-            .sendToPeer(env.fromPeerId, {
-              type: "room-invite-reject",
-              fromPeerId: profile.peerId,
-              fromUserName: profile.userName,
-              roomId: env.roomId,
-              roomName: env.roomName
-            })
-            .catch(() => undefined);
-        }
-        return;
-      }
-      if (incomingRoomInviteTimerRef.current) clearInterval(incomingRoomInviteTimerRef.current);
-      if (incomingRoomInviteTimeoutRef.current) clearTimeout(incomingRoomInviteTimeoutRef.current);
-      flashWindowAttention();
-      setIncomingRoomInvite({
-        fromPeerId: env.fromPeerId,
-        fromUserName: env.fromUserName,
-        room: {
-          roomId: env.roomId,
-          roomName: env.roomName,
-          hostPeerId: env.hostPeerId,
-          host: env.host,
-          port: env.port,
-          hasPassword: env.hasPassword,
-          maxParticipants: env.maxParticipants,
-          participantsApprox: env.participantsApprox,
-          lastSeenAt: Date.now()
-        }
-      });
-      setIncomingRoomInviteBlink(true);
-      incomingRoomInviteTimerRef.current = window.setInterval(() => {
-        setIncomingRoomInviteBlink((b) => !b);
-      }, 500);
-      playNotificationSound(callSoundFile, callSoundVolume);
-      incomingRoomInviteTimeoutRef.current = window.setTimeout(() => {
-        clearIncomingRoomInviteUi();
-      }, 30000);
-      return;
-    }
-
-    if (env.type === "room-invite-reject") {
-      clearPendingInvite(env.fromPeerId);
-      if (inviteRejectedTimeoutRef.current) clearTimeout(inviteRejectedTimeoutRef.current);
-      setInviteRejectedNotice({ userName: env.fromUserName, roomName: env.roomName });
-      inviteRejectedTimeoutRef.current = window.setTimeout(() => {
-        setInviteRejectedNotice(null);
-        inviteRejectedTimeoutRef.current = null;
-      }, 8000);
-      const activeCall = callRef.current;
-      if (activeCall?.mode === "room" && activeCall.roomId === env.roomId && activeCall.hostPeerId === profile?.peerId) {
-        const message = appendSystemChatStatus(
-          { type: "room", roomId: env.roomId },
-          env.fromPeerId,
-          env.fromUserName,
-          t("chatStatusInviteRejected")
-        );
-        const statusEnv: WsEnvelope = { type: "chat-message", message };
-        await Promise.all(
-          activeCall.participants
-            .filter((participant) => participant.peerId !== profile?.peerId)
-            .map((participant) => window.lokameet.net.sendToPeer(participant.peerId, statusEnv).catch(() => undefined))
-        );
-      }
-      return;
-    }
-
-    if (env.type === "room-welcome") {
-      const room =
-        resolveConferenceRoom(env.roomId, {
-          rooms,
-          selectedRoom,
-          lastJoinRoom: lastJoinRoomRef.current
-        }) ?? lastJoinRoomRef.current;
-      const conferenceState = applyConferenceHubFromRoom(
-        createJoinConferenceState({
-          roomId: env.roomId,
-          roomName: room?.roomName ?? t("conference"),
-          hostPeerId: env.hostPeerId,
-          participants: env.participants,
-          room
-        }),
-        room
-      );
-      setCallStartedAt(Date.now());
-      await applyCallPresenceStatus("in_conference");
-      setConferenceCall(conferenceState);
-      if (room) setSelectedRoom(room);
-      {
-        const hostParticipant =
-          env.participants.find((p) => p.peerId === env.hostPeerId) ??
-          (profile?.peerId === env.hostPeerId
-            ? { peerId: profile.peerId, userName: profile.userName }
-            : null);
-        if (hostParticipant && profile?.peerId !== hostParticipant.peerId) {
-          appendSystemChatStatus(
-            { type: "room", roomId: env.roomId },
-            hostParticipant.peerId,
-            hostParticipant.userName,
-            t("chatStatusCreatedConference")
-          );
-        }
-      }
-      if (joiningRoomFromInviteRef.current) {
-        joiningRoomFromInviteRef.current = false;
-        await sendChatStatus({ type: "room", roomId: env.roomId }, t("chatStatusInviteAccepted"));
-      }
-      await sendChatStatus({ type: "room", roomId: env.roomId }, t("chatStatusOpened"));
-      // КРИТИЧЕСКИ ВАЖНО: запрашиваем медиа перед созданием соединений
-      try {
-        await ensureLocalMedia();
-        await ensureAudioTrackPresent().catch((err) => {
-          void window.lokameet.log.write({ level: "WARN", scope: "renderer/media", msg: "Failed to ensure audio track in room", data: { error: String(err) } });
-        });
-        await ensureVideoTrackPresent().catch((err) => {
-          void window.lokameet.log.write({ level: "WARN", scope: "renderer/media", msg: "Failed to ensure video track in room", data: { error: String(err) } });
-        });
-      } catch (err) {
-        void window.lokameet.log.write({ level: "ERROR", scope: "renderer/media", msg: "Failed to ensure local media in room", data: { error: String(err) } });
-      }
-      // Новый участник инициирует WebRTC только к уже присутствующим в комнате.
-      const me = profile?.peerId;
-      for (const p of env.participants) {
-        if (p.peerId === me) continue;
-        await ensurePeerConnection(p.peerId, p.userName, { initiator: true, roomId: env.roomId });
-      }
-      return;
-    }
-    if (env.type === "room-peer-joined") {
-      const activeCall = callRef.current;
-      if (activeCall?.mode !== "room" || activeCall.roomId !== env.roomId) return;
-      flashWindowAttention();
-      clearPendingInvite(env.peerId);
-      setCall((c) => {
-        if (!c || c.mode !== "room") return c;
-        const exists = c.participants.some((p) => p.peerId === env.peerId);
-        if (exists) return c;
-        return { ...c, participants: [...c.participants, { peerId: env.peerId, userName: env.userName }] };
-      });
-      // Существующие участники только готовят медиа и ждут offer от нового участника.
-      if (profile) {
-        try {
-          await ensureLocalMedia();
-          await ensureAudioTrackPresent().catch((err) => {
-            void window.lokameet.log.write({ level: "WARN", scope: "renderer/media", msg: "Failed to ensure audio track for new peer", data: { error: String(err) } });
-          });
-          await ensureVideoTrackPresent().catch((err) => {
-            void window.lokameet.log.write({ level: "WARN", scope: "renderer/media", msg: "Failed to ensure video track for new peer", data: { error: String(err) } });
-          });
-        } catch (err) {
-          void window.lokameet.log.write({ level: "ERROR", scope: "renderer/media", msg: "Failed to ensure local media for new peer", data: { error: String(err) } });
-        }
-      }
-      return;
-    }
-    if (env.type === "room-peer-left") {
-      const activeCall = callRef.current;
-      if (activeCall?.mode !== "room" || activeCall.roomId !== env.roomId) return;
-      const departedPeer = activeCall.participants.find((participant) => participant.peerId === env.peerId);
-      appendSystemChatStatus(
-        { type: "room", roomId: env.roomId },
-        env.peerId,
-        departedPeer?.userName ?? "User",
-        t("chatStatusLeft")
-      );
-      if (env.peerId === activeCall.hostPeerId) {
-        stopAllPeerConnections();
-        setConferenceCall(null);
-        setCallStartedAt(null);
-        setError(t("conferenceClosed"));
-        return;
-      }
-      closePeer(env.peerId);
-      setCall((c) => {
-        if (!c || c.mode !== "room") return c;
-        return { ...c, participants: c.participants.filter((p) => p.peerId !== env.peerId) };
-      });
-      const session = gameSessionRef.current;
-      if (session && (session.white.peerId === env.peerId || session.black.peerId === env.peerId)) {
-        endGameSession(t("chatStatusGameEnd"));
-      }
-      return;
-    }
-
-    if (env.type === "chat-message") {
-      // Нормализуем scope прямого чата: обе стороны ключуют по peerId собеседника.
-      const me = profile?.peerId;
-      const msg: ChatMessage = { ...env.message, scope: { ...env.message.scope } as any };
-      if (me && msg.scope.type === "direct" && msg.scope.peerId === me) {
-        msg.scope = { type: "direct", peerId: msg.fromPeerId };
-      }
-      // Воспроизводим звук уведомления для сообщений (только если сообщение не от нас)
-      if (msg.fromPeerId !== me && msg.kind !== "system") {
-        flashWindowAttention();
-        playNotificationSound(messageSoundFile, messageSoundVolume);
-        // Индикацию видит только получатель; отправитель (fromPeerId === me) сюда не попадает.
-        if (msg.scope.type === "direct") {
-          const viewingSender = selectedPeerRef.current?.peerId === msg.fromPeerId;
-          const inDirectCallWithSender =
-            callRef.current?.mode === "direct" && callRef.current.peerId === msg.fromPeerId;
-          if (!viewingSender && !inDirectCallWithSender) {
-            markPeerAction(msg.fromPeerId, "message");
-            setUnreadPeerIds((current) => new Set(current).add(msg.fromPeerId));
-            setUnreadMessageIds((current) => new Set(current).add(msg.id));
-          }
-        }
-      }
-      setChats((prev) => {
-        const idx = prev.findIndex((m) => m.id === msg.id);
-        if (idx !== -1) {
-          const existing = prev[idx];
-          const preview =
-            msg.attachment && "previewDataUrl" in msg.attachment ? msg.attachment.previewDataUrl : undefined;
-          const att = existing.attachment;
-          if (
-            preview &&
-            att &&
-            (att.kind === "file" || att.kind === "image" || att.kind === "video") &&
-            !("previewDataUrl" in att && att.previewDataUrl)
-          ) {
-            const next = prev.slice();
-            next[idx] = { ...existing, text: msg.text, attachment: { ...att, previewDataUrl: preview } };
-            return next;
-          }
-          return prev;
-        }
-        const next = [...prev, msg];
-        window.lokameet.chat.append(msg).catch(() => undefined);
-        return next;
-      });
-      if (
-        msg.fromPeerId !== me &&
-        mediaAttachmentsOf(msg).length > 0
-      ) {
-        const media = mediaAttachmentsOf(msg);
-        const fileIds = new Set(media.map((att) => att.fileId));
-        const names = new Set(media.map((att) => att.name));
-        if (media.some((att) => fileUrlByIdRef.current.has(att.fileId))) {
-          incomingFileRef.current.delete(msg.fromPeerId);
-          earlyFileChunksRef.current.delete(msg.fromPeerId);
-          setFileTransfers((prev) =>
-            prev.filter((x) => {
-              if (x.direction !== "receive" || x.peerId !== msg.fromPeerId) return true;
-              if (x.fileId && fileIds.has(x.fileId)) return false;
-              if (x.key.endsWith(":pending") && (!x.fileName || names.has(x.fileName))) return false;
-              return true;
-            })
-          );
-        }
-      }
-      if (
-        msg.kind === "system" &&
-        msg.fromPeerId !== me &&
-        isRemoteLeftChatStatus(msg.text) &&
-        callRef.current?.mode === "direct" &&
-        callRef.current.peerId === msg.fromPeerId
-      ) {
-        endDirectCallFromRemote(msg.fromPeerId);
-      }
-      if (
-        msg.attachment?.kind === "game-invite" &&
-        msg.attachment.status === "pending" &&
-        msg.fromPeerId !== me
-      ) {
-        const gameId = msg.attachment.gameId;
-        if (getGameCatalogItem(gameId as GameId) && gameSessionRef.current?.role !== "player" && !outgoingGameInviteRef.current) {
-          showIncomingGameInvite({
-            sessionId: msg.attachment.sessionId,
-            gameId: gameId as GameId,
-            fromPeerId: msg.fromPeerId,
-            fromUserName: msg.fromUserName
-          });
-        }
-      }
-      return;
-    }
-
-    if (env.type === "game-message") {
-      const me = profile?.peerId;
-      if (env.toPeerId && me && env.toPeerId !== me) return;
-      if (isGameMessage(env.message)) handleIncomingGameMessage(env.fromPeerId, env.message);
-      return;
-    }
-
-    if (env.type === "rtc-signal") {
-      const sig = env.signal;
-      const me = profile?.peerId;
-      if (!me) return;
-      if (sig.toPeerId !== me) return;
-
-      const name = guessPeerName(sig.fromPeerId);
-      if (sig.type === "rtc-offer") {
-        if (sig.channel === "screen") {
-          await handleScreenShareOffer(sig);
-          return;
-        }
-        const existingPc = pcsRef.current.get(sig.fromPeerId);
-        if (offerHandlingRef.current.has(sig.fromPeerId) || existingPc?.signalingState === "have-remote-offer") {
-          void window.lokameet.log.write({
-            level: "INFO",
-            scope: "renderer/webrtc",
-            msg: "Ignored duplicate rtc-offer",
-            data: { fromPeerId: sig.fromPeerId, signalingState: existingPc?.signalingState }
-          });
-          return;
-        }
-        const ice = existingPc?.iceConnectionState;
-        if (existingPc && existingPc.signalingState === "stable" && ice === "checking") {
-          void window.lokameet.log.write({
-            level: "INFO",
-            scope: "renderer/webrtc",
-            msg: "Ignored rtc-offer while ICE in progress",
-            data: { fromPeerId: sig.fromPeerId, iceConnectionState: ice }
-          });
-          return;
-        }
-        if (existingPc && existingPc.signalingState !== "stable" && existingPc.signalingState !== "have-local-offer") {
-          void window.lokameet.log.write({
-            level: "INFO",
-            scope: "renderer/webrtc",
-            msg: "Ignored rtc-offer in unexpected state",
-            data: { fromPeerId: sig.fromPeerId, signalingState: existingPc.signalingState }
-          });
-          return;
-        }
-        offerHandlingRef.current.add(sig.fromPeerId);
-        try {
-        // Если это личный звонок (нет roomId) и у нас еще нет call state, нужно его установить
-        if (!sig.roomId && (!call || call.mode !== "direct" || call.peerId !== sig.fromPeerId)) {
-          const peer = peers.find((x) => x.peerId === sig.fromPeerId) ?? manualPeers.find((x) => x.peerId === sig.fromPeerId);
-          if (peer) {
-            setCall({ mode: "direct", peerId: sig.fromPeerId, peerName: peer.userName, signalHubPeerId: sig.fromPeerId, signalHubHost: peer.host, signalHubPort: peer.port });
-            setCallStartedAt(Date.now());
-            if (autoSwitchToChat) {
-              setSelectedRoom(null);
-              setSelectedPeer(peer);
-              setSearch("");
-            }
-          }
-        }
-        // КРИТИЧЕСКИ ВАЖНО: для конференций закрываем существующие соединения с тем же peerId, если они были для личного звонка
-        if (sig.roomId) {
-          const existingPc = pcsRef.current.get(sig.fromPeerId);
-          if (existingPc && (!call || call.mode !== "room" || call.roomId !== sig.roomId)) {
-            // Закрываем старое соединение, если оно было для другого типа звонка
-            void window.lokameet.log.write({ level: "INFO", scope: "renderer/webrtc", msg: "Closing existing connection before room offer", data: { remotePeerId: sig.fromPeerId, roomId: sig.roomId, existingCallMode: call?.mode } });
-            try {
-              existingPc.close();
-              pcsRef.current.delete(sig.fromPeerId);
-              remoteRef.current.delete(sig.fromPeerId);
-              dcsRef.current.delete(sig.fromPeerId);
-              setRemoteTracks(Array.from(remoteRef.current.values()));
-            } catch (err) {
-              void window.lokameet.log.write({ level: "WARN", scope: "renderer/webrtc", msg: "Error closing existing connection", data: { remotePeerId: sig.fromPeerId, error: String(err) } });
-            }
-          }
-        }
-        await ensureLocalMedia().catch((err) => {
-          void window.lokameet.log.write({
-            level: "WARN",
-            scope: "renderer/webrtc",
-            msg: "ensureLocalMedia failed on rtc-offer; continuing for answer",
-            data: { fromPeerId: sig.fromPeerId, error: String(err) }
-          });
-        });
-        const pc = await ensurePeerConnection(sig.fromPeerId, name, { initiator: false, roomId: sig.roomId });
-        const collision =
-          pc.signalingState === "have-local-offer" || makingOfferRef.current.has(sig.fromPeerId);
-        if (collision) {
-          // Perfect negotiation: меньший peerId держит свой offer, больший откатывается.
-          const polite = isPoliteToward(sig.fromPeerId);
-          if (!polite) {
-            void window.lokameet.log.write({
-              level: "INFO",
-              scope: "renderer/webrtc",
-              msg: "Ignored glare rtc-offer (impolite)",
-              data: { fromPeerId: sig.fromPeerId }
-            });
-            return;
-          }
-          try {
-            await pc.setLocalDescription({ type: "rollback" } as RTCSessionDescriptionInit);
-          } catch (err) {
-            void window.lokameet.log.write({
-              level: "WARN",
-              scope: "renderer/webrtc",
-              msg: "Rollback failed; keeping local offer",
-              data: { fromPeerId: sig.fromPeerId, error: String(err), signalingState: pc.signalingState }
-            });
-            return;
-          }
-        }
-        if (pc.signalingState !== "stable" && pc.signalingState !== "have-local-offer") {
-          if (pc.signalingState === "have-remote-offer") return;
-        }
-        await applyRemoteOffer(pc, sig);
-        } catch (err) {
-          void window.lokameet.log.write({
-            level: "WARN",
-            scope: "renderer/webrtc",
-            msg: "Failed to apply rtc-offer",
-            data: { fromPeerId: sig.fromPeerId, error: String(err) }
-          });
-          if (isSdpOrderError(err)) {
-            const live = pcsRef.current.get(sig.fromPeerId);
-            const liveIce = live?.iceConnectionState;
-            if (liveIce === "connected" || liveIce === "completed" || liveIce === "checking") {
-              void window.lokameet.log.write({
-                level: "INFO",
-                scope: "renderer/webrtc",
-                msg: "Kept existing peer connection after m-line mismatch",
-                data: { fromPeerId: sig.fromPeerId, iceConnectionState: liveIce }
-              });
-            }
-          }
-        } finally {
-          offerHandlingRef.current.delete(sig.fromPeerId);
-        }
-      } else if (sig.type === "rtc-answer") {
-        if (sig.channel === "screen") {
-          await handleScreenShareAnswer(sig);
-          return;
-        }
-        const pc = pcsRef.current.get(sig.fromPeerId);
-        if (!pc) {
-          void window.lokameet.log.write({ level: "WARN", scope: "renderer/webrtc", msg: "rtc-answer received but no peer connection", data: { fromPeerId: sig.fromPeerId, roomId: sig.roomId } });
-          return;
-        }
-        if (pc.signalingState !== "have-local-offer") {
-          void window.lokameet.log.write({
-            level: "INFO",
-            scope: "renderer/webrtc",
-            msg: "Ignored rtc-answer in unexpected state",
-            data: { fromPeerId: sig.fromPeerId, signalingState: pc.signalingState }
-          });
-          return;
-        }
-        // Логируем состояние треков перед setRemoteDescription
-        const sendersBefore = pc.getSenders().length;
-        const receiversBefore = pc.getReceivers().length;
-        void window.lokameet.log.write({ level: "INFO", scope: "renderer/webrtc", msg: "Processing rtc-answer", data: { fromPeerId: sig.fromPeerId, roomId: sig.roomId, sendersBefore, receiversBefore } });
-        try {
-          await pc.setRemoteDescription(new RTCSessionDescription(sig.sdp as RTCSessionDescriptionInit));
-          await flushPendingIce(sig.fromPeerId);
-        } catch (err) {
-          void window.lokameet.log.write({
-            level: "WARN",
-            scope: "renderer/webrtc",
-            msg: "rtc-answer rejected",
-            data: { fromPeerId: sig.fromPeerId, signalingState: pc.signalingState, error: String(err) }
-          });
-          if (isSdpOrderError(err)) {
-            void window.lokameet.log.write({
-              level: "INFO",
-              scope: "renderer/webrtc",
-              msg: "Ignored stale rtc-answer (m-line mismatch)",
-              data: { fromPeerId: sig.fromPeerId, signalingState: pc.signalingState }
-            });
-            return;
-          }
-          try {
-            if (pc.signalingState === "have-local-offer") {
-              await pc.setLocalDescription({ type: "rollback" } as RTCSessionDescriptionInit);
-            }
-          } catch {
-            // rollback может быть недоступен
-          }
-          void renegotiatePeerConnection(sig.fromPeerId, sig.roomId);
-          return;
-        }
-        const sendersAfter = pc.getSenders().length;
-        const receiversAfter = pc.getReceivers().length;
-        void window.lokameet.log.write({ level: "INFO", scope: "renderer/webrtc", msg: "rtc-answer processed", data: { fromPeerId: sig.fromPeerId, roomId: sig.roomId, sendersAfter, receiversAfter } });
-        pendingRenegotiateRef.current.delete(sig.fromPeerId);
-      } else if (sig.type === "rtc-ice") {
-        if (sig.channel === "screen") {
-          await handleScreenShareIce(sig);
-          return;
-        }
-        const pc = pcsRef.current.get(sig.fromPeerId);
-        if (sig.candidate) {
-          if (!pc || !pc.remoteDescription) {
-            const queued = pendingIceRef.current.get(sig.fromPeerId) ?? [];
-            queued.push(sig.candidate);
-            pendingIceRef.current.set(sig.fromPeerId, queued);
-          } else {
-            await pc.addIceCandidate(sig.candidate).catch(() => undefined);
-          }
-        }
-      } else if (sig.type === "screen-share-start") {
-        if (!callRef.current || !isScreenShareCall(callRef.current)) return;
-        if (isSharingRef.current) {
-          void stopScreenShare();
-        }
-        setRemoteScreenShare({
-          peerId: sig.fromPeerId,
-          userName: sig.userName,
-          screenAudioTrackId: sig.screenAudioTrackId,
-          screenVideoTrackId: sig.screenVideoTrackId
-        });
-        setScreenViewControlsHidden(false);
-        setScreenBroadcastMuted(false);
-        setScreenShareViewCollapsed(false);
-      } else if (sig.type === "screen-share-stop") {
-        closeScreenSharePc(sig.fromPeerId);
-        setRemoteScreenShare((prev) => (prev?.peerId === sig.fromPeerId ? null : prev));
-        setScreenViewControlsHidden(false);
-        setScreenBroadcastMuted(false);
-        setScreenShareViewCollapsed(false);
-        // Сбрасываем muted/ended screen video, иначе video-элемент держит последний кадр
-        refreshRemotePeerVideo(sig.fromPeerId, { dropMutedVideo: true });
-        if (document.fullscreenElement) {
-          void document.exitFullscreen().catch(() => undefined);
-        }
-      } else if (sig.type === "camera-visibility") {
-        setRemoteCameraOn((prev) => ({ ...prev, [sig.fromPeerId]: sig.enabled }));
-      } else if (sig.type === "recording-start") {
-        setRemoteRecordings((list) =>
-          list.some((item) => item.peerId === sig.fromPeerId)
-            ? list
-            : [...list, { peerId: sig.fromPeerId, userName: sig.userName }]
-        );
-        playRecordingAnnouncement("start");
-      } else if (sig.type === "recording-stop") {
-        setRemoteRecordings((list) => list.filter((item) => item.peerId !== sig.fromPeerId));
-        playRecordingAnnouncement("stop");
-      }
-      return;
-    }
-  }
-
-  // Держим обработчик envelope актуальным для подписки, созданной на mount.
-  onEnvelopeRef.current = (env) => {
-    const peerId =
-      env.type === "rtc-signal"
-        ? env.signal.fromPeerId
-        : env.type === "direct-call-request" || env.type === "direct-call-accept" || env.type === "direct-call-reject"
-          ? env.fromPeerId
-          : null;
-    if (peerId) {
-      void enqueuePeerSignal(peerId, () => onEnvelope(env));
-      return;
-    }
-    void onEnvelope(env);
-  };
-
-  function guessPeerName(peerId: string) {
-    if (call?.mode === "direct" && call.peerId === peerId) return call.peerName;
-    const p = peers.find((x) => x.peerId === peerId);
-    if (p) return p.userName;
-    if (call?.mode === "room") {
-      const rp = call.participants.find((x) => x.peerId === peerId);
-      if (rp) return rp.userName;
-    }
-    return "Peer";
-  }
-
-  async function flushPendingIce(peerId: string) {
-    const pc = pcsRef.current.get(peerId);
-    const queued = pendingIceRef.current.get(peerId);
-    if (!pc || !pc.remoteDescription || !queued?.length) return;
-    pendingIceRef.current.delete(peerId);
-    for (const candidate of queued) {
-      await pc.addIceCandidate(candidate).catch(() => undefined);
-    }
-  }
-
-  async function sendRtc(signal: RtcSignal) {
-    if (!callRef.current && !signal.roomId) {
-      // Для личных звонков без call state все равно пытаемся отправить через прямое соединение
-      const peer = peers.find((x) => x.peerId === signal.toPeerId) ?? manualPeers.find((x) => x.peerId === signal.toPeerId);
-      if (peer) {
-        const env: WsEnvelope = { type: "rtc-signal", signal };
-        await window.lokameet.net.sendToPeer(signal.toPeerId, env).catch(() => undefined);
-      }
-      return;
-    }
-
-    const activeCall = callRef.current;
-    if (!activeCall) {
-      if (signal.roomId && lastJoinRoomRef.current?.roomId === signal.roomId) {
-        const env: WsEnvelope = { type: "rtc-signal", signal };
-        await window.lokameet.net.sendToPeer(lastJoinRoomRef.current.hostPeerId, env).catch(() => undefined);
-      }
-      return;
-    }
-
-    const env: WsEnvelope = { type: "rtc-signal", signal };
-    // Если мы хост комнаты — ретранслируем напрямую цели (без hub).
-    if (profile && activeCall.mode === "room" && activeCall.hostPeerId === profile.peerId) {
-      await window.lokameet.net.sendToPeer(signal.toPeerId, env).catch(() => undefined);
-      return;
-    }
-    await sendToHub(env);
-  }
-
-  function currentRoomId() {
-    const active = callRef.current;
-    return active && isConferenceCall(active) ? active.roomId : undefined;
-  }
-
-  function bumpScreenRemote() {
-    setScreenRemoteEpoch((n) => n + 1);
-  }
-
-  function closeScreenSharePc(peerId: string) {
-    const pc = screenPcsRef.current.get(peerId);
-    screenPcsRef.current.delete(peerId);
-    screenPendingIceRef.current.delete(peerId);
-    closeRtcPeer(pc);
-    screenRemoteStreamsRef.current.delete(peerId);
-    bumpScreenRemote();
-  }
-
-  function closeAllScreenSharePcs() {
-    for (const peerId of [...screenPcsRef.current.keys()]) closeScreenSharePc(peerId);
-  }
-
-  async function flushScreenPendingIce(peerId: string) {
-    const pc = screenPcsRef.current.get(peerId);
-    const queued = screenPendingIceRef.current.get(peerId);
-    if (!pc || !pc.remoteDescription || !queued?.length) return;
-    screenPendingIceRef.current.delete(peerId);
-    for (const candidate of queued) {
-      await pc.addIceCandidate(candidate).catch(() => undefined);
-    }
-  }
-
-  function wireScreenSharePc(pc: RTCPeerConnection, peerId: string, roomId?: string) {
-    pc.onicecandidate = (e) => {
-      if (!e.candidate || !profile) return;
-      const json = e.candidate.toJSON();
-      if (!shouldSendIceCandidate(peerId, json)) return;
-      void sendRtc({
-        type: "rtc-ice",
-        roomId,
-        fromPeerId: profile.peerId,
-        toPeerId: peerId,
-        candidate: json,
-        channel: "screen"
-      });
-    };
-    pc.ontrack = (e) => {
-      let stream = screenRemoteStreamsRef.current.get(peerId);
-      if (!stream) {
-        stream = e.streams[0] ? new MediaStream(e.streams[0].getTracks()) : new MediaStream();
-        screenRemoteStreamsRef.current.set(peerId, stream);
-      }
-      if (!stream.getTracks().some((t) => t.id === e.track.id)) {
-        try {
-          stream.addTrack(e.track);
-        } catch {
-          // уже в потоке
-        }
-      }
-      bumpScreenRemote();
-    };
-  }
-
-  async function openOutgoingScreenShare(peerId: string) {
-    const me = profile?.peerId;
-    const video = shareTrackRef.current;
-    if (!me || !video || video.readyState !== "live") return;
-    if (!pcsRef.current.has(peerId)) return;
-    closeScreenSharePc(peerId);
-    const roomId = currentRoomId();
-    const pc = createScreenSharePeerConnection();
-    screenPcsRef.current.set(peerId, pc);
-    wireScreenSharePc(pc, peerId, roomId);
-    attachOutgoingScreenTracks(pc, video, shareScreenAudioTrackRef.current);
-    const offer = await pc.createOffer();
-    const sdp = boostScreenShareSdp(offer.sdp ?? "", screenShareBitrateForTrack(video));
-    await pc.setLocalDescription({ type: offer.type, sdp });
-    tuneScreenShareSender(pc, video);
-    await sendRtc({
-      type: "rtc-offer",
-      roomId,
-      fromPeerId: me,
-      toPeerId: peerId,
-      sdp: { type: offer.type, sdp },
-      channel: "screen"
-    });
-  }
-
-  async function offerScreenShareToConnectedPeers() {
-    for (const peerId of pcsRef.current.keys()) {
-      await openOutgoingScreenShare(peerId).catch((err) => {
-        void window.lokameet.log.write({
-          level: "WARN",
-          scope: "renderer/screen",
-          msg: "Failed to open screen-share peer connection",
-          data: { peerId, error: String(err) }
-        });
-      });
-    }
-  }
-
-  async function handleScreenShareOffer(sig: Extract<RtcSignal, { type: "rtc-offer" }>) {
-    if (isSharingRef.current) await stopScreenShare();
-    closeScreenSharePc(sig.fromPeerId);
-    const me = profile?.peerId;
-    if (!me) return;
-    const pc = createScreenSharePeerConnection();
-    screenPcsRef.current.set(sig.fromPeerId, pc);
-    wireScreenSharePc(pc, sig.fromPeerId, sig.roomId);
-    await pc.setRemoteDescription(new RTCSessionDescription(sig.sdp as RTCSessionDescriptionInit));
-    await flushScreenPendingIce(sig.fromPeerId);
-    const answer = await pc.createAnswer();
-    await pc.setLocalDescription(answer);
-    await sendRtc({
-      type: "rtc-answer",
-      roomId: sig.roomId,
-      fromPeerId: me,
-      toPeerId: sig.fromPeerId,
-      sdp: { type: answer.type, sdp: answer.sdp ?? undefined },
-      channel: "screen"
-    });
-  }
-
-  async function handleScreenShareAnswer(sig: Extract<RtcSignal, { type: "rtc-answer" }>) {
-    const pc = screenPcsRef.current.get(sig.fromPeerId);
-    if (!pc || pc.signalingState !== "have-local-offer") return;
-    await pc.setRemoteDescription(new RTCSessionDescription(sig.sdp as RTCSessionDescriptionInit));
-    await flushScreenPendingIce(sig.fromPeerId);
-    const video = shareTrackRef.current;
-    if (video && video.readyState === "live") {
-      tuneScreenShareSender(pc, video);
-      requestScreenShareKeyframe(pc, video);
-    }
-  }
-
-  async function handleScreenShareIce(sig: Extract<RtcSignal, { type: "rtc-ice" }>) {
-    const pc = screenPcsRef.current.get(sig.fromPeerId);
-    if (!sig.candidate) return;
-    if (!pc || !pc.remoteDescription) {
-      const queued = screenPendingIceRef.current.get(sig.fromPeerId) ?? [];
-      queued.push(sig.candidate);
-      screenPendingIceRef.current.set(sig.fromPeerId, queued);
-      return;
-    }
-    await pc.addIceCandidate(sig.candidate).catch(() => undefined);
-  }
-
-  async function applyRemoteOffer(
-    pc: RTCPeerConnection,
-    sig: Extract<RtcSignal, { type: "rtc-offer" }>
-  ) {
-    const me = profile?.peerId;
-    if (!me) return;
-    await ensureAudioTrackPresent(sig.fromPeerId).catch(() => undefined);
-    const tracksBefore = pc.getSenders().length;
-    await pc.setRemoteDescription(new RTCSessionDescription(sig.sdp as RTCSessionDescriptionInit));
-    await flushPendingIce(sig.fromPeerId);
-    const local = localStreamRef.current;
-    const needsRenegotiate = local
-      ? bindLocalTracks(pc, local, (track) => shouldSendLocalTrack(track, local), false)
-      : false;
-    if (audioEnabledRef.current && local) {
-      const mic = localMicTrack(local);
-      if (mic && mic.readyState === "live") {
-        const screenAudioId = shareScreenAudioTrackRef.current?.id;
-        const audioSender = pc.getSenders().find((sender) => {
-          const kind = sender.track?.kind;
-          if (kind === "audio") return !isScreenBroadcastAudioTrack(sender.track!, local, screenAudioId);
-          const tx = pc.getTransceivers().find((t) => t.sender === sender);
-          return tx?.receiver.track?.kind === "audio";
-        });
-        if (audioSender && audioSender.track?.id !== mic.id) {
-          await audioSender.replaceTrack(mic).catch(() => undefined);
-        }
-      }
-    }
-    void window.lokameet.log.write({
-      level: "INFO",
-      scope: "renderer/webrtc",
-      msg: "Tracks before setRemoteDescription",
-      data: { remotePeerId: sig.fromPeerId, tracksBefore, tracksAfter: pc.getSenders().length }
-    });
-    const answer = await pc.createAnswer();
-    await pc.setLocalDescription(answer);
-    await sendRtc({
-      type: "rtc-answer",
-      roomId: sig.roomId,
-      fromPeerId: me,
-      toPeerId: sig.fromPeerId,
-      sdp: { type: answer.type, sdp: answer.sdp ?? undefined }
-    });
-    pendingRenegotiateRef.current.delete(sig.fromPeerId);
-    if (needsRenegotiate) {
-      pendingRenegotiateRef.current.set(sig.fromPeerId, sig.roomId);
-      flushPendingRenegotiation(sig.fromPeerId);
-    }
-    if (isSharingRef.current) void openOutgoingScreenShare(sig.fromPeerId);
-  }
-
-  async function ensurePeerConnection(
-    remotePeerId: string,
-    remoteUserName: string,
-    opts: { initiator: boolean; roomId?: string }
-  ): Promise<RTCPeerConnection> {
-    const inflight = pcInitRef.current.get(remotePeerId);
-    if (inflight) {
-      const pc = await inflight;
-      if (opts.initiator && !offerHandlingRef.current.has(remotePeerId) && pc.signalingState === "stable") {
-        pcInitiatorRef.current.set(remotePeerId, true);
-        await sendInitialOfferIfNeeded(pc, remotePeerId, opts.roomId);
-      }
-      return pc;
-    }
-    const existing = pcsRef.current.get(remotePeerId);
-    if (existing && existing.signalingState !== "closed") {
-      const local = localStreamRef.current;
-      if (local) {
-        const canAddTrack = opts.initiator && !existing.remoteDescription;
-        if (bindLocalTracks(existing, local, (track) => shouldSendLocalTrack(track, local), canAddTrack)) {
-          pendingRenegotiateRef.current.set(remotePeerId, opts.roomId);
-        }
-      }
-      if (opts.initiator && !offerHandlingRef.current.has(remotePeerId)) {
-        pcInitiatorRef.current.set(remotePeerId, true);
-        await sendInitialOfferIfNeeded(existing, remotePeerId, opts.roomId);
-      }
-      return existing;
-    }
-
-    const task = createPeerConnectionForPeer(remotePeerId, remoteUserName, opts);
-    pcInitRef.current.set(remotePeerId, task);
-    try {
-      return await task;
-    } finally {
-      if (pcInitRef.current.get(remotePeerId) === task) pcInitRef.current.delete(remotePeerId);
-    }
-  }
-
-  async function sendInitialOfferIfNeeded(pc: RTCPeerConnection, remotePeerId: string, roomId?: string) {
-    if (pc.signalingState !== "stable") return;
-    if (pc.currentRemoteDescription || pc.pendingRemoteDescription) return;
-    if (pc.currentLocalDescription || pc.pendingLocalDescription) return;
-    if (offerHandlingRef.current.has(remotePeerId) || makingOfferRef.current.has(remotePeerId)) return;
-    const me = profile?.peerId;
-    if (!me) return;
-    makingOfferRef.current.add(remotePeerId);
-    try {
-      const offer = await pc.createOffer();
-      if (pc.signalingState !== "stable") return;
-      if (offerHandlingRef.current.has(remotePeerId)) return;
-      if (pc.currentRemoteDescription || pc.pendingRemoteDescription) return;
-      await pc.setLocalDescription(offer);
-      await sendRtc({
-        type: "rtc-offer",
-        roomId,
-        fromPeerId: me,
-        toPeerId: remotePeerId,
-        sdp: { type: offer.type, sdp: offer.sdp ?? undefined }
-      });
-    } catch (err) {
-      void window.lokameet.log.write({
-        level: "WARN",
-        scope: "renderer/webrtc",
-        msg: "Failed to send initial offer",
-        data: { remotePeerId, error: String(err) }
-      });
-    } finally {
-      makingOfferRef.current.delete(remotePeerId);
-    }
-  }
-
-  async function createPeerConnectionForPeer(
-    remotePeerId: string,
-    remoteUserName: string,
-    opts: { initiator: boolean; roomId?: string }
-  ): Promise<RTCPeerConnection> {
-    const me = profile?.peerId;
-    if (!me) throw new Error("no-profile");
-
-    void window.lokameet.log.write({ level: "INFO", scope: "renderer/webrtc", msg: "Creating peer connection", data: { remotePeerId, remoteUserName, initiator: opts.initiator, roomId: opts.roomId } });
-
-    const pc = createPeerConnection();
-    pcsRef.current.set(remotePeerId, pc);
-    if (!pcInitiatorRef.current.has(remotePeerId)) {
-      pcInitiatorRef.current.set(remotePeerId, opts.initiator);
-    } else if (opts.initiator) {
-      pcInitiatorRef.current.set(remotePeerId, true);
-    }
-    let iceRestartAttempted = false;
-    const isCurrentPc = () => pcsRef.current.get(remotePeerId) === pc;
-    pc.addEventListener("iceconnectionstatechange", () => {
-      if (!isCurrentPc()) return;
-      void window.lokameet.log.write({
-        level: pc.iceConnectionState === "failed" || pc.iceConnectionState === "disconnected" ? "WARN" : "INFO",
-        scope: "renderer/webrtc",
-        msg: "ICE connection state",
-        data: { remotePeerId, remoteUserName, iceConnectionState: pc.iceConnectionState, connectionState: pc.connectionState, signalingState: pc.signalingState }
-      });
-      if (pc.iceConnectionState === "connected" || pc.iceConnectionState === "completed") {
-        peerRecoverCountRef.current.delete(remotePeerId);
-        iceRestartAttempted = false;
-        return;
-      }
-      if (pc.iceConnectionState === "checking" && !iceRestartAttempted) {
-        window.setTimeout(() => {
-          if (!isCurrentPc()) return;
-          if (pc.signalingState !== "stable") return;
-          if (pc.iceConnectionState !== "checking" && pc.iceConnectionState !== "failed") return;
-          iceRestartAttempted = true;
-          try {
-            pc.restartIce();
-          } catch {
-            // ignore
-          }
-          void renegotiatePeerConnection(remotePeerId, opts.roomId);
-        }, 8000);
-      }
-      if (pc.iceConnectionState === "failed") {
-        void recoverOrDropPeer(remotePeerId, remoteUserName, opts, "ice-failed");
-      }
-    });
-    pc.addEventListener("connectionstatechange", () => {
-      if (!isCurrentPc()) return;
-      void window.lokameet.log.write({
-        level: pc.connectionState === "failed" || pc.connectionState === "disconnected" ? "WARN" : "INFO",
-        scope: "renderer/webrtc",
-        msg: "Peer connection state",
-        data: { remotePeerId, remoteUserName, connectionState: pc.connectionState, iceConnectionState: pc.iceConnectionState }
-      });
-      if (pc.connectionState === "connected") {
-        peerRecoverCountRef.current.delete(remotePeerId);
-      }
-    });
-    pc.addEventListener("signalingstatechange", () => {
-      if (!isCurrentPc()) return;
-      if (pc.signalingState === "stable") {
-        flushPendingRenegotiation(remotePeerId);
-      }
-    });
-
-    const local = await ensureLocalMedia().catch((err) => {
-      void window.lokameet.log.write({
-        level: "WARN",
-        scope: "renderer/webrtc",
-        msg: "ensureLocalMedia failed inside ensurePeerConnection",
-        data: { remotePeerId, error: String(err) }
-      });
-      if (!localStreamRef.current) {
-        localStreamRef.current = new MediaStream();
-        setLocalStreamVer((v) => v + 1);
-      }
-      return localStreamRef.current;
-    });
-    // Убеждаемся, что аудио и видео треки существуют перед добавлением в peer connection
-    // Это критически важно для групповых вызовов
-    if (mediaCfg.audioEnabled) {
-      await ensureAudioTrackPresent().catch((err) => {
-        void window.lokameet.log.write({ level: "WARN", scope: "renderer/webrtc", msg: "Failed to ensure audio track before peer connection", data: { remotePeerId, error: String(err) } });
-      });
-    }
-    if (mediaCfg.videoEnabled) {
-      await ensureVideoTrackPresent().catch((err) => {
-        void window.lokameet.log.write({ level: "WARN", scope: "renderer/webrtc", msg: "Failed to ensure video track before peer connection", data: { remotePeerId, error: String(err) } });
-      });
-    }
-    // Обновляем local ссылку после ensure треков
-    const updatedLocal = localStreamRef.current;
-    if (!updatedLocal) {
-      void window.lokameet.log.write({ level: "ERROR", scope: "renderer/webrtc", msg: "Local stream is null after ensuring tracks", data: { remotePeerId } });
-      throw new Error("Local stream is null");
-    }
-    // Инициатор вешает треки до createOffer. Принимающая сторона — только после setRemoteDescription,
-    // иначе Chromium ломает порядок m-line и рвёт и звонок, и игру.
-    if (opts.initiator) {
-      bindLocalTracks(pc, updatedLocal, (track) => shouldSendLocalTrack(track, updatedLocal), true);
-    }
-
-    const setupDataChannel = (dc: RTCDataChannel) => {
-      dc.binaryType = "arraybuffer";
-      dcsRef.current.set(remotePeerId, dc);
-      dc.onopen = () => {
-        syncGameToPeerRef.current(remotePeerId);
-      };
-      const completeReceivedFile = async (
-        peerId: string,
-        userName: string,
-        s: {
-          id: string;
-          name: string;
-          size: number;
-          mime?: string;
-          received: number;
-          chunks: ArrayBuffer[];
-        }
-      ) => {
-        if (finishingFileIdsRef.current.has(s.id) || fileUrlByIdRef.current.has(s.id)) {
-          incomingFileRef.current.delete(peerId);
-          return;
-        }
-        finishingFileIdsRef.current.add(s.id);
-        incomingFileRef.current.delete(peerId);
-        earlyFileChunksRef.current.delete(peerId);
-        const recvKey = `recv:${peerId}:${s.id}`;
-        setFileTransfers((prev) =>
-          prev.filter((x) => x.key !== `recv:${peerId}:pending` && x.key !== recvKey)
-        );
-        fileTransferUiThrottleRef.current.delete(recvKey);
-        const blob = new Blob(s.chunks, { type: s.mime || "application/octet-stream" });
-        const url = URL.createObjectURL(blob);
-        fileUrlByIdRef.current.set(s.id, url);
-        let previewDataUrl: string | undefined;
-        try {
-          previewDataUrl = await createFilePreviewDataUrl(blob, { mime: s.mime, name: s.name });
-        } catch {
-          // Игнорируем ошибки превью
-        }
-        if (profile) {
-          const currentScope =
-            call?.mode === "room"
-              ? { type: "room" as const, roomId: call.roomId }
-              : { type: "direct" as const, peerId };
-          const attachment: ChatAttachment = isVideoAttachmentMime(s.mime, s.name)
-            ? { kind: "video", fileId: s.id, name: s.name, size: s.size, mime: s.mime, previewDataUrl }
-            : isImageAttachmentMime(s.mime, s.name)
-              ? { kind: "image", fileId: s.id, name: s.name, size: s.size, mime: s.mime, previewDataUrl }
-              : { kind: "file", fileId: s.id, name: s.name, size: s.size, mime: s.mime, previewDataUrl };
-          const m: ChatMessage = {
-            id: s.id,
-            scope: currentScope,
-            fromPeerId: peerId,
-            fromUserName: userName,
-            sentAt: Date.now(),
-            text: `Файл: ${s.name} (${Math.round(s.size / 1024)} KB)`,
-            attachment
-          };
-          setChats((prev) => (prev.some((msg) => msg.id === m.id) ? prev : [...prev, m]));
-          window.lokameet.chat.append(m).catch(() => undefined);
-        }
-      };
-      dc.onmessage = async (ev) => {
-        if (typeof ev.data === "string") {
-          try {
-            const msg = JSON.parse(ev.data) as any;
-            if (msg?.t === "file-meta") {
-              const fileId = String(msg.id);
-              const fileName = String(msg.name);
-              const size = Math.max(0, Number(msg.size) || 0);
-              const early = earlyFileChunksRef.current.get(remotePeerId) ?? [];
-              earlyFileChunksRef.current.delete(remotePeerId);
-              const session = {
-                id: fileId,
-                name: fileName,
-                size,
-                mime: msg.mime ? String(msg.mime) : undefined,
-                received: 0,
-                chunks: [] as ArrayBuffer[]
-              };
-              for (const chunk of early) {
-                session.chunks.push(chunk);
-                session.received += chunk.byteLength;
-              }
-              incomingFileRef.current.set(remotePeerId, session);
-              setFileTransfers((prev) => {
-                const withoutPending = prev.filter((x) => x.key !== `recv:${remotePeerId}:pending`);
-                const key = `recv:${remotePeerId}:${fileId}`;
-                const item: FileTransferItem = {
-                  key,
-                  direction: "receive",
-                  peerId: remotePeerId,
-                  fileId,
-                  fileName,
-                  transferred: session.received,
-                  total: size,
-                  percent: size > 0 ? Math.min(100, Math.round((session.received / size) * 100)) : 100
-                };
-                const idx = withoutPending.findIndex((x) => x.key === key);
-                if (idx === -1) return [...withoutPending, item];
-                const next = withoutPending.slice();
-                next[idx] = item;
-                return next;
-              });
-              if (size <= 0 || session.received >= size) {
-                void completeReceivedFile(remotePeerId, remoteUserName, session);
-              }
-            } else if (msg?.t === "file-complete") {
-              const completeId = msg.id ? String(msg.id) : "";
-              const pending = incomingFileRef.current.get(remotePeerId);
-              if (pending && (!completeId || pending.id === completeId)) {
-                void completeReceivedFile(remotePeerId, remoteUserName, pending);
-              }
-            } else if (msg?.t === "typing") {
-              // Уведомление о том, что собеседник печатает
-              setTypingPeers((prev) => new Set(prev).add(remotePeerId));
-              // Очищаем через 3 секунды
-              const existingTimeout = typingTimeoutRef.current.get(remotePeerId);
-              if (existingTimeout) clearTimeout(existingTimeout);
-              const timeoutId = window.setTimeout(() => {
-                setTypingPeers((prev) => {
-                  const next = new Set(prev);
-                  next.delete(remotePeerId);
-                  return next;
-                });
-                typingTimeoutRef.current.delete(remotePeerId);
-              }, 3000);
-              typingTimeoutRef.current.set(remotePeerId, timeoutId);
-            } else if (msg?.t === "game") {
-              if (isGameMessage(msg)) handleGameMessageRef.current(remotePeerId, msg);
-            } else if (msg?.t === "file-sending") {
-              const fileName = msg.name ? String(msg.name) : t("fileFallbackName");
-              const key = `recv:${remotePeerId}:pending`;
-              upsertFileTransfer(
-                {
-                  key,
-                  direction: "receive",
-                  peerId: remotePeerId,
-                  fileName,
-                  transferred: 0,
-                  total: 0,
-                  percent: 0
-                },
-                { force: true }
-              );
-            } else if (msg?.t === "file-cancel") {
-              const cancelId = msg.id ? String(msg.id) : "";
-              const pending = incomingFileRef.current.get(remotePeerId);
-              if (pending && (!cancelId || pending.id === cancelId)) {
-                incomingFileRef.current.delete(remotePeerId);
-                setFileTransfers((prev) =>
-                  prev.filter(
-                    (x) =>
-                      x.key !== `recv:${remotePeerId}:pending` &&
-                      x.key !== `recv:${remotePeerId}:${pending.id}` &&
-                      !(x.direction === "receive" && x.peerId === remotePeerId && x.fileId === pending.id)
-                  )
-                );
-              } else if (cancelId) {
-                setFileTransfers((prev) =>
-                  prev.filter((x) => !(x.direction === "receive" && x.peerId === remotePeerId && x.fileId === cancelId))
-                );
-              }
-            }
-          } catch {
-            // игнор
-          }
-          return;
-        }
-
-        let buf: ArrayBuffer | null = null;
-        if (ev.data instanceof ArrayBuffer) buf = ev.data;
-        else if (ArrayBuffer.isView(ev.data)) {
-          const view = ev.data as ArrayBufferView;
-          const copy = new Uint8Array(view.byteLength);
-          copy.set(new Uint8Array(view.buffer as ArrayBuffer, view.byteOffset, view.byteLength));
-          buf = copy.buffer;
-        } else if (typeof Blob !== "undefined" && ev.data instanceof Blob) {
-          buf = await ev.data.arrayBuffer();
-        }
-        if (!buf) return;
-        const s = incomingFileRef.current.get(remotePeerId);
-        if (!s) {
-          const early = earlyFileChunksRef.current.get(remotePeerId) ?? [];
-          early.push(buf);
-          earlyFileChunksRef.current.set(remotePeerId, early);
-          return;
-        }
-        s.chunks.push(buf);
-        s.received += buf.byteLength;
-        const recvKey = `recv:${remotePeerId}:${s.id}`;
-        const recvPercent = s.size > 0 ? Math.min(100, Math.round((s.received / s.size) * 100)) : 100;
-        upsertFileTransfer(
-          {
-            key: recvKey,
-            direction: "receive",
-            peerId: remotePeerId,
-            fileId: s.id,
-            fileName: s.name,
-            transferred: s.received,
-            total: s.size,
-            percent: recvPercent
-          },
-          { force: s.size <= 0 || s.received >= s.size }
-        );
-        if (s.size <= 0 || s.received >= s.size) {
-          await completeReceivedFile(remotePeerId, remoteUserName, s);
-        }
-      };
-      dc.onclose = () => {
-        if (dcsRef.current.get(remotePeerId) === dc) dcsRef.current.delete(remotePeerId);
-      };
-    };
-
-    pc.ondatachannel = (e) => {
-      const current = dcsRef.current.get(remotePeerId);
-      if (current && current.readyState !== "closed") return;
-      setupDataChannel(e.channel);
-    };
-    // Одинаковый negotiated-канал у обеих сторон: в конференции offer создаёт только входящий,
-    // и без своего createDataChannel у принимающего файлы и игры не доходят.
-    const dc = pc.createDataChannel("lokameet", { negotiated: true, id: 1, ordered: true });
-    setupDataChannel(dc);
-
-    pc.onicecandidate = (e) => {
-      if (!e.candidate) return;
-      const json = e.candidate.toJSON() as any;
-      if (!shouldSendIceCandidate(remotePeerId, json)) return;
-      void sendRtc({
-        type: "rtc-ice",
-        roomId: opts.roomId,
-        fromPeerId: me,
-        toPeerId: remotePeerId,
-        candidate: json
-      });
-    };
-
-    pc.ontrack = (e) => {
-      const incoming = e.streams[0] ?? null;
-      const prev = remoteRef.current.get(remotePeerId);
-      const track = e.track;
-      track.onunmute = () => {
-        // После replaceTrack(null)/mute трек могли убрать из MediaStream (prune).
-        // replaceTrack(screen|camera) не шлёт новый ontrack — возвращаем трек в stream.
-        const remote = remoteRef.current.get(remotePeerId);
-        if (remote && !remote.stream.getTracks().some((t) => t.id === track.id)) {
-          try {
-            remote.stream.addTrack(track);
-          } catch {
-            // игнор
-          }
-        }
-        refreshRemotePeerVideo(remotePeerId);
-      };
-      track.onmute = () => {
-        refreshRemotePeerVideo(remotePeerId);
-      };
-      
-      // Отслеживать изменения состояния треков для обновления UI
-      const updateRemoteTracks = () => {
-        setRemoteTracks(Array.from(remoteRef.current.values()));
-      };
-      
-      // Создаем прокси для отслеживания изменения enabled
-      let lastEnabled = track.enabled;
-      const updateCheck = () => {
-        if (track.enabled !== lastEnabled) {
-          lastEnabled = track.enabled;
-          updateRemoteTracks();
-        }
-      };
-      
-      // Отслеживаем изменения enabled через polling (WebRTC треки не имеют событий для этого)
-      const enabledCheckInterval = setInterval(() => {
-        if (track.readyState === "ended") {
-          clearInterval(enabledCheckInterval);
-          updateRemoteTracks();
-          return;
-        }
-        updateCheck();
-      }, 1000);
-      
-      track.onended = () => {
-        clearInterval(enabledCheckInterval);
-        const remote = remoteRef.current.get(remotePeerId);
-        if (remote) {
-          try {
-            remote.stream.removeTrack(track);
-          } catch {
-            // игнор
-          }
-          refreshRemotePeerVideo(remotePeerId);
-        } else {
-          updateRemoteTracks();
-        }
-      };
-      
-      if (incoming) {
-        // Пир может слать screen audio отдельным MediaStream. Держим один
-        // агрегированный stream на пира, чтобы audio-only не вытеснил
-        // поток с активным видео камеры/экрана.
-        if (!prev) {
-          remoteRef.current.set(remotePeerId, { peerId: remotePeerId, userName: remoteUserName, stream: incoming });
-          setRemoteTracks(Array.from(remoteRef.current.values()));
-        } else {
-          if (track.kind === "video") {
-            for (const old of prev.stream.getVideoTracks()) {
-              if (old.id !== track.id && old.readyState === "ended") {
-                try {
-                  prev.stream.removeTrack(old);
-                } catch {
-                  // игнор
-                }
-              }
-            }
-          }
-          // Убеждаемся, что трек есть на stream.
-          if (!prev.stream.getTracks().some((t) => t.id === track.id)) {
-            try {
-              prev.stream.addTrack(track);
-              updateRemoteTracks();
-            } catch {
-              // игнор
-            }
-          }
-          if (track.kind === "video") {
-            refreshRemotePeerVideo(remotePeerId);
-          }
-        }
-        return;
-      }
-
-      // Fallback: в event нет stream — один MediaStream на пира, добавляем треки в него.
-      if (prev) {
-        if (track.kind === "video") {
-          for (const old of prev.stream.getVideoTracks()) {
-            if (old.id !== track.id && old.readyState === "ended") {
-              try {
-                prev.stream.removeTrack(old);
-              } catch {
-                // игнор
-              }
-            }
-          }
-        }
-        if (!prev.stream.getTracks().some((t) => t.id === track.id)) {
-          try {
-            prev.stream.addTrack(track);
-            updateRemoteTracks();
-          } catch {
-            // игнор
-          }
-        }
-        if (track.kind === "video") {
-          refreshRemotePeerVideo(remotePeerId);
-        }
-      } else {
-        const s = new MediaStream([track]);
-        remoteRef.current.set(remotePeerId, { peerId: remotePeerId, userName: remoteUserName, stream: s });
-        setRemoteTracks(Array.from(remoteRef.current.values()));
-      }
-    };
-
-    pc.onconnectionstatechange = () => {
-      if (pcsRef.current.get(remotePeerId) !== pc) return;
-      const st = pc.connectionState;
-      if (st === "connected") {
-        peerRecoverCountRef.current.delete(remotePeerId);
-        const meNow = profile?.peerId;
-        if (meNow) {
-          void sendRtc({
-            type: "camera-visibility",
-            roomId: opts.roomId,
-            fromPeerId: meNow,
-            toPeerId: remotePeerId,
-            enabled: Boolean(videoEnabledRef.current)
-          });
-        }
-      }
-      if (st === "failed") {
-        void recoverOrDropPeer(remotePeerId, remoteUserName, opts, "connection-failed");
-        return;
-      }
-      if (st === "closed") {
-        return;
-      }
-      // "disconnected" на Windows часто временный — не рвём звонок сразу.
-      if (st === "disconnected") {
-        if (disconnectTimersRef.current.has(remotePeerId)) return;
-        const id = window.setTimeout(() => {
-          const pcNow = pcsRef.current.get(remotePeerId);
-          if (pcNow && pcNow === pc && pcNow.connectionState === "disconnected") {
-            void recoverOrDropPeer(remotePeerId, remoteUserName, opts, "connection-disconnected");
-          }
-          disconnectTimersRef.current.delete(remotePeerId);
-        }, 8000);
-        disconnectTimersRef.current.set(remotePeerId, id);
-        return;
-      }
-      const t = disconnectTimersRef.current.get(remotePeerId);
-      if (t) {
-        window.clearTimeout(t);
-        disconnectTimersRef.current.delete(remotePeerId);
-      }
-    };
-
-    if (opts.initiator) {
-      await ensureOutgoingMic(pc);
-      const local = localStreamRef.current;
-      if (local) {
-        const tracksBefore = pc.getSenders().length;
-        bindLocalTracks(pc, local, (track) => shouldSendLocalTrack(track, local), true);
-      void window.lokameet.log.write({
-        level: "INFO",
-        scope: "renderer/webrtc",
-        msg: "Tracks before createOffer",
-        data: { remotePeerId, tracksBefore, tracksAfter: pc.getSenders().length }
-      });
-      }
-      if (
-        pc.signalingState !== "stable" ||
-        pc.currentRemoteDescription ||
-        pc.pendingRemoteDescription ||
-        offerHandlingRef.current.has(remotePeerId)
-      ) {
-        return pc;
-      }
-      makingOfferRef.current.add(remotePeerId);
-      try {
-      const offer = await pc.createOffer();
-      if (pc.signalingState !== "stable" && pc.signalingState !== "have-local-offer") {
-        return pc;
-      }
-      if (offerHandlingRef.current.has(remotePeerId) || pc.currentRemoteDescription || pc.pendingRemoteDescription) {
-        return pc;
-      }
-      await pc.setLocalDescription(offer);
-      await sendRtc({
-        type: "rtc-offer",
-        roomId: opts.roomId,
-        fromPeerId: me,
-        toPeerId: remotePeerId,
-        sdp: { type: offer.type, sdp: offer.sdp ?? undefined }
-      });
-      } finally {
-        makingOfferRef.current.delete(remotePeerId);
-      }
-    }
-
-    if (isSharingRef.current) void openOutgoingScreenShare(remotePeerId);
-    return pc;
-  }
-
-  async function recreatePeerConnection(
-    remotePeerId: string,
-    remoteUserName: string,
-    opts: { initiator: boolean; roomId?: string }
-  ) {
-    closePeer(remotePeerId);
-    pcInitiatorRef.current.set(remotePeerId, opts.initiator);
-    await ensurePeerConnection(remotePeerId, remoteUserName, opts);
-  }
-
-  async function recoverOrDropPeer(
-    remotePeerId: string,
-    remoteUserName: string,
-    opts: { initiator: boolean; roomId?: string },
-    reason: string
-  ) {
-    if (intentionalPeerDisconnectsRef.current.has(remotePeerId)) return;
-    if (peerRecoveringRef.current.has(remotePeerId)) return;
-    const pc = pcsRef.current.get(remotePeerId);
-    if (!pc) return;
-    const count = (peerRecoverCountRef.current.get(remotePeerId) ?? 0) + 1;
-    peerRecoverCountRef.current.set(remotePeerId, count);
-    if (count > 2) {
-      handleUnexpectedDirectDisconnect(remotePeerId);
-      closePeer(remotePeerId);
-      return;
-    }
-    const initiator = pcInitiatorRef.current.get(remotePeerId) === true || opts.initiator;
-    peerRecoveringRef.current.add(remotePeerId);
-    void window.lokameet.log.write({
-      level: "WARN",
-      scope: "renderer/webrtc",
-      msg: "Recovering peer connection",
-      data: { remotePeerId, remoteUserName, reason, attempt: count, signalingState: pc.signalingState }
-    });
-    try {
-      if (pc.signalingState === "stable" && pc.connectionState !== "closed") {
-        try {
-          pc.restartIce();
-          await renegotiatePeerConnection(remotePeerId, opts.roomId);
-          return;
-        } catch {
-          // recreate below
-        }
-      }
-      await recreatePeerConnection(remotePeerId, remoteUserName, { initiator, roomId: opts.roomId });
-    } finally {
-      window.setTimeout(() => peerRecoveringRef.current.delete(remotePeerId), 1500);
-    }
-  }
-
-  function closePeer(remotePeerId: string) {
-    const t = disconnectTimersRef.current.get(remotePeerId);
-    if (t) {
-      window.clearTimeout(t);
-      disconnectTimersRef.current.delete(remotePeerId);
-    }
-    const pc = pcsRef.current.get(remotePeerId);
-    pcsRef.current.delete(remotePeerId);
-    closeScreenSharePc(remotePeerId);
-    pcInitiatorRef.current.delete(remotePeerId);
-    pendingRenegotiateRef.current.delete(remotePeerId);
-    pendingIceRef.current.delete(remotePeerId);
-    offerHandlingRef.current.delete(remotePeerId);
-    makingOfferRef.current.delete(remotePeerId);
-    if (pc) {
-      try {
-        pc.close();
-      } catch {
-        // игнор
-      }
-    }
-    const dc = dcsRef.current.get(remotePeerId);
-    if (dc) {
-      try {
-        dc.close();
-      } catch {
-        // игнор
-      }
-    }
-    dcsRef.current.delete(remotePeerId);
-    remoteRef.current.delete(remotePeerId);
-    setRemoteTracks(Array.from(remoteRef.current.values()));
-  }
-
-  function endDirectCallFromRemote(remotePeerId: string, opts?: { appendLeft?: boolean }) {
-    const activeCall = callRef.current;
-    if (!activeCall || activeCall.mode !== "direct" || activeCall.peerId !== remotePeerId) return;
-    intentionalPeerDisconnectsRef.current.add(remotePeerId);
-    clearPendingCall(remotePeerId);
-    void window.lokameet.log.write({
-      level: "INFO",
-      scope: "renderer/call",
-      msg: "remoteLeftDirectCall",
-      data: { peerId: remotePeerId, peerName: activeCall.peerName }
-    });
-    if (opts?.appendLeft) {
-      appendSystemChatStatus(
-        { type: "direct", peerId: remotePeerId },
-        remotePeerId,
-        activeCall.peerName,
-        t("chatStatusLeft")
-      );
-    }
-    const session = gameSessionRef.current;
-    if (session && (session.white.peerId === remotePeerId || session.black.peerId === remotePeerId)) {
-      endGameSession(t("chatStatusGameEnd"));
-    }
-    void stopCallRecording().catch(() => undefined);
-    setRemoteRecordings([]);
-    stopAllPeerConnections();
-    setConferenceCall(null);
-    setCallStartedAt(null);
-    stopLocalMedia();
-  }
-
-  function handleUnexpectedDirectDisconnect(remotePeerId: string) {
-    if (intentionalPeerDisconnectsRef.current.has(remotePeerId)) return;
-    endDirectCallFromRemote(remotePeerId, { appendLeft: true });
-  }
-
-  async function startDirectCall(p: PeerInfo) {
-    if (!profile) return;
-    if (call) await leaveCall();
-    setError(null);
-    setSelectedRoom(null);
-    setSelectedPeer(p);
-    stopAllPeerConnections();
-    intentionalPeerDisconnectsRef.current.delete(p.peerId);
-    await applyCallPresenceStatus("in_call");
-    setCall({ mode: "direct", peerId: p.peerId, peerName: p.userName, signalHubPeerId: p.peerId, signalHubHost: p.host, signalHubPort: p.port });
-    void window.lokameet.log.write({ level: "INFO", scope: "renderer/call", msg: "startDirectCall", data: { host: p.host, port: p.port, peerId: p.peerId } });
-    // Воспроизводим звук для звонящего
-    playNotificationSound(callerSoundFile, callerSoundVolume);
-    markPendingCall(p.peerId);
-    try {
-      await window.lokameet.net.connect(p.host, p.port);
-      await window.lokameet.net.sendToPeer(p.peerId, { type: "direct-call-request", fromPeerId: profile.peerId, fromUserName: profile.userName });
-    } catch {
-      clearPendingCall(p.peerId);
-      setConferenceCall(null);
-      setError(t("inviteSendFailed"));
-    }
-  }
-
-  function appendSystemChatStatus(
-    scope: ChatScope,
-    fromPeerId: string,
-    fromUserName: string,
-    text: string,
-    attachment?: ChatAttachment
-  ) {
-    const message: ChatMessage = {
-      id: crypto.randomUUID(),
-      scope,
-      fromPeerId,
-      fromUserName,
-      sentAt: Date.now(),
-      text,
-      kind: "system",
-      attachment
-    };
-    setChats((prev) => (prev.some((m) => m.id === message.id) ? prev : [...prev, message]));
-    void window.lokameet.chat.append(message).catch(() => undefined);
-    return message;
-  }
-
-  async function sendChatStatus(scope: ChatScope, text: string, attachment?: ChatAttachment) {
-    if (!profile) return;
-    const message = appendSystemChatStatus(scope, profile.peerId, profile.userName, text, attachment);
-    const env: WsEnvelope = { type: "chat-message", message };
-
-    if (scope.type === "direct") {
-      await ensureDirectSignaling(scope.peerId).catch(() => undefined);
-      await window.lokameet.net.sendToPeer(scope.peerId, env).catch(() => undefined);
-      return;
-    }
-
-    const activeCall = callRef.current;
-    if (activeCall?.mode !== "room" || activeCall.roomId !== scope.roomId) return;
-    if (activeCall.hostPeerId === profile.peerId) {
-      await Promise.all(
-        activeCall.participants
-          .filter((participant) => participant.peerId !== profile.peerId)
-          .map((participant) => window.lokameet.net.sendToPeer(participant.peerId, env).catch(() => undefined))
-      );
-    } else {
-      await sendToHub(env).catch(() => undefined);
-    }
-  }
-
-  async function sendDirectChatStatus(peerId: string, text: string) {
-    await sendChatStatus({ type: "direct", peerId }, text);
-  }
-
-  function selectPeerForChat(peer: PeerInfo) {
-    const hadMessageIndicator = peerActionIndicators.get(peer.peerId) === "message";
-    // Сразу снимаем рамку индикатора при клике «Написать» / по карточке.
-    clearPeerAction(peer.peerId);
-    if (hadMessageIndicator) {
-      void sendDirectChatStatus(peer.peerId, t("chatStatusOpened"));
-    }
-    setSelectedRoom(null);
-    setSelectedPeer(peer);
-    setSearch("");
-    setUnreadPeerIds((current) => {
-      if (!current.has(peer.peerId)) return current;
-      const next = new Set(current);
-      next.delete(peer.peerId);
-      return next;
-    });
-    setUnreadMessageIds((current) => {
-      const next = new Set(current);
-      for (const message of chats) {
-        if (message.fromPeerId === peer.peerId) next.delete(message.id);
-      }
-      return next;
-    });
-  }
-
-  function openPeerChat(peerId: string) {
-    const p = peers.find((x) => x.peerId === peerId) ?? manualPeers.find((x) => x.peerId === peerId);
-    if (p) {
-      setSelectedRoom(null);
-      setSelectedPeer(p);
-      setSearch("");
-    }
-    window.requestAnimationFrame(() => {
-      chatEndRef.current?.scrollIntoView({ block: "end" });
-    });
-  }
-
-  function revealChatUnlessInCall(peerId: string) {
-    if (callRef.current) {
-      window.requestAnimationFrame(() => {
-        chatEndRef.current?.scrollIntoView({ block: "end" });
-      });
-      return;
-    }
-    openPeerChat(peerId);
-  }
-
-  function gameChatScopeForPeer(peerId: string): ChatScope | null {
-    const activeCall = callRef.current;
-    if (activeCall?.mode === "direct") return { type: "direct", peerId: activeCall.peerId };
-    if (activeCall?.mode === "room") return { type: "room", roomId: activeCall.roomId };
-    if (peerId) return { type: "direct", peerId };
-    return null;
-  }
-
-  async function acceptIncoming() {
-    if (!incomingCall || !profile) return;
-    if (call) await leaveCall();
-    // Очищаем таймеры входящего звонка
-    if (incomingCallTimerRef.current) {
-      clearInterval(incomingCallTimerRef.current);
-      incomingCallTimerRef.current = null;
-    }
-    if (incomingCallSoundIntervalRef.current) {
-      clearInterval(incomingCallSoundIntervalRef.current);
-      incomingCallSoundIntervalRef.current = null;
-    }
-    if (incomingCallTimeoutRef.current) {
-      clearTimeout(incomingCallTimeoutRef.current);
-      incomingCallTimeoutRef.current = null;
-    }
-    setIncomingCall(null);
-    setIncomingCallBlink(false);
-    stopAllPeerConnections();
-    // Входящий звонок уже значит, что у caller есть signaling к нам.
-    // Accept без resolve host/port (mDNS может быть заблокирован).
-    const peerId = incomingCall.peerId;
-    clearPeerAction(peerId);
-    await sendDirectChatStatus(peerId, t("chatStatusCallAccepted"));
-    const p = peers.find((x) => x.peerId === peerId) ?? manualPeers.find((x) => x.peerId === peerId) ?? null;
-    const peerName = p?.userName ?? incomingCall.userName ?? "Peer";
-    setCallStartedAt(Date.now());
-    openPeerChat(peerId);
-    intentionalPeerDisconnectsRef.current.delete(peerId);
-    await applyCallPresenceStatus("in_call");
-    setCall({ mode: "direct", peerId, peerName, signalHubPeerId: peerId, signalHubHost: p?.host, signalHubPort: p?.port });
-    // Воспроизводим звук установки соединения для принимающего звонок
-    playNotificationSound(connectionSoundFile);
-    await window.lokameet.net.sendToPeer(peerId, { type: "direct-call-accept", fromPeerId: profile.peerId });
-    await ensureLocalMedia();
-    await ensureAudioTrackPresent().catch(() => undefined);
-    await ensureVideoTrackPresent().catch(() => undefined);
-    // Принимающая сторона ждёт offer.
-  }
-
-  async function rejectIncoming() {
-    if (!incomingCall || !profile) return;
-    // Очищаем таймеры входящего звонка
-    if (incomingCallTimerRef.current) {
-      clearInterval(incomingCallTimerRef.current);
-      incomingCallTimerRef.current = null;
-    }
-    if (incomingCallSoundIntervalRef.current) {
-      clearInterval(incomingCallSoundIntervalRef.current);
-      incomingCallSoundIntervalRef.current = null;
-    }
-    if (incomingCallTimeoutRef.current) {
-      clearTimeout(incomingCallTimeoutRef.current);
-      incomingCallTimeoutRef.current = null;
-    }
-    const peerId = incomingCall.peerId;
-    setIncomingCall(null);
-    setIncomingCallBlink(false);
-    await sendDirectChatStatus(peerId, t("chatStatusCallRejected"));
-    openPeerChat(peerId);
-    await window.lokameet.net.sendToPeer(peerId, { type: "direct-call-reject", fromPeerId: profile.peerId, reason: "user-reject" });
-  }
-
-  function clearIncomingRoomInviteUi() {
-    if (incomingRoomInviteTimerRef.current) {
-      clearInterval(incomingRoomInviteTimerRef.current);
-      incomingRoomInviteTimerRef.current = null;
-    }
-    if (incomingRoomInviteTimeoutRef.current) {
-      clearTimeout(incomingRoomInviteTimeoutRef.current);
-      incomingRoomInviteTimeoutRef.current = null;
-    }
-    setIncomingRoomInvite(null);
-    setIncomingRoomInviteBlink(false);
-  }
-
-  function clearPendingInvite(peerId: string) {
-    const existing = pendingInviteTimeoutRef.current.get(peerId);
-    if (existing) {
-      clearTimeout(existing);
-      pendingInviteTimeoutRef.current.delete(peerId);
-    }
-    setPendingInvitePeerIds((prev) => {
-      if (!prev.has(peerId)) return prev;
-      const next = new Set(prev);
-      next.delete(peerId);
-      return next;
-    });
-  }
-
-  function markPendingInvite(peerId: string) {
-    const existing = pendingInviteTimeoutRef.current.get(peerId);
-    if (existing) clearTimeout(existing);
-    setPendingInvitePeerIds((prev) => {
-      const next = new Set(prev);
-      next.add(peerId);
-      return next;
-    });
-    const timeoutId = window.setTimeout(() => {
-      clearPendingInvite(peerId);
-    }, 30000);
-    pendingInviteTimeoutRef.current.set(peerId, timeoutId);
-  }
-
-  function clearPendingCall(peerId: string) {
-    const existing = pendingCallTimeoutRef.current.get(peerId);
-    if (existing) {
-      clearTimeout(existing);
-      pendingCallTimeoutRef.current.delete(peerId);
-    }
-    setPendingCallPeerIds((prev) => {
-      if (!prev.has(peerId)) return prev;
-      const next = new Set(prev);
-      next.delete(peerId);
-      return next;
-    });
-  }
-
-  function markPendingCall(peerId: string) {
-    const existing = pendingCallTimeoutRef.current.get(peerId);
-    if (existing) clearTimeout(existing);
-    setPendingCallPeerIds((prev) => {
-      const next = new Set(prev);
-      next.add(peerId);
-      return next;
-    });
-    const timeoutId = window.setTimeout(() => {
-      clearPendingCall(peerId);
-    }, 30000);
-    pendingCallTimeoutRef.current.set(peerId, timeoutId);
-  }
-
-  function markPeerAction(peerId: string, action: "message" | "call") {
-    const existing = peerActionFlashTimeoutRef.current.get(peerId);
-    if (existing) clearTimeout(existing);
-
-    setPeerActionIndicators((prev) => {
-      const next = new Map(prev);
-      next.set(peerId, action);
-      return next;
-    });
-    setFlashingPeerActionIds((prev) => new Set(prev).add(peerId));
-
-    const timeoutId = window.setTimeout(() => {
-      peerActionFlashTimeoutRef.current.delete(peerId);
-      setFlashingPeerActionIds((prev) => {
-        if (!prev.has(peerId)) return prev;
-        const next = new Set(prev);
-        next.delete(peerId);
-        return next;
-      });
-    }, 3000);
-    peerActionFlashTimeoutRef.current.set(peerId, timeoutId);
-  }
-
-  function clearPeerAction(peerId: string) {
-    const existing = peerActionFlashTimeoutRef.current.get(peerId);
-    if (existing) {
-      clearTimeout(existing);
-      peerActionFlashTimeoutRef.current.delete(peerId);
-    }
-    setPeerActionIndicators((prev) => {
-      if (!prev.has(peerId)) return prev;
-      const next = new Map(prev);
-      next.delete(peerId);
-      return next;
-    });
-    setFlashingPeerActionIds((prev) => {
-      if (!prev.has(peerId)) return prev;
-      const next = new Set(prev);
-      next.delete(peerId);
-      return next;
-    });
-  }
-
-  async function invitePeerToConference(p: PeerInfo) {
-    if (!profile || !isConferenceCall(call)) return;
-    if (displayPeerStatus(p.peerId, p.status) !== "online") {
-      setError(t("invitePeerNotOnline"));
-      return;
-    }
-    if (call.participants.some((x) => x.peerId === p.peerId)) {
-      setError(t("invitePeerAlreadyInRoom"));
-      return;
-    }
-    const host =
-      call.signalHubHost ??
-      (call.hostPeerId === profile.peerId ? localIps[0] : undefined) ??
-      peers.find((x) => x.peerId === call.hostPeerId)?.host ??
-      manualPeers.find((x) => x.peerId === call.hostPeerId)?.host;
-    const port =
-      call.signalHubPort ??
-      (call.hostPeerId === profile.peerId ? signalingPort : undefined) ??
-      peers.find((x) => x.peerId === call.hostPeerId)?.port ??
-      manualPeers.find((x) => x.peerId === call.hostPeerId)?.port;
-    if (!host || !port) {
-      setError(t("inviteMissingHost"));
-      return;
-    }
-    setError(null);
-    const env: WsEnvelope = {
-      type: "room-invite",
-      fromPeerId: profile.peerId,
-      fromUserName: profile.userName,
-      roomId: call.roomId,
-      roomName: call.roomName,
-      hostPeerId: call.hostPeerId,
-      host,
-      port,
-      hasPassword: Boolean(call.hasPassword),
-      maxParticipants: MAX_CONFERENCE_PARTICIPANTS,
-      participantsApprox: call.participants.length
-    };
-    try {
-      await window.lokameet.net.connect(p.host, p.port);
-      const ok = await window.lokameet.net.sendToPeer(p.peerId, env);
-      if (!ok) {
-        setError(t("inviteSendFailed"));
-        return;
-      }
-      markPendingInvite(p.peerId);
-      playNotificationSound(callerSoundFile, callerSoundVolume);
-    } catch {
-      setError(t("inviteSendFailed"));
-    }
-  }
-
-  async function acceptRoomInvite() {
-    if (!incomingRoomInvite || !profile) return;
-    const invite = incomingRoomInvite;
-    clearIncomingRoomInviteUi();
-    if (call) await leaveCall();
-    const joinCheck = canJoinConference(invite.room);
-    if (!joinCheck.ok) {
-      setError(conferenceRejectMessage(joinCheck.reason, t));
-      return;
-    }
-    setError(null);
-    stopAllPeerConnections();
-    setConferenceCall(null);
-    setSelectedPeer(null);
-    setSelectedRoom(invite.room);
-    lastJoinRoomRef.current = invite.room;
-    await window.lokameet.net.connect(invite.room.host, invite.room.port).catch(() => undefined);
-    setRoomJoinTarget(invite.room);
-    setRoomJoinPassDraft("");
-    setRoomJoinFromInvite({ fromUserName: invite.fromUserName });
-    setRoomJoinPassOpen(true);
-  }
-
-  async function rejectRoomInvite() {
-    if (!incomingRoomInvite || !profile) return;
-    const invite = incomingRoomInvite;
-    clearIncomingRoomInviteUi();
-    const peer =
-      peers.find((x) => x.peerId === invite.fromPeerId) ?? manualPeers.find((x) => x.peerId === invite.fromPeerId);
-    try {
-      if (peer) await window.lokameet.net.connect(peer.host, peer.port).catch(() => undefined);
-      await window.lokameet.net.sendToPeer(invite.fromPeerId, {
-        type: "room-invite-reject",
-        fromPeerId: profile.peerId,
-        fromUserName: profile.userName,
-        roomId: invite.room.roomId,
-        roomName: invite.room.roomName
-      });
-    } catch {
-      // игнор
-    }
-  }
-
-  async function createRoom() {
-    if (!profile) return;
-    if (isDirectCall(call)) {
-      setError(t("conferenceBusyDirect"));
-      return;
-    }
-    setRoomNameDraft(`${profile.userName}'s room`);
-    setRoomPassDraft("");
-    setRoomDialogOpen(true);
-  }
-
-  async function confirmCreateRoom() {
-    if (!profile) return;
-    if (isDirectCall(call)) {
-      setError(t("conferenceBusyDirect"));
-      return;
-    }
-    const name = roomNameDraft.trim();
-    if (!name) return;
-    const pass = roomPassDraft.trim() ? roomPassDraft : undefined;
-    const room = await window.lokameet.room.create({
-      roomName: name,
-      maxParticipants: MAX_CONFERENCE_PARTICIPANTS,
-      password: pass
-    });
-    setSelectedPeer(null);
-    setSelectedRoom(null);
-    stopAllPeerConnections();
-    await applyCallPresenceStatus("in_conference");
-    setConferenceCall(
-      createHostConferenceState({
-        roomId: room.roomId,
-        roomName: room.roomName,
-        hostPeerId: profile.peerId,
-        participants: Array.from(room.participants.values()),
-        hasPassword: Boolean(pass),
-        signalHubHost: localIps[0],
-        signalHubPort: signalingPort
-      })
-    );
-    setCallStartedAt(Date.now());
-    appendSystemChatStatus(
-      { type: "room", roomId: room.roomId },
-      profile.peerId,
-      profile.userName,
-      t("chatStatusCreatedConference")
-    );
-    await ensureLocalMedia();
-    await ensureAudioTrackPresent().catch(() => undefined);
-    await ensureVideoTrackPresent().catch(() => undefined);
-  }
-
-  async function joinRoom(r: RoomInfo) {
-    if (!profile) return;
-    if (call) await leaveCall();
-    const joinCheck = canJoinConference(r);
-    if (!joinCheck.ok) {
-      setError(conferenceRejectMessage(joinCheck.reason, t));
-      return;
-    }
-    setError(null);
-    stopAllPeerConnections();
-    setConferenceCall(null);
-    setSelectedPeer(null);
-    setSelectedRoom(r);
-    lastJoinRoomRef.current = r;
-    joiningRoomFromInviteRef.current = false;
-    await window.lokameet.net.connect(r.host, r.port);
-    if (r.hasPassword) {
-      setRoomJoinTarget(r);
-      setRoomJoinPassDraft("");
-      setRoomJoinFromInvite(null);
-      setRoomJoinPassOpen(true);
-      return;
-    }
-    await window.lokameet.net.sendToPeer(r.hostPeerId, { type: "room-join", roomId: r.roomId, peerId: profile.peerId, userName: profile.userName });
-  }
-
-  async function confirmJoinRoom() {
-    if (!profile || !roomJoinTarget) return;
-    const r = roomJoinTarget;
-    const joinCheck = canJoinConference(r);
-    if (!joinCheck.ok) {
-      setError(conferenceRejectMessage(joinCheck.reason, t));
-      setRoomJoinPassOpen(false);
-      setRoomJoinTarget(null);
-      setRoomJoinFromInvite(null);
-      return;
-    }
-    setRoomJoinPassOpen(false);
-    lastJoinRoomRef.current = r;
-    joiningRoomFromInviteRef.current = Boolean(roomJoinFromInvite);
-    setRoomJoinFromInvite(null);
-    await window.lokameet.net.connect(r.host, r.port).catch(() => undefined);
-    await window.lokameet.net.sendToPeer(r.hostPeerId, {
-      type: "room-join",
-      roomId: r.roomId,
-      peerId: profile.peerId,
-      userName: profile.userName,
-      password: r.hasPassword ? roomJoinPassDraft : undefined
-    });
-  }
-
-  function resetGames() {
-    const keepComputer = gameSessionRef.current?.vsComputer ? gameSessionRef.current : null;
-    if (outgoingGameInviteTimerRef.current) {
-      window.clearTimeout(outgoingGameInviteTimerRef.current);
-      outgoingGameInviteTimerRef.current = null;
-    }
-    outgoingGameInviteRef.current = null;
-    setGamesMenuOpen(false);
-    setGameInvite(null);
-    setOutgoingGameInvite(null);
-    setWatchOffer(null);
-    if (keepComputer) {
-      gameSessionRef.current = keepComputer;
-      setGameSession(keepComputer);
-      return;
-    }
-    if (computerTimerRef.current) {
-      window.clearTimeout(computerTimerRef.current);
-      computerTimerRef.current = null;
-    }
-    gameSessionRef.current = null;
-    setGameSession(null);
-  }
-
-  function sendGameMessage(msg: GameMessage, peerIds?: string[]) {
-    const me = profile?.peerId;
-    const activeCall = callRef.current;
-    const ids =
-      peerIds ??
-      (activeCall?.mode === "direct"
-        ? [activeCall.peerId]
-        : activeCall?.mode === "room"
-          ? activeCall.participants.filter((p) => p.peerId !== me).map((p) => p.peerId)
-          : Array.from(dcsRef.current.keys()));
-    for (const id of ids) {
-      const dc = dcsRef.current.get(id);
-      if (!dc || dc.readyState !== "open") continue;
-      try {
-        dc.send(JSON.stringify(msg));
-      } catch {
-        // канал мог закрыться между проверкой и отправкой
-      }
-    }
-    if (!me) return;
-    const roomId = activeCall?.mode === "room" ? activeCall.roomId : undefined;
-    for (const id of ids) {
-      const env: WsEnvelope = { type: "game-message", fromPeerId: me, toPeerId: id, roomId, message: msg };
-      void window.lokameet.net.sendToPeer(id, env).catch(() => undefined);
-    }
-  }
-
-  function patchGameInviteChat(sessionId: string, status: "accepted" | "declined" | "cancelled") {
-    setChats((prev) =>
-      prev.map((m) =>
-        m.attachment?.kind === "game-invite" && m.attachment.sessionId === sessionId
-          ? { ...m, attachment: { ...m.attachment, status } }
-          : m
-      )
-    );
-  }
-
-  function showIncomingGameInvite(invite: IncomingGameInvite) {
-    if (gameInviteRef.current?.sessionId === invite.sessionId) return;
-    gameInviteRef.current = invite;
-    setGameInvite(invite);
-    playNotificationSound(messageSoundFile, messageSoundVolume);
-    revealChatUnlessInCall(invite.fromPeerId);
-  }
-
-  function gameStateMessage(session: GameSession): GameMessage {
+function titleOf(snap: Snapshot, chatId: string, t: (key: Key) => string): { name: string; color: string; photo?: string; focus?: AvatarFocus } {
+  const meta = snap.threads?.[chatId];
+  if (chatId.startsWith("dm:")) {
+    const peer = personById(snap, chatId.slice(3));
     return {
-      t: "game",
-      action: "state",
-      sessionId: session.sessionId,
-      gameId: session.gameId,
-      hostPeerId: session.hostPeerId,
-      white: session.white,
-      black: session.black,
-      snapshot: session.snapshot
+      name: peer?.name || meta?.title || t("chats.direct"),
+      color: peer?.color || meta?.color || "#4c8dff",
+      photo: peer?.avatar || meta?.photo,
+      focus: peer?.avatarFocus || meta?.avatarFocus,
     };
   }
-
-  function broadcastGameState(session: GameSession) {
-    sendGameMessage(gameStateMessage(session));
-  }
-
-  function colorForPeer(session: GameSession, peerId: string) {
-    if (session.white.peerId === peerId) return "white" as const;
-    if (session.black.peerId === peerId) return "black" as const;
-    return null;
-  }
-
-  function scheduleComputerTurn(session: GameSession) {
-    if (computerTimerRef.current) {
-      window.clearTimeout(computerTimerRef.current);
-      computerTimerRef.current = null;
-    }
-    if (!session.vsComputer || session.snapshot.winner) return;
-    const aiColor: "white" | "black" | null =
-      session.black.peerId === COMPUTER_PEER_ID ? "black" : session.white.peerId === COMPUTER_PEER_ID ? "white" : null;
-    if (!aiColor) return;
-    if (session.snapshot.drawOfferedBy && session.snapshot.drawOfferedBy !== aiColor) {
-      computerTimerRef.current = window.setTimeout(() => {
-        computerTimerRef.current = null;
-        const current = gameSessionRef.current;
-        if (!current || current.sessionId !== session.sessionId || !current.vsComputer) return;
-        const declined = { ...current, snapshot: withDrawOffer(current.snapshot, null) };
-        gameSessionRef.current = declined;
-        setGameSession(declined);
-      }, 350);
-      return;
-    }
-    if (session.snapshot.kind === "battleship" && session.snapshot.phase !== "battle") return;
-    if (session.snapshot.turn !== aiColor) return;
-    const delay = session.vsComputer === "hard" ? 380 : session.vsComputer === "medium" ? 240 : 140;
-    const difficulty = session.vsComputer;
-    computerTimerRef.current = window.setTimeout(() => {
-      computerTimerRef.current = null;
-      const current = gameSessionRef.current;
-      if (!current || current.sessionId !== session.sessionId || !current.vsComputer) return;
-      if (current.snapshot.winner || current.snapshot.turn !== aiColor) return;
-      const path = chooseComputerMove(current.snapshot, aiColor, difficulty);
-      if (!path) return;
-      const snap = applyGameMove(current.snapshot, path);
-      if (!snap) return;
-      const next = { ...current, snapshot: snap, localRematch: false, remoteRematch: false };
-      gameSessionRef.current = next;
-      setGameSession(next);
-      scheduleComputerTurn(next);
-    }, delay);
-  }
-
-  function applyHostSnapshot(next: GameSession) {
-    gameSessionRef.current = next;
-    setGameSession(next);
-    if (next.vsComputer) scheduleComputerTurn(next);
-    else broadcastGameState(next);
-  }
-
-  function openPlayerSession(params: {
-    sessionId: string;
-    gameId: GameId;
-    hostPeerId: string;
-    white: GamePlayer;
-    black: GamePlayer;
-    snapshot: GameSession["snapshot"];
-    me: string;
-  }) {
-    const current = gameSessionRef.current;
-    const myColor = params.white.peerId === params.me ? "white" : params.black.peerId === params.me ? "black" : null;
-    const session: GameSession = {
-      sessionId: params.sessionId,
-      gameId: params.gameId,
-      hostPeerId: params.hostPeerId,
-      white: params.white,
-      black: params.black,
-      role: myColor ? "player" : "spectator",
-      myColor,
-      snapshot: params.snapshot,
-      collapsed: current?.sessionId === params.sessionId ? current.collapsed : false,
-      localRematch: false,
-      remoteRematch: false
+  if (chatId.startsWith("room:")) {
+    const room = snap.rooms.find((item) => item.id === chatId.slice(5));
+    const fromSys = roomNameFromMessages(snap.messages[chatId] ?? []);
+    return {
+      name: room?.name || meta?.title || fromSys || t("chats.group"),
+      color: meta?.color || "#2f6fed",
+      photo: meta?.photo,
+      focus: meta?.avatarFocus,
     };
-    gameSessionRef.current = session;
-    setGameSession(session);
-    setGameInvite(null);
-    setOutgoingGameInvite(null);
-    setGamesMenuOpen(false);
-    if (callRef.current) {
-      if (session.collapsed) {
-        const opened = { ...session, collapsed: false };
-        gameSessionRef.current = opened;
-        setGameSession(opened);
-      }
-    } else {
-      const other = params.white.peerId === params.me ? params.black.peerId : params.white.peerId;
-      revealChatUnlessInCall(other);
-    }
-    return session;
   }
+  return { name: meta?.title || t("chats.pick"), color: meta?.color || "#2f6fed", photo: meta?.photo, focus: meta?.avatarFocus };
+}
 
-  function startComputerGame(gameId: GameId, difficulty: GameDifficulty) {
-    if (!profile) return;
-    if (gameSessionRef.current?.role === "player" && !gameSessionRef.current.vsComputer) return;
-    if (computerTimerRef.current) {
-      window.clearTimeout(computerTimerRef.current);
-      computerTimerRef.current = null;
-    }
-    let snapshot = createGameSnapshot(gameId);
-    if (gameId === "battleship") snapshot = applyGamePlace(snapshot, "black", randomFleet()) ?? snapshot;
-    const session: GameSession = {
-      sessionId: crypto.randomUUID(),
-      gameId,
-      hostPeerId: profile.peerId,
-      white: { peerId: profile.peerId, userName: profile.userName },
-      black: { peerId: COMPUTER_PEER_ID, userName: t("gamesComputerName") },
-      role: "player",
-      myColor: "white",
-      snapshot,
-      collapsed: false,
-      localRematch: false,
-      remoteRematch: false,
-      vsComputer: difficulty
-    };
-    gameSessionRef.current = session;
-    setGameSession(session);
-    setGamesMenuOpen(false);
-    setGameInvite(null);
-    outgoingGameInviteRef.current = null;
-    setOutgoingGameInvite(null);
+function roomNameFromMessages(messages: ChatMessage[]): string {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const text = messages[index].text || "";
+    if (!text.startsWith("sys:")) continue;
+    const name = text.split("\t")[2]?.trim();
+    if (name) return name;
+    const quoted = text.match(/[«"]([^»"]+)[»"]/);
+    if (quoted?.[1]) return quoted[1];
   }
+  return "";
+}
 
-  function inviteToGame(gameId: GameId, opponent: GamePlayer) {
-    if (!profile || !call) return;
-    if (gameSessionRef.current?.role === "player") return;
-    if (outgoingGameInviteRef.current) return;
-    const sessionId = crypto.randomUUID();
-    const invite = { sessionId, gameId, toPeerId: opponent.peerId, toUserName: opponent.userName };
-    outgoingGameInviteRef.current = invite;
-    setOutgoingGameInvite(invite);
-    setGamesMenuOpen(false);
-    sendGameMessage(
-      {
-        t: "game",
-        action: "invite",
-        sessionId,
-        gameId,
-        fromPeerId: profile.peerId,
-        fromUserName: profile.userName
-      },
-      [opponent.peerId]
-    );
-    if (outgoingGameInviteTimerRef.current) window.clearTimeout(outgoingGameInviteTimerRef.current);
-    outgoingGameInviteTimerRef.current = window.setTimeout(() => {
-      if (outgoingGameInviteRef.current?.sessionId === sessionId) {
-        sendGameMessage({ t: "game", action: "leave", sessionId }, [opponent.peerId]);
-        patchGameInviteChat(sessionId, "cancelled");
-        outgoingGameInviteRef.current = null;
-        setOutgoingGameInvite(null);
-      }
-    }, 60000);
-    const chatScope =
-      call.mode === "direct" ? { type: "direct" as const, peerId: call.peerId } : { type: "room" as const, roomId: call.roomId };
-    void sendChatStatus(chatScope, t("chatStatusGameInviteNamed", { game: t(getGameCatalogItem(gameId)?.titleKey ?? "games") }), {
-      kind: "game-invite",
-      sessionId,
-      gameId,
-      status: "pending"
-    });
-    revealChatUnlessInCall(opponent.peerId);
+function peerOf(snap: Snapshot, chatId: string): PeerInfo | undefined {
+  if (!chatId.startsWith("dm:")) return undefined;
+  return personById(snap, chatId.slice(3));
+}
+
+async function sniffFile(file: File): Promise<"photo" | "anim" | "video" | "file"> {
+  const name = file.name.toLowerCase();
+  const type = file.type.toLowerCase();
+  const head = new Uint8Array(await file.slice(0, 32).arrayBuffer());
+  const ascii = String.fromCharCode(...head.slice(0, 16));
+  if (ascii.startsWith("GIF8")) return "anim";
+  if (head[0] === 0x89 && head[1] === 0x50) {
+    const sample = new TextDecoder("latin1").decode(new Uint8Array(await file.slice(0, 65536).arrayBuffer()));
+    return sample.includes("acTL") ? "anim" : "photo";
   }
-
-  function acceptGameInvite(invite?: IncomingGameInvite | null) {
-    const target =
-      invite && typeof invite === "object" && "sessionId" in invite && "fromPeerId" in invite
-        ? invite
-        : (gameInviteRef.current ?? gameInvite);
-    if (!target) return;
-    sendGameMessage({ t: "game", action: "accept", sessionId: target.sessionId, gameId: target.gameId }, [
-      target.fromPeerId
-    ]);
-    patchGameInviteChat(target.sessionId, "accepted");
-    setGameInvite(null);
-    const gameTitle = t(getGameCatalogItem(target.gameId)?.titleKey ?? "games");
-    const scope = gameChatScopeForPeer(target.fromPeerId);
-    if (scope) void sendChatStatus(scope, t("chatStatusGameInviteAcceptedNamed", { game: gameTitle }));
-    if (callRef.current) {
-      const session = gameSessionRef.current;
-      if (session?.collapsed) {
-        const opened = { ...session, collapsed: false };
-        gameSessionRef.current = opened;
-        setGameSession(opened);
-      }
-    } else {
-      revealChatUnlessInCall(target.fromPeerId);
-    }
+  if (ascii.startsWith("RIFF") && ascii.slice(8, 12) === "WEBP") {
+    const sample = new TextDecoder("latin1").decode(new Uint8Array(await file.slice(0, 65536).arrayBuffer()));
+    return sample.includes("ANIM") || sample.includes("ANMF") ? "anim" : "photo";
   }
-
-  function declineGameInvite(invite?: IncomingGameInvite | null) {
-    const target =
-      invite && typeof invite === "object" && "sessionId" in invite && "fromPeerId" in invite
-        ? invite
-        : (gameInviteRef.current ?? gameInvite);
-    if (!target) return;
-    sendGameMessage({ t: "game", action: "decline", sessionId: target.sessionId, gameId: target.gameId }, [
-      target.fromPeerId
-    ]);
-    patchGameInviteChat(target.sessionId, "declined");
-    setGameInvite(null);
-    const gameTitle = t(getGameCatalogItem(target.gameId)?.titleKey ?? "games");
-    const scope = gameChatScopeForPeer(target.fromPeerId);
-    if (scope) void sendChatStatus(scope, t("chatStatusGameInviteDeclinedNamed", { game: gameTitle }));
-    if (!callRef.current) revealChatUnlessInCall(target.fromPeerId);
+  if (ascii.startsWith("RIFF") && ascii.slice(8, 12) === "AVI ") return "video";
+  if (head[0] === 0xff && head[1] === 0xd8) return "photo";
+  if (head[0] === 0x42 && head[1] === 0x4d) return "photo";
+  if (ascii.slice(4, 8) === "ftyp") {
+    const brand = ascii.slice(8, 12).toLowerCase();
+    if (brand.startsWith("hei") || brand === "avif" || brand === "avis" || brand === "mif1") return "photo";
+    return "video";
   }
+  if (head[0] === 0x1a && head[1] === 0x45 && head[2] === 0xdf && head[3] === 0xa3) return "video";
+  if (type.startsWith("video/") || /\.(mp4|webm|mov|mkv|avi|m4v|ogv|qt)$/.test(name)) return "video";
+  if (type === "image/gif" || name.endsWith(".gif") || name.endsWith(".apng")) return "anim";
+  if (type.startsWith("image/") || /\.(png|jpe?g|webp|bmp|avif|heic|heif)$/.test(name)) return "photo";
+  return "file";
+}
 
-  function cancelOutgoingGameInvite() {
-    const pending = outgoingGameInviteRef.current ?? outgoingGameInvite;
-    if (!pending) return;
-    sendGameMessage(
-      { t: "game", action: "leave", sessionId: pending.sessionId },
-      [pending.toPeerId]
-    );
-    patchGameInviteChat(pending.sessionId, "cancelled");
-    outgoingGameInviteRef.current = null;
-    setOutgoingGameInvite(null);
-  }
+function sightKind(sight: "photo" | "anim" | "video" | "file"): ChatMessage["kind"] {
+  if (sight === "photo") return "image";
+  if (sight === "anim") return "gif";
+  if (sight === "video") return "video";
+  return "file";
+}
 
-  function watchCurrentGame() {
-    if (!watchOffer || !profile) return;
-    openPlayerSession({ ...watchOffer, me: profile.peerId });
-    sendGameMessage({ t: "game", action: "watch-join", sessionId: watchOffer.sessionId }, [watchOffer.hostPeerId]);
-    setGamesMenuOpen(false);
-  }
+function looksVideo(file: { mime?: string; name?: string }): boolean {
+  const mime = (file.mime || "").toLowerCase();
+  if (mime.startsWith("audio/")) return false;
+  if (mime.startsWith("video/")) return true;
+  const name = (file.name || "").toLowerCase();
+  return /\.(mp4|m4v|mov|mkv|avi|ogv|qt)$/.test(name) || (name.endsWith(".webm") && mime.length > 0);
+}
 
-  function endGameSession(statusText?: string) {
-    const session = gameSessionRef.current;
-    const activeCall = callRef.current;
-    if (computerTimerRef.current) {
-      window.clearTimeout(computerTimerRef.current);
-      computerTimerRef.current = null;
-    }
-    if (session?.role === "player" && !session.vsComputer) {
-      sendGameMessage({ t: "game", action: "leave", sessionId: session.sessionId });
-    }
-    if (session && statusText && profile && activeCall) {
-      const chatScope =
-        activeCall.mode === "direct"
-          ? { type: "direct" as const, peerId: activeCall.peerId }
-          : { type: "room" as const, roomId: activeCall.roomId };
-      void sendChatStatus(chatScope, statusText);
-    }
-    gameSessionRef.current = null;
-    setGameSession(null);
-    setWatchOffer(null);
-  }
+function mimeOf(file: File): string {
+  const type = file.type.toLowerCase();
+  if (type && type !== "application/octet-stream") return file.type;
+  const name = file.name.toLowerCase();
+  if (name.endsWith(".gif")) return "image/gif";
+  if (name.endsWith(".png")) return "image/png";
+  if (name.endsWith(".webp")) return "image/webp";
+  if (name.endsWith(".jpg") || name.endsWith(".jpeg")) return "image/jpeg";
+  if (name.endsWith(".mp4") || name.endsWith(".m4v")) return "video/mp4";
+  if (name.endsWith(".webm")) return "video/webm";
+  if (name.endsWith(".mov") || name.endsWith(".qt")) return "video/quicktime";
+  if (name.endsWith(".mkv")) return "video/x-matroska";
+  if (name.endsWith(".avi")) return "video/x-msvideo";
+  if (name.endsWith(".ogv")) return "video/ogg";
+  return file.type || "application/octet-stream";
+}
 
-  function handleIncomingGameMessage(fromPeerId: string, msg: GameMessage) {
-    if (!profile) return;
-    const me = profile.peerId;
-
-    if (msg.action === "invite") {
-      if (gameSessionRef.current?.role === "player" || outgoingGameInviteRef.current) {
-        sendGameMessage({ t: "game", action: "decline", sessionId: msg.sessionId, gameId: msg.gameId }, [fromPeerId]);
-        return;
-      }
-      showIncomingGameInvite({
-        sessionId: msg.sessionId,
-        gameId: msg.gameId,
-        fromPeerId: msg.fromPeerId,
-        fromUserName: msg.fromUserName
-      });
-      return;
-    }
-
-    if (msg.action === "decline") {
-      if (outgoingGameInviteRef.current?.sessionId === msg.sessionId) {
-        const name = outgoingGameInviteRef.current.toUserName;
-        outgoingGameInviteRef.current = null;
-        setOutgoingGameInvite(null);
-        patchGameInviteChat(msg.sessionId, "declined");
-        setError(t("gameInviteDeclined", { name }));
-      }
-      return;
-    }
-
-    if (msg.action === "accept") {
-      const pending = outgoingGameInviteRef.current;
-      if (!pending || pending.sessionId !== msg.sessionId) return;
-      if (outgoingGameInviteTimerRef.current) {
-        window.clearTimeout(outgoingGameInviteTimerRef.current);
-        outgoingGameInviteTimerRef.current = null;
-      }
-      const session = openPlayerSession({
-        sessionId: pending.sessionId,
-        gameId: pending.gameId,
-        hostPeerId: me,
-        white: { peerId: me, userName: profile.userName },
-        black: { peerId: pending.toPeerId, userName: pending.toUserName },
-        snapshot: createGameSnapshot(pending.gameId),
-        me
-      });
-      outgoingGameInviteRef.current = null;
-      setOutgoingGameInvite(null);
-      patchGameInviteChat(pending.sessionId, "accepted");
-      broadcastGameState(session);
-      const activeCall = callRef.current;
-      if (activeCall) {
-        const chatScope =
-          activeCall.mode === "direct"
-            ? { type: "direct" as const, peerId: activeCall.peerId }
-            : { type: "room" as const, roomId: activeCall.roomId };
-        void sendChatStatus(chatScope, t("chatStatusGameStartNamed", { game: t(getGameCatalogItem(pending.gameId)?.titleKey ?? "games") }));
-      }
-      return;
-    }
-
-    if (msg.action === "state" || msg.action === "watch-offer") {
-      const offer: WatchOffer = {
-        sessionId: msg.sessionId,
-        gameId: msg.gameId,
-        hostPeerId: msg.hostPeerId,
-        white: msg.white,
-        black: msg.black,
-        snapshot: msg.snapshot
-      };
-      const amPlayer = offer.white.peerId === me || offer.black.peerId === me;
-      const current = gameSessionRef.current;
-      if (amPlayer || current?.sessionId === offer.sessionId) {
-        openPlayerSession({ ...offer, me });
-      } else {
-        setWatchOffer(offer);
-      }
-      return;
-    }
-
-    if (msg.action === "place") {
-      const session = gameSessionRef.current;
-      if (!session || session.sessionId !== msg.sessionId || session.hostPeerId !== me) return;
-      const color = colorForPeer(session, fromPeerId);
-      if (!color) return;
-      const nextSnap = applyGamePlace(session.snapshot, color, msg.ships);
-      if (!nextSnap) return;
-      applyHostSnapshot({ ...session, snapshot: nextSnap });
-      return;
-    }
-
-    if (msg.action === "move") {
-      const session = gameSessionRef.current;
-      if (!session || session.sessionId !== msg.sessionId || session.hostPeerId !== me) return;
-      const nextSnap = applyGameMove(session.snapshot, msg.path);
-      if (!nextSnap) return;
-      applyHostSnapshot({ ...session, snapshot: nextSnap, localRematch: false, remoteRematch: false });
-      return;
-    }
-
-    if (msg.action === "resign") {
-      const session = gameSessionRef.current;
-      if (!session || session.sessionId !== msg.sessionId || session.hostPeerId !== me) return;
-      const color = colorForPeer(session, fromPeerId);
-      if (!color) return;
-      applyHostSnapshot({ ...session, snapshot: applyGameResign(session.snapshot, color) });
-      return;
-    }
-
-    if (msg.action === "draw-offer") {
-      const session = gameSessionRef.current;
-      if (!session || session.sessionId !== msg.sessionId || session.hostPeerId !== me) return;
-      const color = colorForPeer(session, fromPeerId);
-      if (!color) return;
-      applyHostSnapshot({ ...session, snapshot: withDrawOffer(session.snapshot, color) });
-      return;
-    }
-
-    if (msg.action === "draw-accept") {
-      const session = gameSessionRef.current;
-      if (!session || session.sessionId !== msg.sessionId || session.hostPeerId !== me) return;
-      applyHostSnapshot({ ...session, snapshot: applyGameDraw(session.snapshot) });
-      return;
-    }
-
-    if (msg.action === "draw-decline") {
-      const session = gameSessionRef.current;
-      if (!session || session.sessionId !== msg.sessionId || session.hostPeerId !== me) return;
-      applyHostSnapshot({ ...session, snapshot: withDrawOffer(session.snapshot, null) });
-      return;
-    }
-
-    if (msg.action === "rematch") {
-      const session = gameSessionRef.current;
-      if (!session || session.sessionId !== msg.sessionId) return;
-      if (session.hostPeerId !== me) {
-        setGameSession((prev) => {
-          if (!prev) return prev;
-          const next = { ...prev, remoteRematch: true };
-          gameSessionRef.current = next;
-          return next;
-        });
-        return;
-      }
-      if (session.localRematch) {
-        const white = session.black;
-        const black = session.white;
-        applyHostSnapshot({
-          ...session,
-          white,
-          black,
-          myColor: white.peerId === me ? "white" : "black",
-          snapshot: createGameSnapshot(session.gameId, session.snapshot.score),
-          localRematch: false,
-          remoteRematch: false
-        });
-      } else {
-        const next = { ...session, remoteRematch: true };
-        gameSessionRef.current = next;
-        setGameSession(next);
-      }
-      return;
-    }
-
-    if (msg.action === "leave") {
-      if (gameSessionRef.current?.sessionId === msg.sessionId) {
-        gameSessionRef.current = null;
-        setGameSession(null);
-      }
-      setWatchOffer((prev) => (prev?.sessionId === msg.sessionId ? null : prev));
-      setGameInvite((prev) => (prev?.sessionId === msg.sessionId ? null : prev));
-      if (outgoingGameInviteRef.current?.sessionId === msg.sessionId) {
-        outgoingGameInviteRef.current = null;
-        setOutgoingGameInvite(null);
-      }
-      patchGameInviteChat(msg.sessionId, "cancelled");
-      return;
-    }
-
-    if (msg.action === "watch-join") {
-      const session = gameSessionRef.current;
-      if (!session || session.sessionId !== msg.sessionId || session.hostPeerId !== me) return;
-      sendGameMessage(gameStateMessage(session), [fromPeerId]);
-    }
-  }
-
-  function syncGameToPeer(peerId: string) {
-    const session = gameSessionRef.current;
-    if (!session || session.role !== "player") return;
-    sendGameMessage(gameStateMessage(session), [peerId]);
-  }
-
-  handleGameMessageRef.current = handleIncomingGameMessage;
-  syncGameToPeerRef.current = syncGameToPeer;
-
-  function hostApplyOrSend(session: GameSession, msg: GameMessage, next: GameSession | null) {
-    if (!profile) return;
-    if (session.hostPeerId === profile.peerId) {
-      if (next) applyHostSnapshot(next);
-      return;
-    }
-    sendGameMessage(msg, [session.hostPeerId]);
-  }
-
-  function onGameMove(path: Square[]) {
-    const session = gameSessionRef.current;
-    if (!session || !profile || session.role !== "player" || session.myColor !== session.snapshot.turn) return;
-    const snap = session.hostPeerId === profile.peerId ? applyGameMove(session.snapshot, path) : null;
-    hostApplyOrSend(session, { t: "game", action: "move", sessionId: session.sessionId, path }, snap ? { ...session, snapshot: snap, localRematch: false, remoteRematch: false } : null);
-  }
-
-  function onGamePlace(ships: BattleshipShip[]) {
-    const session = gameSessionRef.current;
-    if (!session || !profile || session.role !== "player" || !session.myColor) return;
-    const snap = session.hostPeerId === profile.peerId ? applyGamePlace(session.snapshot, session.myColor, ships) : null;
-    hostApplyOrSend(session, { t: "game", action: "place", sessionId: session.sessionId, ships }, snap ? { ...session, snapshot: snap } : null);
-  }
-
-  function onGameResign() {
-    const session = gameSessionRef.current;
-    if (!session || !profile || !session.myColor || session.role !== "player") return;
-    hostApplyOrSend(
-      session,
-      { t: "game", action: "resign", sessionId: session.sessionId },
-      session.hostPeerId === profile.peerId ? { ...session, snapshot: applyGameResign(session.snapshot, session.myColor) } : null
-    );
-  }
-
-  function onGameDrawOffer() {
-    const session = gameSessionRef.current;
-    if (!session || !profile || !session.myColor || session.role !== "player") return;
-    hostApplyOrSend(
-      session,
-      { t: "game", action: "draw-offer", sessionId: session.sessionId },
-      session.hostPeerId === profile.peerId ? { ...session, snapshot: withDrawOffer(session.snapshot, session.myColor) } : null
-    );
-  }
-
-  function onGameDrawAccept() {
-    const session = gameSessionRef.current;
-    if (!session || !profile || session.role !== "player") return;
-    hostApplyOrSend(
-      session,
-      { t: "game", action: "draw-accept", sessionId: session.sessionId },
-      session.hostPeerId === profile.peerId ? { ...session, snapshot: applyGameDraw(session.snapshot) } : null
-    );
-  }
-
-  function onGameDrawDecline() {
-    const session = gameSessionRef.current;
-    if (!session || !profile || session.role !== "player") return;
-    hostApplyOrSend(
-      session,
-      { t: "game", action: "draw-decline", sessionId: session.sessionId },
-      session.hostPeerId === profile.peerId ? { ...session, snapshot: withDrawOffer(session.snapshot, null) } : null
-    );
-  }
-
-  function onGameRematch() {
-    const session = gameSessionRef.current;
-    if (!session || !profile || session.role !== "player") return;
-    if (session.vsComputer) {
-      let snapshot = createGameSnapshot(session.gameId, session.snapshot.score);
-      if (session.gameId === "battleship") snapshot = applyGamePlace(snapshot, "black", randomFleet()) ?? snapshot;
-      const next = { ...session, snapshot, localRematch: false, remoteRematch: false, myColor: "white" as const };
-      gameSessionRef.current = next;
-      setGameSession(next);
-      scheduleComputerTurn(next);
-      return;
-    }
-    const withLocal = { ...session, localRematch: true };
-    gameSessionRef.current = withLocal;
-    setGameSession(withLocal);
-    if (session.hostPeerId === profile.peerId) {
-      if (session.remoteRematch) {
-        const white = session.black;
-        const black = session.white;
-        applyHostSnapshot({
-          ...withLocal,
-          white,
-          black,
-          myColor: white.peerId === profile.peerId ? "white" : "black",
-          snapshot: createGameSnapshot(session.gameId, session.snapshot.score),
-          localRematch: false,
-          remoteRematch: false
-        });
-      }
-      return;
-    }
-    sendGameMessage({ t: "game", action: "rematch", sessionId: session.sessionId }, [session.hostPeerId]);
-  }
-
-  function onGameLeave() {
-    endGameSession(gameSessionRef.current?.role === "player" ? t("chatStatusGameEndNamed", { game: t(getGameCatalogItem(gameSessionRef.current.gameId)?.titleKey ?? "games") }) : undefined);
-  }
-
-  async function leaveCall() {
-    const activeCall = callRef.current;
-    void window.lokameet.log.write({
-      level: "INFO",
-      scope: "renderer/call",
-      msg: "leaveCall",
-      data: activeCall
-        ? { mode: activeCall.mode, peerId: "peerId" in activeCall ? activeCall.peerId : undefined, roomId: "roomId" in activeCall ? activeCall.roomId : undefined }
-        : { mode: "none" }
-    });
-    await stopCallRecording().catch(() => undefined);
-    setRemoteRecordings([]);
-    if (activeCall?.mode === "direct") {
-      clearPendingCall(activeCall.peerId);
-      intentionalPeerDisconnectsRef.current.add(activeCall.peerId);
-    }
-    if (isSharing && isScreenShareCall(activeCall) && profile) {
-      await broadcastScreenShareSignal({ type: "screen-share-stop" }).catch(() => undefined);
-    }
-    stopAllPeerConnections();
-    setConferenceCall(null);
-    setCallStartedAt(null);
-    stopLocalMedia();
-    if (isBusyStatus(profileStatusRef.current)) {
-      const restore = prevStatusRef.current && !isBusyStatus(prevStatusRef.current) ? prevStatusRef.current : "online";
-      prevStatusRef.current = null;
-      try {
-        const updated = await window.lokameet.app.updateProfile({ status: restore });
-        setProfile(updated);
-      } catch {
-        // статус догонит useEffect
-      }
-    }
-    if (activeCall?.mode === "direct" && profile) {
-      await sendDirectChatStatus(activeCall.peerId, t("chatStatusLeft"));
-    }
-    if (activeCall?.mode === "room" && profile) {
-      if (activeCall.hostPeerId === profile.peerId) {
-        await window.lokameet.room.close(activeCall.roomId);
-      } else {
-        await window.lokameet.net
-          .sendToPeer(activeCall.signalHubPeerId, {
-            type: "room-leave",
-            roomId: activeCall.roomId,
-            peerId: profile.peerId
-          })
-          .catch(() => undefined);
-      }
-    }
-  }
-
-  async function setTheme(theme: UserProfile["theme"]) {
-    if (!profile) return;
-    document.documentElement.dataset.theme = theme;
-    const updated = await window.lokameet.app.updateProfile({ theme });
-    setProfile(updated);
-  }
-
-  function avatarPositionFor(peerId: string) {
-    if (profile?.peerId === peerId) return profile.avatarPosition;
-    return peers.find((peer) => peer.peerId === peerId)?.avatarPosition ?? manualPeers.find((peer) => peer.peerId === peerId)?.avatarPosition;
-  }
-
-  async function commitAvatarPosition(avatarPosition: AvatarPosition) {
-    if (!profile) return;
-    setProfile({ ...profile, avatarPosition });
-    try {
-      const updated = await window.lokameet.app.updateProfile({ avatarPosition });
-      setProfile(updated);
-    } catch {
-      setError(t("errAvatarPosition"));
-    }
-  }
-
-  async function setAvatarPosition(axis: "x" | "y" | "zoom", value: number) {
-    if (!profile) return;
-    const current = profile.avatarPosition ?? { x: 50, y: 50, zoom: 100 };
-    const clamped =
-      axis === "zoom" ? Math.max(100, Math.min(300, value)) : Math.max(0, Math.min(100, value));
-    await commitAvatarPosition({ ...current, zoom: current.zoom ?? 100, [axis]: clamped });
-  }
-
-  async function chooseAvatar() {
-    if (!profile) return;
-    const sourcePath = await window.lokameet.app.showOpenDialog({
-      filters: [{ name: "Images", extensions: ["jpg", "jpeg", "png", "webp"] }]
-    });
-    if (!sourcePath) return;
-    try {
-      const avatar = await window.lokameet.avatar.saveFromPath(sourcePath);
-      setProfile({ ...profile, avatarHash: avatar.avatarHash });
-      setAvatarUrls((current) => ({ ...current, [profile.peerId]: avatar.dataUrl }));
-    } catch (err) {
-      setError(t("errAvatarSave", { msg: String((err as Error).message ?? err) }));
-    }
-  }
-
-  async function removeAvatar() {
-    if (!profile) return;
-    try {
-      await window.lokameet.avatar.remove();
-      setProfile({ ...profile, avatarHash: undefined });
-      setAvatarUrls((current) => {
-        const next = { ...current };
-        delete next[profile.peerId];
-        return next;
-      });
-      setAvatarViewer((current) => (current?.peerId === profile.peerId ? null : current));
-    } catch (err) {
-      setError(`Не удалось удалить аватар: ${String((err as Error).message ?? err)}`);
-    }
-  }
-
-  function openOwnAvatarEditor() {
-    if (!profile) return;
-    setAvatarViewer({ peerId: profile.peerId, name: profile.userName });
-  }
-
-  async function updateStatus(status: AvailabilityStatus) {
-    if (!profile) return;
-    autoAwayAppliedRef.current = false;
-    lastActivityRef.current = Date.now();
-    const updated = await window.lokameet.app.updateProfile({ status });
-    setProfile(updated);
-  }
-
-  async function updateName() {
-    if (!profile) return;
-    setPendingName(profile.userName);
-    setPendingStatus(
-      profile.status === "in_call" || profile.status === "in_conference" ? "online" : profile.status
-    );
-    setNameDialogExitsApp(false);
-    setNameDialogOpen(true);
-  }
-
-  async function toggleLanguage() {
-    if (!profile) return;
-    const next = profile.language === "ru" ? "en" : "ru";
-    await i18n.changeLanguage(next);
-    document.documentElement.lang = next;
-    const updated = await window.lokameet.app.updateProfile({ language: next });
-    setProfile(updated);
-  }
-
-  function upsertFileTransfer(item: FileTransferItem, opts?: { force?: boolean }) {
-    const now = Date.now();
-    const last = fileTransferUiThrottleRef.current.get(item.key) ?? 0;
-    if (!opts?.force && item.percent < 100 && now - last < 80) return;
-    fileTransferUiThrottleRef.current.set(item.key, now);
-    setFileTransfers((prev) => {
-      const idx = prev.findIndex((x) => x.key === item.key);
-      if (idx === -1) return [...prev, item];
-      const next = prev.slice();
-      next[idx] = item;
-      return next;
-    });
-  }
-
-  function removeFileTransfer(key: string, delayMs = 900) {
-    fileTransferUiThrottleRef.current.delete(key);
-    window.setTimeout(() => {
-      setFileTransfers((prev) => prev.filter((x) => x.key !== key));
-    }, delayMs);
-  }
-
-  function focusQuotedMessage(id: string) {
-    const el = document.getElementById(`msg-${id}`);
-    if (!el) return;
-    el.scrollIntoView({ block: "center", behavior: "smooth" });
-    el.classList.add("msgQuoteTarget");
-    window.setTimeout(() => el.classList.remove("msgQuoteTarget"), 1400);
-  }
-
-  async function sendChat(text: string, reply?: ChatReplyRef | null) {
-    if (!profile || !scope || !text.trim()) return;
-    const msg: ChatMessage = {
-      id: crypto.randomUUID(),
-      scope,
-      fromPeerId: profile.peerId,
-      fromUserName: profile.userName,
-      sentAt: Date.now(),
-      text: text.trim(),
-      ...(reply ? { reply } : {})
-    };
-
-    setChats((prev) => (prev.some((m) => m.id === msg.id) ? prev : [...prev, msg]));
-    await window.lokameet.chat.append(msg);
-
-    const env: WsEnvelope = { type: "chat-message", message: msg };
-    if (call) {
-      if (call.mode === "room") {
-        // Хост рассылает напрямую всем участникам
-        if (call.hostPeerId === profile.peerId) {
-          // Хост шлёт участникам напрямую (минуя сервер ради эффективности)
-          for (const p of call.participants) {
-            if (p.peerId === profile.peerId) continue;
-            await window.lokameet.net.sendToPeer(p.peerId, env).catch(() => undefined);
-          }
-        } else {
-          // Участник шлёт хосту через hub, хост разошлёт
-          await sendToHub(env);
-        }
-        return;
-      }
-      // Прямой звонок
-      await sendToHub(env);
-    } else if (scope.type === "direct") {
-      await ensureDirectSignaling(scope.peerId);
-      await window.lokameet.net.sendToPeer(scope.peerId, env).catch(() => undefined);
-    } else if (scope.type === "room") {
-      // Нужно слать хосту (только в звонке). Вне звонка — игнор.
-    }
-  }
-
-  // Смайлы вставляются в поле ввода (не отправляются сразу).
-
-  function bytesToBase64(bytes: Uint8Array) {
-    let bin = "";
-    const step = 0x4000;
-    for (let i = 0; i < bytes.length; i += step) {
-      let part = "";
-      const end = Math.min(bytes.length, i + step);
-      for (let j = i; j < end; j++) part += String.fromCharCode(bytes[j]);
-      bin += part;
-    }
-    return btoa(bin);
-  }
-
-  async function deliverFileEnvelope(
-    env: WsEnvelope,
-    plan:
-      | { kind: "direct"; peerId: string }
-      | { kind: "room-host"; peerIds: string[] }
-      | { kind: "room-guest"; hubPeerId: string; hubHost?: string; hubPort?: number }
-  ) {
-    if (plan.kind === "room-host") {
-      let any = false;
-      for (const peerId of plan.peerIds) {
-        const ok = await window.lokameet.net.sendToPeer(peerId, env).catch(() => false);
-        if (ok) any = true;
-      }
-      return any;
-    }
-    if (plan.kind === "room-guest") {
-      let ok = await window.lokameet.net.sendToPeer(plan.hubPeerId, env).catch(() => false);
-      if (!ok && plan.hubHost && plan.hubPort) {
-        await window.lokameet.net.connect(plan.hubHost, plan.hubPort).catch(() => undefined);
-        ok = await window.lokameet.net.sendToPeer(plan.hubPeerId, env).catch(() => false);
-      }
-      return Boolean(ok);
-    }
-    await ensureDirectSignaling(plan.peerId);
-    let ok = await window.lokameet.net.sendToPeer(plan.peerId, env).catch(() => false);
-    if (!ok) {
-      connectedPeersRef.current.delete(plan.peerId);
-      await ensureDirectSignaling(plan.peerId);
-      ok = await window.lokameet.net.sendToPeer(plan.peerId, env).catch(() => false);
-    }
-    return Boolean(ok);
-  }
-
-  async function sendFile(file: File) {
-    if (!profile || !scope) return;
-    const activeCall = callRef.current;
-    const me = profile.peerId;
-    let plan:
-      | { kind: "direct"; peerId: string }
-      | { kind: "room-host"; peerIds: string[] }
-      | { kind: "room-guest"; hubPeerId: string; hubHost?: string; hubPort?: number }
-      | null = null;
-    if (activeCall?.mode === "room" && scope.type === "room") {
-      if (activeCall.hostPeerId === me) {
-        plan = {
-          kind: "room-host",
-          peerIds: activeCall.participants.filter((p) => p.peerId !== me).map((p) => p.peerId)
-        };
-      } else {
-        plan = {
-          kind: "room-guest",
-          hubPeerId: activeCall.signalHubPeerId,
-          hubHost: activeCall.signalHubHost,
-          hubPort: activeCall.signalHubPort
-        };
-      }
-    } else if (scope.type === "direct") {
-      const peerId = activeCall?.mode === "direct" ? activeCall.peerId : scope.peerId;
-      plan = { kind: "direct", peerId };
-    }
-    if (!plan || (plan.kind === "room-host" && plan.peerIds.length === 0)) {
-      setError(t("fileTransferOnlyInCall"));
-      return;
-    }
-
-    const mime = file.type || mimeFromName(file.name);
-    const fileId = crypto.randomUUID();
+function videoPoster(file: File): Promise<string> {
+  return new Promise((resolve) => {
+    const video = document.createElement("video");
     const url = URL.createObjectURL(file);
-    fileUrlByIdRef.current.set(fileId, url);
-    fileTransferCancelRef.current.delete(fileId);
-    let previewDataUrl: string | undefined;
-    try {
-      previewDataUrl = await createFilePreviewDataUrl(file, { mime, name: file.name });
-    } catch {
-      previewDataUrl = undefined;
-    }
-
-    const buf = new Uint8Array(await file.arrayBuffer());
-    const chunkSize = 32 * 1024;
-    const total = Math.max(1, Math.ceil(buf.byteLength / chunkSize) || 1);
-    const roomId = plan.kind === "direct" ? undefined : scope.type === "room" ? scope.roomId : undefined;
-    const toPeerId = plan.kind === "direct" ? plan.peerId : undefined;
-    const peerLabel = plan.kind === "direct" ? plan.peerId : "room";
-    const aggregateKey = `send:${fileId}`;
-    upsertFileTransfer(
-      {
-        key: aggregateKey,
-        direction: "send",
-        peerId: peerLabel,
-        fileId,
-        fileName: file.name,
-        transferred: 0,
-        total: file.size,
-        percent: 0
-      },
-      { force: true }
-    );
-
-    let failed = false;
-    for (let index = 0; index < total; index++) {
-      if (fileTransferCancelRef.current.has(fileId)) break;
-      const slice = buf.subarray(index * chunkSize, Math.min(buf.byteLength, (index + 1) * chunkSize));
-      const env: WsEnvelope = {
-        type: "file-chunk",
-        id: fileId,
-        fromPeerId: me,
-        fromUserName: profile.userName,
-        toPeerId,
-        roomId,
-        name: file.name,
-        size: file.size,
-        mime,
-        index,
-        total,
-        data: bytesToBase64(slice)
-      };
-      const ok = await deliverFileEnvelope(env, plan);
-      if (!ok) {
-        failed = true;
-        fileTransferCancelRef.current.add(fileId);
-        const cancel: WsEnvelope = { type: "file-cancel", id: fileId, fromPeerId: me, toPeerId, roomId };
-        await deliverFileEnvelope(cancel, plan).catch(() => false);
-        setError(t("fileTransferFailed"));
-        break;
-      }
-      const percent = Math.min(99, Math.round(((index + 1) / total) * 100));
-      upsertFileTransfer({
-        key: aggregateKey,
-        direction: "send",
-        peerId: peerLabel,
-        fileId,
-        fileName: file.name,
-        transferred: Math.min(file.size, (index + 1) * chunkSize),
-        total: file.size,
-        percent
-      });
-      if (index % 4 === 3) await new Promise((resolve) => setTimeout(resolve, 0));
-    }
-
-    if (failed || fileTransferCancelRef.current.has(fileId)) {
-      fileTransferCancelRef.current.delete(fileId);
-      setFileTransfers((prev) => prev.filter((item) => item.key !== aggregateKey && item.fileId !== fileId));
-      fileUrlByIdRef.current.delete(fileId);
-      try {
-        URL.revokeObjectURL(url);
-      } catch {
-        // игнор
-      }
-      return;
-    }
-
-    upsertFileTransfer(
-      {
-        key: aggregateKey,
-        direction: "send",
-        peerId: peerLabel,
-        fileId,
-        fileName: file.name,
-        transferred: file.size,
-        total: file.size,
-        percent: 100
-      },
-      { force: true }
-    );
-    removeFileTransfer(aggregateKey);
-
-    const attachment: ChatAttachment = isVideoAttachmentMime(mime, file.name)
-      ? { kind: "video", fileId, name: file.name, size: file.size, mime, previewDataUrl }
-      : isImageAttachmentMime(mime, file.name)
-        ? { kind: "image", fileId, name: file.name, size: file.size, mime, previewDataUrl }
-        : { kind: "file", fileId, name: file.name, size: file.size, mime, previewDataUrl };
-    return attachment;
-  }
-
-  async function publishMediaMessage(
-    attachments: ChatAttachment[],
-    text: string,
-    reply: ChatReplyRef | null | undefined,
-    plan:
-      | { kind: "direct"; peerId: string }
-      | { kind: "room-host"; peerIds: string[] }
-      | { kind: "room-guest"; hubPeerId: string; hubHost?: string; hubPort?: number }
-  ) {
-    if (!profile || !scope || attachments.length === 0) return;
-    const caption = text.trim();
-    const message: ChatMessage = {
-      id: crypto.randomUUID(),
-      scope,
-      fromPeerId: profile.peerId,
-      fromUserName: profile.userName,
-      sentAt: Date.now(),
-      text: caption,
-      attachment: attachments[0],
-      attachments,
-      ...(reply ? { reply } : {})
+    let settled = false;
+    const finish = (value: string) => {
+      if (settled) return;
+      settled = true;
+      URL.revokeObjectURL(url);
+      resolve(value);
     };
-    setChats((prev) => (prev.some((item) => item.id === message.id) ? prev : [...prev, message]));
-    await window.lokameet.chat.append(message);
-    const delivered = await deliverFileEnvelope({ type: "chat-message", message }, plan);
-    if (!delivered) setError(t("fileTransferFailed"));
-  }
-
-  async function sendComposedChat(text: string, files: File[], reply?: ChatReplyRef | null) {
-    const caption = text.trim();
-    if (files.length === 0) {
-      await sendChat(caption, reply);
-      return;
-    }
-    if (!profile || !scope) return;
-    const activeCall = callRef.current;
-    const me = profile.peerId;
-    let plan:
-      | { kind: "direct"; peerId: string }
-      | { kind: "room-host"; peerIds: string[] }
-      | { kind: "room-guest"; hubPeerId: string; hubHost?: string; hubPort?: number }
-      | null = null;
-    if (activeCall?.mode === "room" && scope.type === "room") {
-      if (activeCall.hostPeerId === me) {
-        plan = {
-          kind: "room-host",
-          peerIds: activeCall.participants.filter((p) => p.peerId !== me).map((p) => p.peerId)
-        };
-      } else {
-        plan = {
-          kind: "room-guest",
-          hubPeerId: activeCall.signalHubPeerId,
-          hubHost: activeCall.signalHubHost,
-          hubPort: activeCall.signalHubPort
-        };
-      }
-    } else if (scope.type === "direct") {
-      const peerId = activeCall?.mode === "direct" ? activeCall.peerId : scope.peerId;
-      plan = { kind: "direct", peerId };
-    }
-    if (!plan || (plan.kind === "room-host" && plan.peerIds.length === 0)) {
-      setError(t("fileTransferOnlyInCall"));
-      return;
-    }
-    const attachments: ChatAttachment[] = [];
-    for (const file of files) {
-      const att = await sendFile(file);
-      if (att) attachments.push(att);
-    }
-    if (attachments.length === 0) return;
-    await publishMediaMessage(attachments, caption, reply, plan);
-  }
-
-  async function fileFromPastedPath(filePath: string) {
-    const read = await window.lokameet.app.readLocalFile(filePath).catch(() => null);
-    if (!read) return null;
-    const raw = read.data as unknown;
-    let bytes: Uint8Array;
-    if (raw instanceof Uint8Array) bytes = raw;
-    else if (raw instanceof ArrayBuffer) bytes = new Uint8Array(raw);
-    else if (raw && typeof raw === "object" && Array.isArray((raw as { data?: unknown }).data)) bytes = new Uint8Array((raw as { data: number[] }).data);
-    else return null;
-    if (bytes.byteLength === 0) return null;
-    return new File([toArrayBuffer(bytes)], read.name, { type: mimeFromName(read.name) });
-  }
-
-  function queuePastedFiles(files: File[]) {
-    if (files.length === 0) return;
-    queueChatPasteRef.current(files);
-  }
-
-  async function pasteBinaryFromClipboard() {
-    if (Date.now() - pasteLockRef.current < 500) return;
-    pasteLockRef.current = Date.now();
-    const payload = await window.lokameet.app.clipboardReadPaste().catch(() => null);
-    if (!payload) return;
-    if (payload.filePaths.length > 0) {
-      const files: File[] = [];
-      for (const filePath of payload.filePaths) {
-        const file = await fileFromPastedPath(filePath);
-        if (file) files.push(file);
-      }
-      queuePastedFiles(files);
-      return;
-    }
-    if (payload.imageDataUrl) queuePastedFiles([dataUrlToPngFile(payload.imageDataUrl)]);
-  }
-
-  function onChatPaste(e: React.ClipboardEvent) {
-    const el = e.target as HTMLElement | null;
-    if (el?.closest(".panelHeader")) return;
-    if (!chatDropScopeRef.current) return;
-    const files = collectPastedFiles(e.clipboardData);
-    if (files.length > 0) {
-      e.preventDefault();
-      e.stopPropagation();
-      pasteLockRef.current = Date.now();
-      queuePastedFiles(files);
-      return;
-    }
-    const types = e.clipboardData ? dataTransferTypeList(e.clipboardData) : [];
-    const pastedText = e.clipboardData?.getData("text/plain") ?? "";
-    const binaryHint = types.some((type) => type === "Files" || type.startsWith("image/") || /filename|uri-list|file/i.test(type));
-    if (!binaryHint && pastedText.trim()) return;
-    e.preventDefault();
-    e.stopPropagation();
-    pasteLockRef.current = Date.now();
-    void (async () => {
-      const payload = await window.lokameet.app.clipboardReadPaste().catch(() => null);
-      if (payload?.filePaths?.length) {
-        const files: File[] = [];
-        for (const filePath of payload.filePaths) {
-          const file = await fileFromPastedPath(filePath);
-          if (file) files.push(file);
-        }
-        if (files.length > 0) {
-          queuePastedFiles(files);
-          return;
-        }
-      }
-      if (payload?.imageDataUrl) {
-        queuePastedFiles([dataUrlToPngFile(payload.imageDataUrl)]);
+    const timer = window.setTimeout(() => finish(""), 4000);
+    const paint = () => {
+      window.clearTimeout(timer);
+      if (!video.videoWidth) {
+        finish("");
         return;
       }
-      if (pastedText.trim()) insertChatTextRef.current(pastedText);
-    })();
-  }
-
-  useEffect(() => {
-    if (isSettingsWindow) return;
-
-    const clearDropUi = () => {
-      chatDropDepthRef.current = 0;
-      if (chatDropHideTimerRef.current != null) {
-        window.clearTimeout(chatDropHideTimerRef.current);
-        chatDropHideTimerRef.current = null;
-      }
-      setChatFileDrop(false);
+      const scale = Math.min(1, 480 / video.videoWidth);
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round(video.videoWidth * scale));
+      canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
+      canvas.getContext("2d")?.drawImage(video, 0, 0, canvas.width, canvas.height);
+      finish(canvas.toDataURL("image/jpeg", 0.72));
     };
-
-    const onDragOver = (e: DragEvent) => {
-      // Electron: drop не придёт, пока dragover не preventDefault — даже если types ещё пустые.
-      e.preventDefault();
-      if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
-      if (!isFileDragEvent(e)) return;
-      if (chatDropScopeRef.current) setChatFileDrop(true);
-      if (chatDropHideTimerRef.current != null) window.clearTimeout(chatDropHideTimerRef.current);
-      chatDropHideTimerRef.current = window.setTimeout(() => setChatFileDrop(false), 200);
+    video.muted = true;
+    video.preload = "auto";
+    video.onloadeddata = () => {
+      if (video.duration > 0.3) video.currentTime = Math.min(0.4, video.duration / 4);
+      else paint();
     };
-
-    const onDrop = (e: DragEvent) => {
-      e.preventDefault();
-      const files = collectDroppedFiles(e);
-      clearDropUi();
-      if (files.length === 0) return;
-      queueChatPasteRef.current(files);
+    video.onseeked = paint;
+    video.onerror = () => {
+      window.clearTimeout(timer);
+      finish("");
     };
-
-    const onDragEnd = () => clearDropUi();
-
-    window.addEventListener("dragover", onDragOver, true);
-    window.addEventListener("drop", onDrop, true);
-    window.addEventListener("dragend", onDragEnd);
-    return () => {
-      window.removeEventListener("dragover", onDragOver, true);
-      window.removeEventListener("drop", onDrop, true);
-      window.removeEventListener("dragend", onDragEnd);
-      clearDropUi();
-    };
-  }, []);
-
-  function cancelOutgoingFileTransfer(fileId?: string) {
-    if (!fileId) return;
-    fileTransferCancelRef.current.add(fileId);
-    setFileTransfers((prev) => prev.filter((x) => !(x.direction === "send" && x.fileId === fileId)));
-    for (const dc of dcsRef.current.values()) {
-      if (dc.readyState !== "open") continue;
-      try {
-        dc.send(JSON.stringify({ t: "file-cancel", id: fileId }));
-      } catch {
-        // игнор
-      }
-    }
-  }
-
-  async function manualConnect() {
-    setError(null);
-    const host = manualHost.trim();
-    const port = Number(manualPort.trim());
-    if (!host || !Number.isFinite(port) || port <= 0 || port > 65535) {
-      setError(t("errBadHostPort"));
-      return;
-    }
-    try {
-      void window.lokameet.log.write({ level: "INFO", scope: "renderer/manual", msg: "connect", data: { host, port } });
-      const info = await window.lokameet.net.connect(host, port);
-      if (info.peerId === profile!.peerId) return;
-      const peer: PeerInfo = {
-        peerId: info.peerId,
-        userName: info.userName || "Peer",
-        status: (info.status as any) || "online",
-        statusText: info.statusText,
-        host,
-        port,
-        lastSeenAt: Date.now()
-      };
-      setManualPeers((prev) => {
-        const next = prev.filter((p) => p.peerId !== peer.peerId);
-        return [peer, ...next];
-      });
-    } catch (e: any) {
-      setError(`Не удалось подключиться: ${String(e?.message ?? e)}`);
-      void window.lokameet.log.write({ level: "ERROR", scope: "renderer/manual", msg: "connect failed", data: { host, port, error: String(e?.message ?? e) } });
-    }
-  }
-
-  const showGameView = Boolean(gameSession && !gameSession.collapsed && (call || gameSession.vsComputer));
-  const canReturnToGame = Boolean(gameSession && gameSession.collapsed && (call || gameSession.vsComputer));
-  const showRemoteScreenShareView = Boolean(
-    call && isScreenShareCall(call) && remoteScreenShare && !isSharing && !screenShareViewCollapsed && !showGameView
-  );
-  const canReturnToScreenShare = Boolean(
-    call && isScreenShareCall(call) && remoteScreenShare && !isSharing && screenShareViewCollapsed
-  );
-  const stageRemoteTiles = useMemo(() => {
-    if (call?.mode === "direct" && !remoteTracks.some((r) => r.peerId === call.peerId)) {
-      return [...remoteTracks, { peerId: call.peerId, userName: call.peerName, stream: new MediaStream() }];
-    }
-    return remoteTracks;
-  }, [call, remoteTracks]);
-  const remoteScreenRawStream = remoteScreenShare
-    ? (screenRemoteStreamsRef.current.get(remoteScreenShare.peerId) ??
-      remoteTracks.find((r) => r.peerId === remoteScreenShare.peerId)?.stream ??
-      null)
-    : null;
-  const remoteScreenTrackSig = remoteScreenRawStream
-    ? remoteScreenRawStream
-        .getTracks()
-        .map((t) => `${t.id}:${t.readyState}:${t.muted}:${t.enabled}`)
-        .join("|")
-    : "";
-  const remoteScreenStream = useMemo(() => {
-    if (!remoteScreenRawStream || !remoteScreenShare) return null;
-    return createScreenShareViewStream(
-      remoteScreenRawStream,
-      remoteScreenShare.screenAudioTrackId,
-      remoteScreenShare.screenVideoTrackId
-    );
-  }, [
-    remoteScreenRawStream,
-    remoteScreenShare?.peerId,
-    remoteScreenShare?.screenAudioTrackId,
-    remoteScreenShare?.screenVideoTrackId,
-    remoteScreenTrackSig,
-    screenRemoteEpoch
-  ]);
-  const remotePresenterCameraStream = useMemo(() => {
-    if (!remoteScreenShare) return null;
-    const callRemote = remoteTracks.find((r) => r.peerId === remoteScreenShare.peerId);
-    const cam =
-      remoteCameraOn[remoteScreenShare.peerId] === false
-        ? null
-        : (callRemote?.stream.getVideoTracks().find((t) => t.readyState === "live" && t.enabled && !t.muted) ??
-          (remoteScreenRawStream
-            ? findPresenterCameraTrack(remoteScreenRawStream, remoteScreenShare.screenVideoTrackId)
-            : null));
-    return cam ? new MediaStream([cam]) : null;
-  }, [
-    remoteTracks,
-    remoteScreenRawStream,
-    remoteScreenShare?.peerId,
-    remoteScreenShare?.screenVideoTrackId,
-    remoteScreenTrackSig,
-    screenRemoteEpoch,
-    remoteCameraOn
-  ]);
-  /** Плитка докладчика: картинка демонстрации и микрофон, без звука трансляции. */
-  const presenterTileStream = useMemo(() => {
-    if (!remoteScreenShare || !remoteScreenStream) return null;
-    const video = remoteScreenStream.getVideoTracks().find((t) => t.readyState !== "ended");
-    if (!video) return null;
-    const out = new MediaStream();
-    out.addTrack(video);
-    const callRemote = remoteTracks.find((r) => r.peerId === remoteScreenShare.peerId);
-    if (callRemote) {
-      const mic = getMicAudioTrack(callRemote.stream, remoteScreenShare.screenAudioTrackId);
-      if (mic && mic.readyState === "live") out.addTrack(mic);
-    }
-    return out;
-  }, [
-    remoteScreenStream,
-    remoteTracks,
-    remoteScreenShare?.peerId,
-    remoteScreenShare?.screenAudioTrackId
-  ]);
-  const localPresenterCameraStream = useMemo(() => {
-    if (!isSharing || !mediaCfg.videoEnabled) return null;
-    const local = localStreamRef.current;
-    const screenId = shareTrackRef.current?.id;
-    const cam = local?.getVideoTracks().find(
-      (t) =>
-        t !== shareTrackRef.current &&
-        t.readyState === "live" &&
-        t.enabled &&
-        !isScreenVideoTrack(t, screenId)
-    );
-    return cam ? new MediaStream([cam]) : null;
-  }, [isSharing, mediaCfg.videoEnabled, localStreamVer]);
-
-  if (!bootReady || !profile) {
-    const pct = bootProgress;
-    const label = t(bootLabel, { defaultValue: t("loading") });
-    return (
-      <div className="bootSplash" role="status" aria-live="polite" aria-busy="true">
-        <div className="bootSplashInner">
-          <img className="appLogo bootLogo" src={APP_ICON_SRC} alt="" />
-          <div className="bootBrand">{t("appName")}</div>
-          <div className="bootLabel">{label}</div>
-          <div className="bootBarTrack" aria-hidden="true">
-            <div className="bootBarFill" style={{ width: `${pct}%` }} />
-          </div>
-          <div className="bootPct">{pct}%</div>
-        </div>
-      </div>
-    );
-  }
-
-  const screenSharingPeerId = isSharing ? profile.peerId : remoteScreenShare?.peerId ?? null;
-  const peerIsRecording = (peerId: string) =>
-    peerId === profile.peerId ? recordingActive : remoteRecordings.some((item) => item.peerId === peerId);
-  const conferenceParticipants =
-    call?.mode === "room"
-      ? (() => {
-          const others = call.participants.filter((p) => p.peerId !== profile.peerId);
-          const self =
-            call.participants.find((p) => p.peerId === profile.peerId) ?? {
-              peerId: profile.peerId,
-              userName: profile.userName
-            };
-          return [self, ...others];
-        })()
-      : [];
-
-  return (
-    <div className={`app${isSettingsWindow ? " is-settings-window" : ""}`}>
-      <ChatMediaViewer view={chatMediaView} onClose={() => setChatMediaView(null)} />
-      {nameDialogOpen && (
-        <Modal title={t("promptYourName")} onClose={closeNameDialog}>
-          <div className="row" style={{ flexWrap: "wrap" }}>
-            <input className="btn grow" value={pendingName} onChange={(e) => setPendingName(e.target.value)} placeholder="User" />
-          </div>
-          <div className="row" style={{ marginTop: 10, flexWrap: "wrap" }}>
-            <div className="muted" style={{ width: 70 }}>
-              {t("status")}
-            </div>
-            <Select
-              className="grow"
-              value={pendingStatus}
-              onChange={(v) => setPendingStatus(v as AvailabilityStatus)}
-              options={[
-                { value: "online", label: t("status_online") },
-                { value: "away", label: t("status_away") },
-                { value: "dnd", label: t("status_dnd") },
-                { value: "offline", label: t("status_offline") }
-              ]}
-            />
-          </div>
-          <div className="row" style={{ marginTop: 10, flexWrap: "wrap", justifyContent: "flex-end" }}>
-            <button
-              className="btn btnPrimary"
-              onClick={() => {
-                const v = pendingName.trim();
-                if (!v) return;
-                autoAwayAppliedRef.current = false;
-                lastActivityRef.current = Date.now();
-                window.lokameet.app
-                  .updateProfile({ userName: v, hasChosenName: true, status: pendingStatus })
-                  .then((p) => setProfile(p))
-                  .catch((e) => setError(String(e?.message ?? e)))
-                  .finally(() => {
-                    setNameDialogExitsApp(false);
-                    setNameDialogOpen(false);
-                  });
-              }}
-            >
-              OK
-            </button>
-            <button className="btn" onClick={closeNameDialog}>
-              {t("cancel")}
-            </button>
-          </div>
-        </Modal>
-      )}
-
-      {roomDialogOpen && (
-        <Modal title={t("promptConfName")} onClose={() => setRoomDialogOpen(false)}>
-          <div className="row" style={{ flexWrap: "wrap" }}>
-            <input className="btn grow" value={roomNameDraft} onChange={(e) => setRoomNameDraft(e.target.value)} placeholder="Room" />
-          </div>
-          <div className="muted" style={{ fontSize: 12, marginTop: 8 }}>
-            {t("conferenceMaxHint", { max: MAX_CONFERENCE_PARTICIPANTS })}
-          </div>
-          <div className="row" style={{ marginTop: 10, flexWrap: "wrap" }}>
-            <input className="btn grow" value={roomPassDraft} onChange={(e) => setRoomPassDraft(e.target.value)} placeholder={t("promptPassword")} />
-            <button
-              className="btn btnPrimary"
-              onClick={() => {
-                setRoomDialogOpen(false);
-                void confirmCreateRoom();
-              }}
-            >
-              OK
-            </button>
-          </div>
-        </Modal>
-      )}
-
-      {roomJoinPassOpen && roomJoinTarget && (
-        <Modal
-          title={roomJoinFromInvite ? t("inviteJoinTitle") : t("promptPasswordEnter")}
-          onClose={() => {
-            setRoomJoinPassOpen(false);
-            setRoomJoinTarget(null);
-            setRoomJoinFromInvite(null);
-          }}
-        >
-          {roomJoinFromInvite && (
-            <div style={{ marginBottom: 10 }}>
-              <div style={{ fontWeight: 700 }}>{roomJoinTarget.roomName}</div>
-              <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
-                {t("inviteJoinFrom", { name: roomJoinFromInvite.fromUserName })}
-              </div>
-            </div>
-          )}
-          {(roomJoinTarget.hasPassword || roomJoinFromInvite) && (
-            <div className="row" style={{ flexWrap: "wrap", marginBottom: roomJoinTarget.hasPassword ? 0 : 10 }}>
-              {roomJoinTarget.hasPassword ? (
-                <input
-                  className="btn grow"
-                  type="password"
-                  value={roomJoinPassDraft}
-                  onChange={(e) => setRoomJoinPassDraft(e.target.value)}
-                  placeholder={t("promptPasswordEnter")}
-                  autoFocus
-                />
-              ) : (
-                <div className="muted" style={{ fontSize: 13 }}>
-                  {t("inviteJoinNoPassword")}
-                </div>
-              )}
-            </div>
-          )}
-          <div className="row" style={{ marginTop: 10, flexWrap: "wrap", gap: 8 }}>
-            <button
-              className="btn"
-              onClick={() => {
-                setRoomJoinPassOpen(false);
-                setRoomJoinTarget(null);
-                setRoomJoinFromInvite(null);
-              }}
-            >
-              {t("close")}
-            </button>
-            <button className="btn btnPrimary grow" onClick={() => void confirmJoinRoom()}>
-              {t("join")}
-            </button>
-          </div>
-        </Modal>
-      )}
-
-      {screenShareDialogOpen && (
-        <Modal
-          title={t("screenShareTitle")}
-          onClose={() => {
-            setScreenShareDialogOpen(false);
-          }}
-        >
-          <div className="row" style={{ marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
-            <button
-              className={`btn ${screenShareTab === "screen" ? "btnPrimary" : ""}`}
-              onClick={() => {
-                setScreenShareTab("screen");
-                setSelectedScreenSource(null);
-              }}
-            >
-              {t("screenShareFullScreen")}
-            </button>
-            <button
-              className={`btn ${screenShareTab === "window" ? "btnPrimary" : ""}`}
-              onClick={() => {
-                setScreenShareTab("window");
-                setSelectedScreenSource(null);
-              }}
-            >
-              {t("screenShareWindow")}
-            </button>
-            <button
-              className={`btn ${screenShareTab === "app" ? "btnPrimary" : ""}`}
-              onClick={() => {
-                setScreenShareTab("app");
-                setSelectedScreenSource(null);
-              }}
-            >
-              {t("screenShareApp")}
-            </button>
-          </div>
-
-          <div style={{ marginBottom: 12 }}>
-            <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
-              <input
-                type="checkbox"
-                checked={screenShareWithAudio}
-                onChange={(e) => setScreenShareWithAudio(e.target.checked)}
-              />
-              <span>{t("screenShareWithAudio")}</span>
-            </label>
-          </div>
-
-          <div style={{ maxHeight: "50vh", overflowY: "auto" }}>
-            {screenShareTab === "window" ? (
-              <div style={{ padding: "12px 0" }}>
-                <div className="muted" style={{ marginBottom: 12, fontSize: 13 }}>
-                  {t("screenShareWindowHint")}
-                </div>
-                <button
-                  className="btn btnPrimary"
-                  onClick={() => {
-                    setScreenShareDialogOpen(false);
-                    void startScreenShareWithSource(null, screenShareWithAudio);
-                  }}
-                >
-                  {t("screenSharePickWindow")}
-                </button>
-              </div>
-            ) : (
-              <>
-                {(screenShareTab === "screen" ? categorizedScreenSources.screens : categorizedScreenSources.apps).length === 0 ? (
-                  <div className="muted">{t("screenShareNoSources")}</div>
-                ) : (
-                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 12 }}>
-                    {(screenShareTab === "screen" ? categorizedScreenSources.screens : categorizedScreenSources.apps).map((source, index) => (
-                      <div
-                        key={source.id}
-                        onClick={() => setSelectedScreenSource(source.id)}
-                        style={{
-                          border: selectedScreenSource === source.id ? "2px solid #4a9eff" : "2px solid transparent",
-                          borderRadius: 8,
-                          padding: 8,
-                          cursor: "pointer",
-                          backgroundColor: selectedScreenSource === source.id ? "rgba(74, 158, 255, 0.1)" : "transparent"
-                        }}
-                      >
-                        {source.thumbnail ? (
-                          <img
-                            src={source.thumbnail}
-                            alt={source.name}
-                            style={{ width: "100%", height: "auto", borderRadius: 4, marginBottom: 8 }}
-                            onError={(e) => {
-                              (e.target as HTMLImageElement).style.display = "none";
-                            }}
-                          />
-                        ) : null}
-                        <div style={{ fontSize: 12, textAlign: "center", wordBreak: "break-word" }}>
-                          {source.name || `Source ${index + 1}`}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </>
-            )}
-          </div>
-
-          {screenShareTab !== "window" && (
-            <div className="row" style={{ marginTop: 16, flexWrap: "wrap" }}>
-              <button
-                className="btn btnPrimary"
-                disabled={!selectedScreenSource}
-                onClick={() => {
-                  if (!selectedScreenSource) return;
-                  setScreenShareDialogOpen(false);
-                  void startScreenShareWithSource(selectedScreenSource, screenShareWithAudio);
-                }}
-              >
-                {t("screenShareStart")}
-              </button>
-              <button className="btn" onClick={() => setScreenShareDialogOpen(false)}>
-                {t("close")}
-              </button>
-            </div>
-          )}
-        </Modal>
-      )}
-
-      <div
-        className="app-sidebar-wrap"
-        style={{ width: Math.max(360, Math.min(420, sidebarWidth || 380)) }}
-      >
-        <div className="sidebar">
-        <button
-          type="button"
-          className="sidebarBrand"
-          title="github.com/mistrwest/LokaMeet"
-          onClick={() => void window.lokameet.app.openExternal("https://github.com/mistrwest/LokaMeet").catch(() => undefined)}
-        >
-          <img className="appLogo" src={APP_ICON_SRC} alt="" />
-          <div className="sidebarBrandName">{t("appName")}</div>
-        </button>
-        <div className="panel">
-          <div className="panelHeader profilePanelHeader">
-            <div className="profileIdentity">
-              <div className="profileIdentityName">
-                {profile.userName}
-                <PeerShareMarks
-                  sharing={screenSharingPeerId === profile.peerId}
-                  recording={peerIsRecording(profile.peerId)}
-                  shareTitle={t("screenShareIndicator")}
-                  recTitle={t("recordingLocal")}
-                />
-              </div>
-              <div className="profileIdentityMeta muted">
-                <span className={`badge ${statusBadgeClass(profile.status)}`}>{statusLabel(profile.status)}</span>
-                <span>{profile.peerId.slice(0, 8)}</span>
-              </div>
-            </div>
-            <div className="row profileHeaderControls">
-              <button className="btn" onClick={() => void updateName()}>
-                {t("name")}
-              </button>
-              <button className="btn" onClick={() => openOwnAvatarEditor()} title={t("chooseAvatar")}>
-                {t("avatar")}
-              </button>
-              {profile.avatarHash && (
-                <button className="btn" onClick={() => void removeAvatar()} title={t("removeAvatar")}>
-                  ×
-                </button>
-              )}
-              <Select
-                className="themeSelect"
-                value={profile.theme}
-                onChange={(theme) => void setTheme(theme as UserProfile["theme"])}
-                aria-label={t("theme")}
-                options={[
-                  { value: "dark", label: t("theme_dark") },
-                  { value: "light", label: t("theme_light") },
-                  { value: "warm-dark", label: t("theme_warm-dark") },
-                  { value: "soft-light", label: t("theme_soft-light") },
-                  { value: "ocean-blue", label: t("theme_ocean-blue") },
-                  { value: "ocean-dusk", label: t("theme_ocean-dusk") },
-                  { value: "ipd-slate", label: t("theme_ipd-slate") },
-                  { value: "ipd-lagoon", label: t("theme_ipd-lagoon") },
-                  { value: "ipd-midnight", label: t("theme_ipd-midnight") }
-                ]}
-              />
-              <button
-                className="btn"
-                onClick={() => {
-                  void window.lokameet.settings.open().catch(() => setSettingsOpen(true));
-                }}
-                title={t("settings")}
-              >
-                ⚙
-              </button>
-              <button className="btn" onClick={() => void toggleLanguage()}>
-                {profile.language.toUpperCase()}
-              </button>
-            </div>
-          </div>
-          <div className="panelBody">
-            <div className="row">
-              {call ? (
-                <span
-                  className={`btn grow badge ${statusBadgeClass(call.mode === "room" ? "in_conference" : "in_call")}`}
-                  style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", cursor: "default" }}
-                >
-                  {t(call.mode === "room" ? "status_in_conference" : "status_in_call")}
-                </span>
-              ) : (
-                <Select
-                  className="grow"
-                  value={profile.status}
-                  onChange={(v) => void updateStatus(v as AvailabilityStatus)}
-                  options={[
-                    { value: "online", label: t("status_online") },
-                    { value: "away", label: t("status_away") },
-                    { value: "dnd", label: t("status_dnd") },
-                    { value: "offline", label: t("status_offline") }
-                  ]}
-                />
-              )}
-              <button className="btn btnPrimary" onClick={() => void createRoom()}>
-                {t("createConference")}
-              </button>
-            </div>
-            <div className="panelSectionDivider" aria-hidden="true" />
-            <div className="sidebarMediaRow">
-              <Select
-                disabled={videoDevices.length === 0}
-                value={selectedVideoDeviceId}
-                onChange={(v) => void switchCamera(v)}
-                options={
-                  videoDevices.length === 0
-                    ? [{ value: "", label: t("video") }]
-                    : videoDevices.map((d) => ({
-                        value: d.deviceId,
-                        label: d.label || `Camera ${d.deviceId.slice(0, 6)}`
-                      }))
-                }
-              />
-              <Select
-                value={mediaCfg.videoQuality}
-                onChange={(v) => void applyVideoQuality(v as VideoQuality)}
-                style={{ flex: "0 0 auto", minWidth: 86 }}
-                options={VIDEO_QUALITY_OPTIONS.map((q) => ({ value: q.value, label: t(q.labelKey) }))}
-              />
-              <button
-                className={`btn btnToggle ${mediaCfg.videoEnabled ? "is-on" : "is-off"}`}
-                onClick={async () => {
-                  const next = !mediaCfg.videoEnabled;
-                  videoEnabledRef.current = next;
-                  setMediaCfg((c) => ({ ...c, videoEnabled: next }));
-                  void window.lokameet.log.write({
-                    level: "INFO",
-                    scope: "renderer/media",
-                    msg: next ? "Camera enabled" : "Camera disabled",
-                    data: {
-                      sharing: Boolean(shareTrackRef.current),
-                      micEnabled: audioEnabledRef.current
-                    }
-                  });
-                  if (!next) {
-                    const local = localStreamRef.current;
-                    await Promise.all(Array.from(pcsRef.current.values()).map((pc) => parkOutgoingCamera(pc)));
-                    if (local) {
-                      const stillSending = new Set<string>();
-                      for (const pc of pcsRef.current.values()) {
-                        for (const sender of pc.getSenders()) {
-                          if (sender.track) stillSending.add(sender.track.id);
-                        }
-                      }
-                      for (const t of [...local.getVideoTracks()]) {
-                        if (t === shareTrackRef.current || stillSending.has(t.id)) continue;
-                        local.removeTrack(t);
-                        try {
-                          t.stop();
-                        } catch {
-                          // игнор
-                        }
-                      }
-                      if (settingsTab !== "camera" || !settingsOpen) stopRawCamera();
-                    }
-                    await broadcastCameraVisibility(false);
-                    await restoreMicAfterCameraChange();
-                    await new Promise((r) => setTimeout(r, 200));
-                    if (micIsDead(localMicTrack(localStreamRef.current))) {
-                      await restoreMicAfterCameraChange({ force: true });
-                    }
-                    window.setTimeout(() => {
-                      if (!audioEnabledRef.current || videoEnabledRef.current) return;
-                      void restoreMicAfterCameraChange();
-                    }, 450);
-                    setLocalStreamVer((v) => v + 1);
-                    syncLocalVideoPreview({ videoEnabled: false });
-                    return;
-                  }
-                  try {
-                    let local = localStreamRef.current;
-                    if (!local) {
-                      local = await ensureLocalMedia();
-                    }
-                    let camTrack =
-                      local.getVideoTracks().find((t) => t !== shareTrackRef.current && t.readyState === "live") ?? null;
-                    if (!camTrack) {
-                      const liveRaw =
-                        cameraRawStreamRef.current?.getVideoTracks().find((t) => t.readyState === "live") ?? null;
-                      if (liveRaw) {
-                        camTrack = await prepareCameraTrack(liveRaw);
-                      } else {
-                        const cam = await captureCameraStream();
-                        camTrack = await prepareCameraTrack(cam.getVideoTracks()[0] ?? null);
-                      }
-                    } else {
-                      camTrack.enabled = true;
-                    }
-                    if (camTrack) {
-                      await publishLocalCameraTrack(camTrack, local);
-                    }
-                    await broadcastCameraVisibility(true);
-                    await restoreMicAfterCameraChange();
-                    syncLocalVideoPreview({ videoEnabled: true });
-                  } catch (err) {
-                    videoEnabledRef.current = false;
-                    setError(t("errCameraEnable", { msg: String((err as Error)?.message ?? err) }));
-                    setMediaCfg((c) => ({ ...c, videoEnabled: false }));
-                    syncLocalVideoPreview({ videoEnabled: false });
-                    void broadcastCameraVisibility(false);
-                  }
-                }}
-              >
-                {mediaCfg.videoEnabled ? t("camOn") : t("camOff")}
-              </button>
-            </div>
-            <div className="sidebarMediaToggles">
-              <button
-                className={`btn btnToggle ${mediaCfg.audioEnabled ? "is-on" : "is-off"}`}
-                onClick={() => {
-                  const next = !mediaCfg.audioEnabled;
-                  setMediaCfg((c) => ({ ...c, audioEnabled: next }));
-                  const local = localStreamRef.current;
-                  const screenAudioId = shareScreenAudioTrackRef.current?.id;
-                  const isScreenAudio = (track: MediaStreamTrack) =>
-                    local ? isScreenBroadcastAudioTrack(track, local, screenAudioId) : false;
-                  micEnhancerRef.current.setArmed(next);
-                  if (!next) {
-                    // Только микрофон — не трогаем screen audio
-                    if (local) {
-                      const mic = getMicAudioTrack(local, screenAudioId);
-                      if (mic) mic.enabled = false;
-                    }
-                    for (const pc of pcsRef.current.values()) {
-                      void replaceMicAudioTrack(pc, null, isScreenAudio);
-                    }
-                    return;
-                  }
-                  void (async () => {
-                    micEnhancerRef.current.setArmed(true);
-                    await ensureAudioTrackPresent();
-                    const stream = localStreamRef.current;
-                    if (!stream) return;
-                    const mic = getMicAudioTrack(stream, shareScreenAudioTrackRef.current?.id);
-                    if (mic) {
-                      mic.enabled = true;
-                      const check = (track: MediaStreamTrack) =>
-                        isScreenBroadcastAudioTrack(track, stream, shareScreenAudioTrackRef.current?.id);
-                      const needing: string[] = [];
-                      for (const [peerId, pc] of pcsRef.current.entries()) {
-                        if (await replaceMicAudioTrack(pc, mic, check, stream)) needing.push(peerId);
-                      }
-                      await flushMicRenegotiation(needing);
-                    }
-                  })();
-                }}
-              >
-                {mediaCfg.audioEnabled ? t("micOn") : t("micOff")}
-              </button>
-              <button
-                className={`btn btnToggle ${voiceActivation ? "is-on" : "is-off"}`}
-                title={t("voiceActivationHint")}
-                onClick={() => setVoiceActivation((v) => !v)}
-              >
-                {t("voiceActivation")}
-              </button>
-              <button 
-                className={`btn btnToggle ${isSharing ? "is-on" : "is-off"}`} 
-                disabled={!call || !isScreenShareCall(call)} 
-                title={!call || !isScreenShareCall(call) ? t("screenShareInCallOnly") : undefined}
-                onClick={() => {
-                  // Используем void для асинхронных операций, чтобы не блокировать UI
-                  if (isSharing) {
-                    void (async () => {
-                      try {
-                        await stopScreenShare();
-                      } catch (err) {
-                        console.error("Error stopping screen share:", err);
-                        const errorMsg = err instanceof Error ? err.message : String(err);
-                        setError(t("errScreenShareStop", { msg: errorMsg }));
-                      }
-                    })();
-                  } else {
-                    void (async () => {
-                      try {
-                        await startScreenShare();
-                      } catch (err) {
-                        console.error("Error starting screen share:", err);
-                        const errorMsg = err instanceof Error ? err.message : String(err);
-                        setError(t("errScreenShareLaunch", { msg: errorMsg }));
-                        // Сбрасываем состояние на случай ошибки
-                        try {
-                          isSharingRef.current = false;
-                          setIsSharing(false);
-                          setScreenShareDialogOpen(false);
-                        } catch {
-                          // Игнорируем ошибки сброса состояния
-                        }
-                        // Пытаемся логировать, но не падаем если это не работает
-                        try {
-                          if (window.lokameet?.log?.write) {
-                            void window.lokameet.log.write({ level: "ERROR", scope: "renderer/screen", msg: "Error in screen share button click", data: { error: errorMsg } });
-                          }
-                        } catch {
-                          // Игнорируем ошибки логирования
-                        }
-                      }
-                    })();
-                  }
-                }}
-              >
-                {isSharing ? t("screenOn") : t("screenOff")}
-              </button>
-              <button
-                className={`btn btnToggle ${recordingActive ? "is-on is-recording" : "is-off"}`}
-                disabled={!call}
-                onClick={() => void toggleCallRecording()}
-                title={!call ? t("recordInCallOnly") : recordingActive ? t("stopRecord") : t("startRecord")}
-              >
-                {recordingActive ? t("stopRecord") : t("startRecord")}
-              </button>
-              <button
-                className={`btn btnToggle ${gameSession ? "is-on" : "is-off"}`}
-                onClick={() => {
-                  if (gameSession?.collapsed) {
-                    setGameSession({ ...gameSession, collapsed: false });
-                    return;
-                  }
-                  setGamesMenuOpen(true);
-                }}
-              >
-                {gameSession ? t("gamesActive") : t("games")}
-              </button>
-            </div>
-          </div>
-        </div>
-
-        {incomingRoomInvite && (
-          <div
-            className="panel"
-            style={{
-              borderColor: incomingRoomInviteBlink ? "rgba(52,211,153,0.85)" : "rgba(52,211,153,0.35)",
-              transition: "border-color 0.3s"
-            }}
-          >
-            <div className="panelHeader">
-              <div>{t("incomingRoomInvite")}</div>
-              <span className="badge">#{incomingRoomInvite.fromPeerId.slice(0, 6)}</span>
-            </div>
-            <div className="panelBody">
-              <div style={{ fontWeight: 700 }}>{incomingRoomInvite.fromUserName}</div>
-              <div className="muted" style={{ marginTop: 4, fontSize: 13 }}>
-                {t("incomingRoomInviteBody", { room: incomingRoomInvite.room.roomName })}
-              </div>
-              <div className="row" style={{ marginTop: 10 }}>
-                <button className="btn btnPrimary grow" onClick={() => void acceptRoomInvite()}>
-                  {t("accept")}
-                </button>
-                <button className="btn btnDanger grow" onClick={() => void rejectRoomInvite()}>
-                  {t("reject")}
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {inviteRejectedNotice && (
-          <div className="panel" style={{ borderColor: "rgba(248,113,113,0.35)" }}>
-            <div className="panelHeader">
-              <div>{t("inviteRejectedTitle")}</div>
-              <button className="btn" onClick={() => setInviteRejectedNotice(null)}>
-                {t("close")}
-              </button>
-            </div>
-            <div className="panelBody">
-              <div className="muted">
-                {t("inviteRejectedBody", { name: inviteRejectedNotice.userName, room: inviteRejectedNotice.roomName })}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {error && (
-          <div className="panel" style={{ borderColor: "rgba(248,113,113,0.35)" }}>
-            <div className="panelHeader">
-              <div>{t("error")}</div>
-              <button className="btn" onClick={() => setError(null)}>
-                {t("close")}
-              </button>
-            </div>
-            <div className="panelBody">
-              <div className="muted">{error}</div>
-            </div>
-          </div>
-        )}
-
-        {gameInvite && <GameInviteCard invite={gameInvite} onAccept={acceptGameInvite} onDecline={declineGameInvite} />}
-        {outgoingGameInvite && (
-          <div className="panel gameInviteCard">
-            <div className="panelHeader">
-              <div>{t("gameInviteTitle")}</div>
-              <button className="btn" onClick={() => cancelOutgoingGameInvite()}>
-                {t("cancel")}
-              </button>
-            </div>
-            <div className="panelBody">
-              <div className="gameInviteName">{outgoingGameInvite.toUserName}</div>
-              <div className="muted" style={{ marginTop: 4, fontSize: 13 }}>
-                {t("gameInviteSent")}
-              </div>
-            </div>
-          </div>
-        )}
-
-        <div className="panel">
-          <div className="panelHeader">
-            <div>{t("usersInLan")}</div>
-            <span className="badge">{(profile?.hasChosenName ? 1 : 0) + peers.length}</span>
-          </div>
-          <div className="panelBody">
-            <div className="list">
-              {profile?.hasChosenName && (
-                <div key={profile.peerId} className="item" style={{ cursor: "default" }}>
-                  <div className="itemTitle">
-                    <div className="truncate" style={{ fontWeight: 700, display: "flex", alignItems: "center", gap: 6 }} title={profile.userName}>
-                      {avatarUrls[profile.peerId] ? (
-                        <span className={`avatarStatusRing avatarStatusRing--${profile.status}`} title={statusLabel(profile.status)}>
-                          <ProfileAvatar className="listAvatar" src={avatarUrls[profile.peerId]} name={profile.userName} position={profile.avatarPosition} onClick={() => openOwnAvatarEditor()} />
-                        </span>
-                      ) : (
-                        <span
-                          className={`avatarStatusRing avatarStatusRing--${profile.status}`}
-                          title={statusLabel(profile.status)}
-                          role="button"
-                          tabIndex={0}
-                          onClick={() => openOwnAvatarEditor()}
-                          onKeyDown={(event) => {
-                            if (event.key === "Enter" || event.key === " ") {
-                              event.preventDefault();
-                              openOwnAvatarEditor();
-                            }
-                          }}
-                        >
-                          <span className="listAvatar listAvatarPlaceholder profileAvatarClickable" aria-hidden="true" />
-                        </span>
-                      )}
-                      <span className="truncate">
-                        {profile.userName} {t("you")}
-                      </span>
-                      <PeerShareMarks
-                        sharing={screenSharingPeerId === profile.peerId}
-                        recording={peerIsRecording(profile.peerId)}
-                        shareTitle={t("screenShareIndicator")}
-                        recTitle={t("recordingLocal")}
-                      />
-                    </div>
-                    <span className={`badge ${statusBadgeClass(profile.status)}`}>{statusLabel(profile.status)}</span>
-                  </div>
-                  <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
-                    {localIps.length > 0 ? `${localIps[0]}:${signalingPort}` : `port: ${signalingPort}`}
-                  </div>
-                </div>
-              )}
-              {peers
-                .slice()
-                .sort((a, b) => {
-                  const aRing = incomingCall?.peerId === a.peerId ? 0 : 1;
-                  const bRing = incomingCall?.peerId === b.peerId ? 0 : 1;
-                  return aRing - bRing;
-                })
-                .map((p) => {
-                const inConference = isConferenceCall(call);
-                const alreadyInRoom = inConference && call.participants.some((x) => x.peerId === p.peerId);
-                const peerStatus = displayPeerStatus(p.peerId, p.status);
-                const canInvite = inConference && peerStatus === "online" && !alreadyInRoom;
-                const invitePending = pendingInvitePeerIds.has(p.peerId);
-                const callPending = pendingCallPeerIds.has(p.peerId);
-                const peerPending = invitePending;
-                const actionIndicator = peerActionIndicators.get(p.peerId);
-                const actionIsFlashing = flashingPeerActionIds.has(p.peerId);
-                const hasIncomingCall = incomingCall?.peerId === p.peerId;
-                return (
-                <div
-                  key={p.peerId}
-                  className={`item${actionIndicator ? ` itemActionIndicator itemActionIndicator--${actionIndicator}${actionIsFlashing ? " is-flashing" : ""}` : peerPending ? " itemInvitePending" : ""}${hasIncomingCall ? " itemIncomingCall" : ""}`}
-                  style={
-                    hasIncomingCall
-                      ? {
-                          borderColor: incomingCallBlink ? "rgba(96,165,250,0.9)" : "rgba(96,165,250,0.4)",
-                          transition: "border-color 0.3s"
-                        }
-                      : undefined
-                  }
-                  onClick={() => selectPeerForChat(p)}
-                >
-                  <div className="itemTitle">
-                    <div
-                      className={`truncate${peerPending ? " itemInvitePendingName" : ""}`}
-                      style={{ fontWeight: 700, display: "flex", alignItems: "center", gap: 6 }}
-                      title={
-                        invitePending
-                          ? t("invitePendingHint")
-                          : callPending
-                            ? t("callPendingHint")
-                            : p.userName
-                      }
-                    >
-                      {avatarUrls[p.peerId] ? (
-                        <span className={`avatarStatusRing avatarStatusRing--${peerStatus}`} title={statusLabel(peerStatus)}>
-                          <ProfileAvatar className="listAvatar" src={avatarUrls[p.peerId]} name={p.userName} position={p.avatarPosition} onClick={() => setAvatarViewer({ peerId: p.peerId, name: p.userName })} />
-                        </span>
-                      ) : (
-                        <span className={`avatarStatusRing avatarStatusRing--${peerStatus}`} title={statusLabel(peerStatus)}>
-                          <span className="listAvatar listAvatarPlaceholder" aria-hidden="true" />
-                        </span>
-                      )}
-                      <span className="truncate">{p.userName}</span>
-                      <PeerShareMarks
-                        sharing={screenSharingPeerId === p.peerId}
-                        recording={peerIsRecording(p.peerId)}
-                        shareTitle={t("screenShareIndicator")}
-                        recTitle={t("recordingBy", { name: p.userName })}
-                      />
-                      {unreadPeerIds.has(p.peerId) && <span className="unreadMessageDot" title={t("newMessage")} aria-label={t("newMessage")} />}
-                    </div>
-                    <span className={`badge ${statusBadgeClass(peerStatus)}`}>{statusLabel(peerStatus)}</span>
-                  </div>
-                  <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
-                    {p.host}:{p.port}
-                  </div>
-                  {hasIncomingCall ? (
-                    <div className="row" style={{ marginTop: 8 }}>
-                      <button className="btn btnPrimary grow" onClick={(e) => (e.stopPropagation(), void acceptIncoming())}>
-                        {t("accept")}
-                      </button>
-                      <button className="btn btnDanger grow" onClick={(e) => (e.stopPropagation(), void rejectIncoming())}>
-                        {t("reject")}
-                      </button>
-                    </div>
-                  ) : !inConference && (
-                    <div className="row" style={{ marginTop: 8 }}>
-                      <button className="btn grow" onClick={(e) => (e.stopPropagation(), selectPeerForChat(p))}>
-                        {t("write")}
-                      </button>
-                      <button className="btn btnPrimary grow" onClick={(e) => (e.stopPropagation(), void startDirectCall(p))}>
-                        {t("call")}
-                      </button>
-                    </div>
-                  )}
-                  {canInvite && (
-                    <div className="row itemHoverActions" style={{ marginTop: 8 }}>
-                      <button
-                        className="btn btnPrimary grow"
-                        onClick={(e) => (e.stopPropagation(), void invitePeerToConference(p))}
-                      >
-                        {t("inviteToConference")}
-                      </button>
-                    </div>
-                  )}
-                </div>
-                );
-              })}
-              {peers.length === 0 && <div className="muted">{t("noUsers")}</div>}
-            </div>
-          </div>
-        </div>
-
-        {call?.mode === "room" && (
-          <div className="panel">
-            <div className="panelHeader">
-              <div>{t("participants")}</div>
-              <span className="badge">{conferenceParticipants.length}</span>
-            </div>
-            <div className="panelBody">
-              <div className="muted" style={{ fontSize: 12, marginBottom: 8 }} title={call.roomName}>
-                {call.roomName}
-              </div>
-              <div className="list">
-                {conferenceParticipants.map((p) => {
-                  const isSelf = p.peerId === profile.peerId;
-                  return (
-                    <div key={p.peerId} className="item" style={{ cursor: "default" }}>
-                      <div className="itemTitle">
-                        <div className="truncate" style={{ fontWeight: 700, display: "flex", alignItems: "center", gap: 6 }} title={p.userName}>
-                          <span className="truncate">
-                            {p.userName}
-                            {isSelf ? ` ${t("you")}` : ""}
-                          </span>
-                          <PeerShareMarks
-                            sharing={screenSharingPeerId === p.peerId}
-                            recording={peerIsRecording(p.peerId)}
-                            shareTitle={t("screenShareIndicator")}
-                            recTitle={isSelf ? t("recordingLocal") : t("recordingBy", { name: p.userName })}
-                          />
-                        </div>
-                        {isSelf ? (
-                          <span className={`badge ${statusBadgeClass(profile.status)}`}>{statusLabel(profile.status)}</span>
-                        ) : (
-                          <span className={`badge ${statusBadgeClass("in_conference")}`}>
-                            {statusLabel(displayPeerStatus(p.peerId, "in_conference"))}
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          </div>
-        )}
-
-        <div className="panel">
-          <div className="panelHeader">
-            <div>{t("conferences")}</div>
-            <span className="badge">{rooms.length}</span>
-          </div>
-          <div className="panelBody">
-            <div className="list">
-              {rooms.map((r) => {
-                const roomFull = !canJoinConference(r).ok;
-                return (
-                <div key={r.roomId} className="item" onClick={() => (setSelectedRoom(r), setSelectedPeer(null))}>
-                  <div className="itemTitle">
-                    <div className="truncate" style={{ fontWeight: 700 }} title={r.roomName}>
-                      {r.roomName}
-                    </div>
-                    <span className="badge">
-                      {r.participantsApprox}/{r.maxParticipants} {r.hasPassword ? "🔒" : ""}
-                    </span>
-                  </div>
-                  <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
-                    host {r.host}:{r.port}
-                  </div>
-                  <div className="row" style={{ marginTop: 8 }}>
-                    <button
-                      className="btn btnPrimary grow"
-                      disabled={roomFull}
-                      title={roomFull ? t("conferenceFull", { max: MAX_CONFERENCE_PARTICIPANTS }) : undefined}
-                      onClick={(e) => (e.stopPropagation(), void joinRoom(r))}
-                    >
-                      {t("join")}
-                    </button>
-                  </div>
-                </div>
-              );})}
-              {rooms.length === 0 && <div className="muted">{t("noConferences")}</div>}
-            </div>
-          </div>
-        </div>
-        </div>
-      </div>
-
-      <PanelResizer
-        axis="horizontal"
-          onDrag={(delta) => setSidebarWidth((w) => Math.max(300, Math.min(420, (w || 340) + delta)))}
-      />
-
-      <div className="main-wrap">
-        <div className="main-center" style={{ position: "relative", flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
-        {(recordingActive || remoteRecordings.length > 0) && (
-          <div className="recordingBanner" role="status">
-            <span className="recordingDot" />
-            {recordingActive
-              ? t("recordingLocal")
-              : t("recordingBy", { name: remoteRecordings.map((item) => item.userName).join(", ") })}
-          </div>
-        )}
-        {watchOffer && !gameSession && call?.mode === "room" && (
-          <button className="gamesWatchLiveBar" type="button" onClick={watchCurrentGame}>
-            <span className="gamesWatchDot" />
-            <span>{t("gamesWatchLive", { white: watchOffer.white.userName, black: watchOffer.black.userName, game: t(getGameCatalogItem(watchOffer.gameId)?.titleKey ?? "games") })}</span>
-            <span className="gamesWatchCta">{t("gamesWatch")}</span>
-          </button>
-        )}
-        {showGameView && gameSession ? (
-          <GameStage
-            session={gameSession}
-            avatarUrls={avatarUrls}
-            onMove={onGameMove}
-            onPlace={onGamePlace}
-            onResign={onGameResign}
-            onDrawOffer={onGameDrawOffer}
-            onDrawAccept={onGameDrawAccept}
-            onDrawDecline={onGameDrawDecline}
-            onRematch={onGameRematch}
-            onLeave={onGameLeave}
-            onCollapse={() => setGameSession({ ...gameSession, collapsed: true })}
-            settings={gamesSettings}
-          />
-        ) : null}
-        {showRemoteScreenShareView && remoteScreenShare ? (
-          remoteScreenStream ? (
-          <ScreenShareViewer
-            stream={remoteScreenStream}
-            cameraStream={remotePresenterCameraStream}
-            broadcasterName={remoteScreenShare.userName}
-            controlsHidden={screenViewControlsHidden}
-            broadcastMuted={screenBroadcastMuted}
-            volume={remoteScreenShareVolume / 100}
-            onVolumeChange={(v) => setRemoteScreenShareVolume(Math.round(Math.max(0, Math.min(1, v)) * 100))}
-            onToggleBroadcastMute={() => setScreenBroadcastMuted((v) => !v)}
-            onHideControls={() => setScreenViewControlsHidden(true)}
-            onShowControls={() => setScreenViewControlsHidden(false)}
-            onExitToTiles={() => {
-              setScreenShareViewCollapsed(true);
-              setScreenViewControlsHidden(false);
-            }}
-          />
-          ) : (
-            <div className="screenShareView">
-              <div className="muted">{t("loading")}</div>
-            </div>
-          )
-        ) : null}
-        {canReturnToGame && (
-          <button
-            type="button"
-            className="screenShareReturnBtn gameReturnBtn"
-            title={t("gamesReturnToBoard")}
-            onClick={() => gameSession && setGameSession({ ...gameSession, collapsed: false })}
-          >
-            {t("gamesReturnToBoard")}
-          </button>
-        )}
-        {canReturnToScreenShare && (
-          <button
-            type="button"
-            className="screenShareReturnBtn"
-            title={t("screenShareReturnToView")}
-            onClick={() => setScreenShareViewCollapsed(false)}
-          >
-            {t("screenShareReturnToView")}
-          </button>
-        )}
-        {canReturnToScreenShare && remoteScreenStream ? (
-          <ScreenShareAudio stream={remoteScreenStream} volume={remoteScreenShareVolume / 100} />
-        ) : null}
-        <div
-          className="videoGrid"
-          data-tile-aspect={tileAspect}
-          style={
-            showRemoteScreenShareView || showGameView
-              ? {
-                  position: "absolute",
-                  width: 1,
-                  height: 1,
-                  overflow: "hidden",
-                  opacity: 0,
-                  pointerEvents: "none",
-                  left: 0,
-                  top: 0
-                }
-              : ({
-                  ["--tile-cols" as string]: String(tileGridColumns(1 + stageRemoteTiles.length)),
-                  ["--tile-gap" as string]: `${tileGap}px`,
-                  ["--tile-radius" as string]: `${tileRadius}px`,
-                  ["--tile-fit" as string]: tileObjectFit,
-                  ["--tile-aspect" as string]: tileAspectCss(tileAspect),
-                  alignContent: tileAspect === "auto" ? "stretch" : "center"
-                } as React.CSSProperties)
-          }
-        >
-          <div
-            ref={localTileRef}
-            className={`tile${isSharing ? " tileScreenSharing" : ""}`}
-            style={speakingIndicator ? speakingVars(speakerLevelByPeerId["self"] ?? 0) : speakingVars(0)}
-          >
-            <video ref={localVideoRef} className={isSharing ? "tileShareFit" : undefined} muted playsInline />
-            {isSharing && <PresenterCameraPip stream={localPresenterCameraStream} />}
-            {isSharing && (
-              <ScreenShareLocalSidebar
-                containerRef={localTileRef}
-                onStop={() => {
-                  void stopScreenShare().catch((err) => {
-                    console.error("Error stopping screen share:", err);
-                    setError(String(err?.message ?? err));
-                  });
-                }}
-              />
-            )}
-            {!mediaCfg.videoEnabled && !isSharing && (
-              avatarUrls[profile.peerId] ? (
-                <div className="tileAvatarFallback">
-                  <ProfileAvatar src={avatarUrls[profile.peerId]} name={profile.userName} position={profile.avatarPosition} onClick={() => openOwnAvatarEditor()} />
-                </div>
-              ) : (
-                <div
-                  className="tileAvatarFallback profileAvatarClickable"
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => openOwnAvatarEditor()}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" || event.key === " ") {
-                      event.preventDefault();
-                      openOwnAvatarEditor();
-                    }
-                  }}
-                >
-                  <span className="listAvatar listAvatarPlaceholder tileAvatarPlaceholder" aria-hidden="true" />
-                </div>
-              )
-            )}
-            {!mediaCfg.audioEnabled && (
-              <div style={{ position: "absolute", top: 8, right: 8, background: "rgba(0,0,0,0.8)", borderRadius: 10, padding: "4px 8px" }}>
-                <span style={{ fontSize: 14 }}>🔇</span>
-              </div>
-            )}
-            <div className="tileLabel">
-              <span className="tileSpeakMark" aria-hidden="true" />
-              {t("youPrefix", { name: profile.userName })}
-              {recordingActive && <span className="recordingTileMark" title={t("recordingLocal")}>REC</span>}
-              {screenSharingPeerId === profile.peerId && <ScreenSharingDot title={t("screenShareIndicator")} />}
-            </div>
-          </div>
-          {stageRemoteTiles.map((r) => {
-            const shareInTile = Boolean(
-              screenShareViewCollapsed && presenterTileStream && remoteScreenShare?.peerId === r.peerId
-            );
-            const stream = shareInTile && presenterTileStream ? presenterTileStream : r.stream;
-            const liveVideoTracks = stream.getVideoTracks().filter((t) => {
-              if (!t.enabled || t.readyState !== "live") return false;
-              if (!shareInTile && t.muted) return false;
-              if (!shareInTile) {
-                const settings = t.getSettings();
-                const width = Number(settings.width || 0);
-                const height = Number(settings.height || 0);
-                if (width > 0 && height > 0 && width <= 16 && height <= 16) return false;
-              }
-              return true;
-            });
-            const cameraHidden = !shareInTile && remoteCameraOn[r.peerId] === false;
-            const hasVideo = !cameraHidden && liveVideoTracks.length > 0;
-            const hasAudio = stream.getAudioTracks().some((t) => t.enabled && t.readyState === "live");
-            return (
-              <div
-                key={r.peerId}
-                className={`tile${shareInTile ? " tileScreenSharing" : ""}`}
-                style={speakingIndicator ? speakingVars(speakerLevelByPeerId[r.peerId] ?? 0) : speakingVars(0)}
-              >
-                <RemotePeerMedia
-                  className={shareInTile ? "tileShareFit" : undefined}
-                  stream={stream}
-                  muted={false}
-                  volume={remoteMicVolume / 100}
-                  sinkId={selectedAudioOutputId || undefined}
-                  excludeScreenAudioTrackId={
-                    shareInTile
-                      ? undefined
-                      : remoteScreenShare?.peerId === r.peerId
-                        ? remoteScreenShare.screenAudioTrackId
-                        : undefined
-                  }
-                />
-                {shareInTile ? <PresenterCameraPip stream={remotePresenterCameraStream} /> : null}
-                {!hasVideo && (
-                  avatarUrls[r.peerId] ? (
-                    <div className="tileAvatarFallback">
-                      <ProfileAvatar src={avatarUrls[r.peerId]} name={r.userName} position={avatarPositionFor(r.peerId)} onClick={() => setAvatarViewer({ peerId: r.peerId, name: r.userName })} />
-                    </div>
-                  ) : (
-                    <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,0.7)", borderRadius: "inherit" }}>
-                      <span style={{ fontSize: 48 }}>📹</span>
-                    </div>
-                  )
-                )}
-                {!hasAudio && (
-                  <div style={{ position: "absolute", top: 8, right: 8, background: "rgba(0,0,0,0.8)", borderRadius: 10, padding: "4px 8px" }}>
-                    <span style={{ fontSize: 14 }}>🔇</span>
-                  </div>
-                )}
-                <div className="tileLabel">
-                  <span className="tileSpeakMark" aria-hidden="true" />
-                  {r.userName}
-                  {remoteRecordings.some((item) => item.peerId === r.peerId) && (
-                    <span className="recordingTileMark" title={t("recordingBy", { name: r.userName })}>REC</span>
-                  )}
-                  {screenSharingPeerId === r.peerId && <ScreenSharingDot title={t("screenShareIndicator")} />}
-                </div>
-              </div>
-            );
-          })}
-
-          {!call && remoteTracks.length === 0 && !showRemoteScreenShareView && !showGameView && (
-            <div className="muted" style={{ padding: 12 }}>
-              {t("pickHint")}
-            </div>
-          )}
-        </div>
-        </div>
-
-        <PanelResizer
-          axis="horizontal"
-          onDrag={(delta) => setChatHeight((h) => Math.max(360, Math.min(440, (h || 380) - delta)))}
-        />
-
-        <div
-          className="chat-wrap"
-          style={{ width: Math.max(360, Math.min(440, chatHeight || 380)) }}
-        >
-        <div className={`chat${chatFileDrop ? " is-file-drop" : ""}`} onPasteCapture={onChatPaste}>
-          {chatFileDrop && scope ? <div className="chatDropOverlay">{t("fileDropHint")}</div> : null}
-          <div className="panelHeader">
-            <div>
-              {call?.mode === "direct" && (
-                <>
-                  {t("chatWith")}
-                  <b>{call.peerName}</b>
-                </>
-              )}
-              {call?.mode === "room" && (
-                <>
-                  {t("conferenceWith")}
-                  <b>{call.roomName}</b> <span className="muted">({call.participants.length})</span>
-                </>
-              )}
-              {!call && selectedPeer && (
-                <>
-                  {t("chatWith")}
-                  <b>{selectedPeer.userName}</b>
-                </>
-              )}
-              {!call && selectedRoom && (
-                <>
-                  {t("conferenceWith")}
-                  <b>{selectedRoom.roomName}</b>
-                </>
-              )}
-              {!call && !selectedPeer && !selectedRoom && <span className="muted">{t("chat")}</span>}
-            </div>
-            <div className="row">
-                {call && callStartedAt && (
-                  <span className="badge" title={t("callDuration")}>
-                    {formatDurationMs(nowTick - callStartedAt)}
-                  </span>
-                )}
-              <input
-                className="btn"
-                style={{ width: 180 }}
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder={t("search")}
-              />
-              <button
-                className="btn btnDanger"
-                onClick={() => setExitConfirmKind(call ? "leave" : "quit")}
-                title={call ? t("leave") : t("exitApp")}
-              >
-                {t("exit")}
-              </button>
-            </div>
-          </div>
-
-          <div
-            className="chatLog"
-            ref={chatLogRef}
-            style={{ ["--chatSmileSize" as any]: `${chatSmileSizePx}px`, fontSize: `${chatFontSize}px` }}
-          >
-            {visibleMessages.map((m) => {
-              const inviteAtt = m.attachment?.kind === "game-invite" ? m.attachment : null;
-              const isActiveGameInvite = Boolean(inviteAtt && m.id === activeGameInviteMessageId);
-              const recordingNote = m.kind === "system" && isRecordingChatStatus(m.text);
-              return (
-              <div
-                key={m.id}
-                id={`msg-${m.id}`}
-                className={`msg ${recordingNote ? "msgRecording msgSystem" : isActiveGameInvite ? "msgGameInvite" : m.kind === "system" ? "msgSystem" : m.fromPeerId === profile.peerId ? "msgOwn" : ""} ${m.kind === "system" || inviteAtt ? "" : unreadMessageIds.has(m.id) ? "msgUnread" : "msgRead"}`}
-                onContextMenu={(event) => {
-                  if (m.kind === "system") return;
-                  event.preventDefault();
-                  setChatMenu({ x: event.clientX, y: event.clientY, messageId: m.id });
-                }}
-              >
-                {m.kind === "system" ? (
-                  <div className="msgText">
-                    <span>
-                      {m.fromUserName} {stripChatStatusEmoji(m.text)}
-                    </span>
-                    <span className="msgSystemTime">{formatTime(m.sentAt, showSeconds)}</span>
-                    {isActiveGameInvite && inviteAtt && (
-                      <GameInviteChatActions
-                        status={inviteAtt.status}
-                        incoming={m.fromPeerId !== profile.peerId}
-                        onAccept={() =>
-                          acceptGameInvite({
-                            sessionId: inviteAtt.sessionId,
-                            gameId: inviteAtt.gameId as GameId,
-                            fromPeerId: m.fromPeerId,
-                            fromUserName: m.fromUserName
-                          })
-                        }
-                        onDecline={() =>
-                          declineGameInvite({
-                            sessionId: inviteAtt.sessionId,
-                            gameId: inviteAtt.gameId as GameId,
-                            fromPeerId: m.fromPeerId,
-                            fromUserName: m.fromUserName
-                          })
-                        }
-                        onCancel={cancelOutgoingGameInvite}
-                      />
-                    )}
-                  </div>
-                ) : (
-                  <>
-                <div className="msgMeta">
-                  <span className="msgAuthor">
-                    {avatarUrls[m.fromPeerId] && <ProfileAvatar className="chatAvatar" src={avatarUrls[m.fromPeerId]} name={m.fromUserName} position={avatarPositionFor(m.fromPeerId)} onClick={() => setAvatarViewer({ peerId: m.fromPeerId, name: m.fromUserName })} />}
-                    <b>{m.fromUserName}</b>
-                  </span>
-                  <span>
-                    <button
-                      type="button"
-                      className="msgReplyBtn"
-                      title={t("reply")}
-                      onClick={() =>
-                        setChatReply({
-                          messageId: m.id,
-                          fromUserName: m.fromUserName,
-                          text: replySnippet(m, {
-                            photo: t("replyPhoto"),
-                            gif: t("replyGif"),
-                            video: t("replyVideo"),
-                            file: t("replyFile"),
-                            link: t("replyLink"),
-                            message: t("replyMessage")
-                          })
-                        })
-                      }
-                    >
-                      ↩
-                    </button>
-                    {formatTime(m.sentAt, showSeconds)}
-                  </span>
-                </div>
-                {m.reply && (
-                  <button type="button" className="msgQuote" onClick={() => focusQuotedMessage(m.reply!.messageId)}>
-                    <b>{m.reply.fromUserName}</b>
-                    <span>{m.reply.text}</span>
-                  </button>
-                )}
-                {m.attachment?.kind === "smile" ? (
-                  <div className="msgText" style={{ paddingTop: 2 }}>
-                    <img className="smileImg" src={`./smiles/${encodeURIComponent(m.attachment.file)}`} alt={m.attachment.file} />
-                  </div>
-                ) : m.text.trim() ? (
-                  <div className="msgText">
-                    {!(mediaAttachmentsOf(m).some((att) => att.kind === "image" || att.kind === "video") && isAutoFileCaption(m.text)) &&
-                      renderTextWithSmiles(m.text, smilesSet, t("copyMessage"))}
-                    <ChatLinkEmbeds text={m.text} onOpen={openChatEmbed} />
-                  </div>
-                ) : null}
-                {mediaAttachmentsOf(m).length > 0 && (
-                  <div className={mediaAttachmentsOf(m).length > 1 ? "chatAlbum" : undefined} style={{ marginTop: 6 }}>
-                    {mediaAttachmentsOf(m).map((att) => {
-                      const previewUrl = "previewDataUrl" in att && att.previewDataUrl ? att.previewDataUrl : undefined;
-                      const fileUrl =
-                        (fileBlobEpoch >= 0 ? fileUrlByIdRef.current.get(att.fileId) : undefined) ??
-                        (att.kind === "image" ? previewUrl : undefined);
-                      const mediaUrl = fileUrl ?? previewUrl;
-                      const gif = att.kind === "image" && isGifAttachmentMime(att.mime, att.name);
-                      const openAttachment = () => {
-                        if (att.kind === "video" && fileUrl) {
-                          setChatMediaView({ kind: "video", src: fileUrl, title: att.name });
-                          return;
-                        }
-                        const src = fileUrl || previewUrl;
-                        if (!src) return;
-                        setChatMediaView({
-                          kind: gif || isGifAttachmentMime(att.mime, att.name) ? "animation" : "image",
-                          src,
-                          title: att.name
-                        });
-                      };
-                      return (
-                        <div key={att.fileId}>
-                          {att.kind === "image" && mediaUrl && (
-                            <button type="button" className={`chatMediaPreview chatMediaPreviewBtn${gif ? " chatMediaPreviewGif" : ""}`} onClick={openAttachment}>
-                              <img src={mediaUrl} alt={att.name} />
-                            </button>
-                          )}
-                          {att.kind === "video" && (previewUrl || fileUrl) && (
-                            <button type="button" className="chatMediaPreview chatMediaPreviewVideo chatMediaPreviewBtn" onClick={openAttachment}>
-                              {fileUrl ? (
-                                <video src={fileUrl} muted autoPlay loop playsInline preload="metadata" />
-                              ) : (
-                                <img src={previewUrl} alt={att.name} />
-                              )}
-                              <span className="chatMediaPreviewPlay" aria-hidden>▶</span>
-                            </button>
-                          )}
-                          {att.kind === "file" && previewUrl && (
-                            <button type="button" className="chatMediaPreview chatMediaPreviewBtn" onClick={openAttachment}>
-                              <img src={previewUrl} alt={att.name} />
-                            </button>
-                          )}
-                          <a
-                            className="btn"
-                            href={fileUrl ?? "#"}
-                            download={att.name}
-                            onClick={(e) => {
-                              const url = fileUrlByIdRef.current.get(att.fileId);
-                              if (!url && att.kind !== "image") e.preventDefault();
-                            }}
-                          >
-                            {t("download")}: {att.name}
-                          </a>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-                  </>
-                )}
-              </div>
-            );
-            })}
-            {scope && scopedMessages.length === 0 && <div className="muted">{t("noMessages")}</div>}
-            {!scope && <div className="muted">{t("pickChat")}</div>}
-            <div ref={chatEndRef} />
-          </div>
-
-          {scope && ((typingPeers.size > 0) || fileTransfers.length > 0) && (() => {
-            // Фильтруем статусы по scope (для комнат показываем только участников текущей комнаты)
-            const filteredTypingPeers = Array.from(typingPeers).filter(peerId => {
-              if (scope.type === "direct") {
-                return scope.peerId === peerId;
-              } else if (scope.type === "room") {
-                return call?.mode === "room" && call.roomId === scope.roomId && call.participants.some(p => p.peerId === peerId);
-              }
-              return false;
-            });
-            const filteredTransfers = fileTransfers.filter((tr) => {
-              if (tr.direction === "send") {
-                if (scope.type === "direct") return true;
-                if (scope.type === "room") return call?.mode === "room" && call.roomId === scope.roomId;
-                return false;
-              }
-              if (scope.type === "direct") {
-                return scope.peerId === tr.peerId;
-              } else if (scope.type === "room") {
-                return call?.mode === "room" && call.roomId === scope.roomId && (tr.peerId === "room" || call.participants.some(p => p.peerId === tr.peerId));
-              }
-              return false;
-            });
-            if (filteredTypingPeers.length === 0 && filteredTransfers.length === 0) return null;
-
-            const peerLabel = (peerId: string) => {
-              if (peerId === "room") return t("conference");
-              if (scope.type === "direct") {
-                return call?.mode === "direct" ? call.peerName : peers.find(p => p.peerId === peerId)?.userName ?? t("peerFallback");
-              }
-              if (scope.type === "room" && call?.mode === "room") {
-                return call.participants.find(p => p.peerId === peerId)?.userName ?? t("participantFallback");
-              }
-              return peers.find(p => p.peerId === peerId)?.userName ?? t("peerFallback");
-            };
-
-            const formatBytes = (n: number) => {
-              if (!n || n <= 0) return "0 KB";
-              if (n < 1024 * 1024) return `${Math.round(n / 1024)} KB`;
-              return `${(n / (1024 * 1024)).toFixed(1)} MB`;
-            };
-
-            return (
-              <div className="chatTransferStatus">
-                {filteredTypingPeers.map((peerId) => (
-                  <div key={`typing-${peerId}`} className="chatTransferTyping">
-                    {peerLabel(peerId)} {t("typing")}
-                  </div>
-                ))}
-                {filteredTransfers.map((tr) => (
-                  <div key={tr.key} className="chatTransferItem">
-                    <div className="chatTransferMeta">
-                      <span>
-                        {tr.direction === "send"
-                          ? t("fileSending", { name: tr.fileName })
-                          : t("fileReceiving", { name: tr.fileName, peer: peerLabel(tr.peerId) })}
-                      </span>
-                      <span className="chatTransferMetaRight">
-                        <span className="chatTransferPercent">{tr.percent}%</span>
-                        {tr.direction === "send" && tr.fileId && tr.percent < 100 && (
-                          <button
-                            type="button"
-                            className="btn btnDanger chatTransferCancel"
-                            onClick={() => cancelOutgoingFileTransfer(tr.fileId)}
-                          >
-                            {t("fileTransferCancel")}
-                          </button>
-                        )}
-                      </span>
-                    </div>
-                    <div className="chatTransferBar" role="progressbar" aria-valuenow={tr.percent} aria-valuemin={0} aria-valuemax={100}>
-                      <div className="chatTransferBarFill" style={{ width: `${tr.percent}%` }} />
-                    </div>
-                    {tr.total > 0 && (
-                      <div className="chatTransferBytes">
-                        {formatBytes(tr.transferred)} / {formatBytes(tr.total)}
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            );
-          })()}
-
-          {chatMenu && (() => {
-            const quoted = chats.find((item) => item.id === chatMenu.messageId);
-            if (!quoted || quoted.kind === "system") return null;
-            return (
-              <div className="chatCtxMenu" style={{ left: chatMenu.x, top: chatMenu.y }} onMouseDown={(event) => event.stopPropagation()}>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setChatReply({
-                      messageId: quoted.id,
-                      fromUserName: quoted.fromUserName,
-                      text: replySnippet(quoted, {
-                        photo: t("replyPhoto"),
-                        gif: t("replyGif"),
-                        video: t("replyVideo"),
-                        file: t("replyFile"),
-                        link: t("replyLink"),
-                        message: t("replyMessage")
-                      })
-                    });
-                    setChatMenu(null);
-                  }}
-                >
-                  {t("reply")}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    void copyChatPayload(quoted.text);
-                    setChatMenu(null);
-                  }}
-                >
-                  {t("copyMessage")}
-                </button>
-              </div>
-            );
-          })()}
-
-          <ChatComposer 
-            disabled={!scope} 
-            reply={chatReply}
-            onClearReply={() => setChatReply(null)}
-            onSend={(text, files, reply) => void sendComposedChat(text, files, reply)} 
-            smilesFiles={smilesFiles}
-            insertRef={insertChatTextRef}
-            queueRef={queueChatPasteRef}
-            onOpenEmbed={openChatEmbed}
-            onPasteFallback={() => void pasteBinaryFromClipboard()}
-            onTyping={() => {
-              // Отправляем уведомление о наборе текста через DataChannel
-              if (!scope) return;
-              const targets: string[] = [];
-              if (scope.type === "direct") {
-                targets.push(scope.peerId);
-              } else if (scope.type === "room" && call?.mode === "room") {
-                for (const p of call.participants) {
-                  if (p.peerId !== profile?.peerId) targets.push(p.peerId);
-                }
-              }
-              for (const peerId of targets) {
-                const dc = dcsRef.current.get(peerId);
-                if (dc && dc.readyState === "open") {
-                  try {
-                    dc.send(JSON.stringify({ t: "typing" }));
-                  } catch {
-                    // Игнорируем ошибки
-                  }
-                }
-              }
-            }}
-          />
-        </div>
-        </div>
-      </div>
-
-      {gamesMenuOpen && profile && (
-        <GamesMenu
-          open
-          mode={call?.mode === "room" ? "room" : "direct"}
-          selfPeerId={profile.peerId}
-          participants={
-            call?.mode === "room"
-              ? call.participants
-              : call?.mode === "direct"
-                ? [
-                    { peerId: profile.peerId, userName: profile.userName },
-                    { peerId: call.peerId, userName: call.peerName }
-                  ]
-                : [{ peerId: profile.peerId, userName: profile.userName }]
-          }
-          watchOffer={watchOffer}
-          busy={Boolean(outgoingGameInvite || gameSession?.role === "player")}
-          onClose={() => setGamesMenuOpen(false)}
-          onPlay={(gameId, opponent) => inviteToGame(gameId, opponent)}
-          onPlayComputer={(gameId, difficulty) => startComputerGame(gameId, difficulty)}
-          onWatch={watchCurrentGame}
-        />
-      )}
-
-      {avatarViewer && (avatarUrls[avatarViewer.peerId] || avatarViewer.peerId === profile?.peerId) && (
-        <Modal title={avatarViewer.name} onClose={() => setAvatarViewer(null)}>
-          <div className="avatarViewer">
-            <div
-              className={`avatarViewerImage${avatarViewer.peerId === profile?.peerId && avatarUrls[avatarViewer.peerId] ? " is-editable" : ""}`}
-              onMouseDown={(e) => {
-                if (e.button !== 0) return;
-                if (avatarViewer.peerId !== profile?.peerId) return;
-                if (!avatarUrls[avatarViewer.peerId]) return;
-                e.preventDefault();
-                e.stopPropagation();
-                const rect = e.currentTarget.getBoundingClientRect();
-                const current = profile.avatarPosition ?? { x: 50, y: 50, zoom: 100 };
-                avatarDragRef.current = {
-                  x: e.clientX,
-                  y: e.clientY,
-                  startX: current.x,
-                  startY: current.y,
-                  width: rect.width,
-                  height: rect.height
-                };
-                const handleMove = (e2: MouseEvent) => {
-                  const drag = avatarDragRef.current;
-                  if (!drag || !profile) return;
-                  const dx = ((e2.clientX - drag.x) / Math.max(1, drag.width)) * 100;
-                  const dy = ((e2.clientY - drag.y) / Math.max(1, drag.height)) * 100;
-                  const avatarPosition: AvatarPosition = {
-                    x: Math.max(0, Math.min(100, drag.startX - dx)),
-                    y: Math.max(0, Math.min(100, drag.startY - dy)),
-                    zoom: current.zoom ?? 100
-                  };
-                  setProfile({ ...profile, avatarPosition });
-                };
-                const handleUp = (e2: MouseEvent) => {
-                  document.removeEventListener("mousemove", handleMove);
-                  document.removeEventListener("mouseup", handleUp);
-                  const drag = avatarDragRef.current;
-                  avatarDragRef.current = null;
-                  if (!drag || !profile) return;
-                  const dx = ((e2.clientX - drag.x) / Math.max(1, drag.width)) * 100;
-                  const dy = ((e2.clientY - drag.y) / Math.max(1, drag.height)) * 100;
-                  const avatarPosition: AvatarPosition = {
-                    x: Math.max(0, Math.min(100, drag.startX - dx)),
-                    y: Math.max(0, Math.min(100, drag.startY - dy)),
-                    zoom: (profile.avatarPosition ?? current).zoom ?? 100
-                  };
-                  void commitAvatarPosition(avatarPosition);
-                };
-                document.addEventListener("mousemove", handleMove);
-                document.addEventListener("mouseup", handleUp);
-              }}
-            >
-              {avatarUrls[avatarViewer.peerId] ? (
-              <img
-                className="avatarViewerImageInner"
-                src={avatarUrls[avatarViewer.peerId]}
-                alt={t("avatarAlt", { name: avatarViewer.name })}
-                style={{
-                  objectPosition: `${avatarPositionFor(avatarViewer.peerId)?.x ?? 50}% ${avatarPositionFor(avatarViewer.peerId)?.y ?? 50}%`,
-                  transform: `scale(${Math.max(1, Math.min(3, (avatarPositionFor(avatarViewer.peerId)?.zoom ?? 100) / 100))})`,
-                  transformOrigin: `${avatarPositionFor(avatarViewer.peerId)?.x ?? 50}% ${avatarPositionFor(avatarViewer.peerId)?.y ?? 50}%`
-                }}
-                draggable={false}
-              />
-              ) : null}
-            </div>
-            {avatarViewer.peerId === profile?.peerId && (
-              <div className="avatarPositionControls">
-                <div className="muted" style={{ fontSize: 12 }}>
-                  {t("avatarDragHint")}
-                </div>
-                <label>
-                  {t("avatarPosX")}
-                  <input
-                    type="range"
-                    min="0"
-                    max="100"
-                    value={profile.avatarPosition?.x ?? 50}
-                    onChange={(event) => void setAvatarPosition("x", Number(event.target.value))}
-                  />
-                </label>
-                <label>
-                  {t("avatarPosY")}
-                  <input
-                    type="range"
-                    min="0"
-                    max="100"
-                    value={profile.avatarPosition?.y ?? 50}
-                    onChange={(event) => void setAvatarPosition("y", Number(event.target.value))}
-                  />
-                </label>
-                <label>
-                  {t("avatarZoom")}
-                  <input
-                    type="range"
-                    min="100"
-                    max="300"
-                    value={profile.avatarPosition?.zoom ?? 100}
-                    onChange={(event) => void setAvatarPosition("zoom", Number(event.target.value))}
-                  />
-                  <span className="muted">{profile.avatarPosition?.zoom ?? 100}%</span>
-                </label>
-                <div className="row avatarViewerActions">
-                  <button className="btn btnPrimary" onClick={() => void chooseAvatar()}>
-                    {t("addAvatar")}
-                  </button>
-                  <button className="btn" onClick={() => void removeAvatar()}>
-                    {t("hideAvatar")}
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
-        </Modal>
-      )}
-
-      {exitConfirmKind && (
-        <Modal
-          title={exitConfirmKind === "leave" ? t("leaveCallConfirmTitle") : t("exitConfirmTitle")}
-          onClose={() => setExitConfirmKind(null)}
-        >
-          <div className="muted" style={{ marginBottom: 16 }}>
-            {exitConfirmKind === "leave" ? t("leaveCallConfirmBody") : t("exitConfirmBody")}
-          </div>
-          <div className="row" style={{ justifyContent: "flex-end", flexWrap: "wrap", gap: 8 }}>
-            <button className="btn" onClick={() => setExitConfirmKind(null)}>
-              {t("cancel")}
-            </button>
-            <button
-              className="btn btnDanger"
-              onClick={() => {
-                const kind = exitConfirmKind;
-                setExitConfirmKind(null);
-                if (kind === "leave") void leaveCall();
-                else quitApp();
-              }}
-            >
-              {exitConfirmKind === "leave" ? t("leaveCallConfirmAction") : t("exitApp")}
-            </button>
-          </div>
-        </Modal>
-      )}
-
-      {settingsOpen && (
-        <Modal
-          title={t("settings")}
-          native={isSettingsWindow}
-          onClose={() => {
-            if (isSettingsWindow) {
-              void window.lokameet.settings.close();
-              return;
-            }
-            setSettingsOpen(false);
-          }}
-          size="settings"
-        >
-          <div className="settingsProjectLink">
-            <img className="appLogo settingsLogo" src={APP_ICON_SRC} alt="" />
-            <span>{t("projectLink")}</span>
-            <button
-              type="button"
-              className="settingsProjectLinkButton"
-              onClick={() => void window.lokameet.app.openExternal("https://github.com/mistrwest/LokaMeet").catch(() => undefined)}
-            >
-              github.com/mistrwest/LokaMeet
-            </button>
-          </div>
-          <div className="settingsTabs">
-            <button
-              className="btn"
-              style={{
-                borderRadius: "4px 4px 0 0",
-                borderBottom: settingsTab === "media" ? "2px solid var(--primary)" : "2px solid transparent",
-                background: settingsTab === "media" ? "rgba(255,255,255,0.1)" : undefined
-              }}
-              onClick={() => setSettingsTab("media")}
-            >
-              {t("settingsMedia")}
-            </button>
-            <button
-              className="btn"
-              style={{
-                borderRadius: "4px 4px 0 0",
-                borderBottom: settingsTab === "camera" ? "2px solid var(--primary)" : "2px solid transparent",
-                background: settingsTab === "camera" ? "rgba(255,255,255,0.1)" : undefined
-              }}
-              onClick={() => setSettingsTab("camera")}
-            >
-              {t("settingsCamera")}
-            </button>
-            <button
-              className="btn"
-              style={{
-                borderRadius: "4px 4px 0 0",
-                borderBottom: settingsTab === "audio" ? "2px solid var(--primary)" : "2px solid transparent",
-                background: settingsTab === "audio" ? "rgba(255,255,255,0.1)" : undefined
-              }}
-              onClick={() => setSettingsTab("audio")}
-            >
-              {t("settingsAudio")}
-            </button>
-            <button
-              className="btn"
-              style={{
-                borderRadius: "4px 4px 0 0",
-                borderBottom: settingsTab === "ui" ? "2px solid var(--primary)" : "2px solid transparent",
-                background: settingsTab === "ui" ? "rgba(255,255,255,0.1)" : undefined
-              }}
-              onClick={() => setSettingsTab("ui")}
-            >
-              {t("settingsUi")}
-            </button>
-            <button
-              className="btn"
-              style={{
-                borderRadius: "4px 4px 0 0",
-                borderBottom: settingsTab === "games" ? "2px solid var(--primary)" : "2px solid transparent",
-                background: settingsTab === "games" ? "rgba(255,255,255,0.1)" : undefined
-              }}
-              onClick={() => setSettingsTab("games")}
-            >
-              {t("settingsGames")}
-            </button>
-            <button
-              className="btn"
-              style={{
-                borderRadius: "4px 4px 0 0",
-                borderBottom: settingsTab === "connection" ? "2px solid var(--primary)" : "2px solid transparent",
-                background: settingsTab === "connection" ? "rgba(255,255,255,0.1)" : undefined
-              }}
-              onClick={() => setSettingsTab("connection")}
-            >
-              {t("settingsConnection")}
-            </button>
-            <button
-              className="btn"
-              style={{
-                borderRadius: "4px 4px 0 0",
-                borderBottom: settingsTab === "help" ? "2px solid var(--primary)" : "2px solid transparent",
-                background: settingsTab === "help" ? "rgba(255,255,255,0.1)" : undefined
-              }}
-              onClick={() => setSettingsTab("help")}
-            >
-              {t("help")}
-            </button>
-          </div>
-          <div className={`settingsTabBody${settingsTab === "camera" ? " is-camera" : ""}`}>
-          
-          {settingsTab === "media" && (
-          <>
-          <div className="row" style={{ flexWrap: "wrap" }}>
-            <div className="muted" style={{ width: 160 }}>
-              {t("microphone")}
-            </div>
-            <div style={{ flex: "1 1 240px", maxWidth: 520, display: "flex", flexDirection: "column", gap: 6 }}>
-              <Select
-                value={selectedAudioInputId}
-                onChange={(v) => void switchMicrophone(v)}
-                options={[
-                  { value: "", label: t("deviceDefault") },
-                  ...audioInputDevices.map((d) => ({
-                    value: d.deviceId,
-                    label: d.label || `Mic ${d.deviceId.slice(0, 6)}`
-                  }))
-                ]}
-              />
-              <div style={{ height: 8, borderRadius: 999, border: "1px solid var(--border)", background: "rgba(255,255,255,0.04)", overflow: "hidden" }}>
-                <div
-                  style={{
-                    height: "100%",
-                    width: `${Math.round(micLevel * 100)}%`,
-                    background: micLevel > 0.7 ? "rgba(248,113,113,0.9)" : micLevel > 0.35 ? "rgba(251,191,36,0.9)" : "rgba(52,211,153,0.9)",
-                    transition: "width 80ms linear"
-                  }}
-                />
-              </div>
-              <div className="muted" style={{ fontSize: 12 }}>
-                {t("micLevel")}: {Math.round(micLevel * 100)}%
-              </div>
-            </div>
-          </div>
-
-          <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
-            <div className="muted" style={{ width: 160 }}>
-              {t("audioOutput")}
-            </div>
-            <Select
-              value={selectedAudioOutputId}
-              onChange={(v) => setSelectedAudioOutputId(v)}
-              style={{ flex: "1 1 240px", maxWidth: 520 }}
-              options={[
-                { value: "", label: t("deviceDefault") },
-                ...audioOutputDevices.map((d) => ({
-                  value: d.deviceId,
-                  label: d.label || `Speaker ${d.deviceId.slice(0, 6)}`
-                }))
-              ]}
-            />
-          </div>
-          <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
-            <div className="muted" style={{ width: 160 }}>
-              {t("videoQuality")}
-            </div>
-            <div style={{ flex: "1 1 240px", maxWidth: 520, display: "flex", flexDirection: "column", gap: 6 }}>
-              <Select
-                value={mediaCfg.videoQuality}
-                onChange={(v) => void applyVideoQuality(v as VideoQuality)}
-                options={VIDEO_QUALITY_OPTIONS.map((q) => ({ value: q.value, label: t(q.labelKey) }))}
-              />
-              <div className="muted" style={{ fontSize: 12 }}>
-                {t("videoQualityHint")}
-              </div>
-            </div>
-          </div>
-          <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
-            <div className="muted" style={{ width: 160 }}>
-              {t("screenShareFps")}
-            </div>
-            <div style={{ flex: "1 1 240px", maxWidth: 520, display: "flex", flexDirection: "column", gap: 6 }}>
-              <div>{t("screenShareFpsValue", { fps: screenShareFps })}</div>
-              <div className="muted" style={{ fontSize: 12 }}>
-                {t("screenShareFpsHint")}
-              </div>
-            </div>
-          </div>
-          <div className="panelSectionDivider" />
-          <div className="settingsGroupTitle">{t("settingsRecordings")}</div>
-          <div className="muted settingsHint">{t("recordingFolderHint")}</div>
-          <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
-            <div className="muted" style={{ width: 160 }}>
-              {t("recordingFormat")}
-            </div>
-            <Select
-              value={recordingFormat}
-              onChange={(v) => setRecordingFormat(v === "avi" ? "avi" : "mp4")}
-              options={[
-                { value: "mp4", label: t("recordingFormatMp4") },
-                { value: "avi", label: t("recordingFormatAvi") }
-              ]}
-            />
-          </div>
-          <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
-            <div className="muted" style={{ width: 160 }}>
-              {t("recordingQuality")}
-            </div>
-            <Select
-              value={recordingQuality}
-              onChange={(v) =>
-                setRecordingQuality(
-                  v === "480p" || v === "720p" || v === "1440p" || v === "1080p" ? v : "1080p"
-                )
-              }
-              options={[
-                { value: "480p", label: "480p" },
-                { value: "720p", label: "720p" },
-                { value: "1080p", label: "1080p" },
-                { value: "1440p", label: "1440p" }
-              ]}
-            />
-          </div>
-          <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
-            <div className="muted" style={{ width: 160 }}>
-              {t("recordingFps")}
-            </div>
-            <Select
-              value={String(recordingFps)}
-              onChange={(v) => setRecordingFps(v === "15" ? 15 : v === "24" ? 24 : 30)}
-              options={[
-                { value: "15", label: "15" },
-                { value: "24", label: "24" },
-                { value: "30", label: "30" }
-              ]}
-            />
-          </div>
-          <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
-            <div className="muted" style={{ width: 160 }}>
-              {t("recordingBitrate")}
-            </div>
-            <Select
-              value={recordingBitrate}
-              onChange={(v) =>
-                setRecordingBitrate(
-                  v === "low" || v === "medium" || v === "max" || v === "high" ? v : "high"
-                )
-              }
-              options={[
-                { value: "low", label: t("recordingBitrateLow") },
-                { value: "medium", label: t("recordingBitrateMedium") },
-                { value: "high", label: t("recordingBitrateHigh") },
-                { value: "max", label: t("recordingBitrateMax") }
-              ]}
-            />
-          </div>
-          <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
-            <div className="muted" style={{ width: 160 }}>
-              {t("recordingFolder")}
-            </div>
-            <div style={{ display: "flex", gap: 8, flex: "1 1 240px", minWidth: 0 }}>
-              <input className="btn grow" value={recordingDir} readOnly placeholder={t("recordingFolderPlaceholder")} />
-              <button className="btn" onClick={() => void chooseRecordingFolder()}>
-                {t("chooseRecordingFolder")}
-              </button>
-              <button
-                className="btn"
-                disabled={!lastRecordingPath && !recordingDir}
-                title={lastRecordingPath || recordingDir || undefined}
-                onClick={() => {
-                  const folder = parentDirOf(lastRecordingPath) || recordingDir;
-                  if (!folder) return;
-                  void window.lokameet.app.openPath(folder);
-                }}
-              >
-                {t("openRecordingFolder")}
-              </button>
-            </div>
-          </div>
-          </>
-          )}
-
-          {settingsTab === "camera" && (
-          <>
-          <div className="settingsCameraSticky">
-          <div className="row" style={{ flexWrap: "wrap" }}>
-            <div className="muted" style={{ width: 160 }}>
-              {t("cameraDevice")}
-            </div>
-            <Select
-              value={selectedVideoDeviceId}
-              onChange={(v) => void switchCamera(v)}
-              style={{ flex: "1 1 240px", maxWidth: 520 }}
-              options={[
-                { value: "", label: t("deviceDefault") },
-                ...videoDevices.map((d) => ({
-                  value: d.deviceId,
-                  label: d.label || `Camera ${d.deviceId.slice(0, 6)}`
-                }))
-              ]}
-            />
-          </div>
-
-          <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
-            <div className="muted" style={{ width: 160 }}>
-              {t("videoQuality")}
-            </div>
-            <Select
-              value={mediaCfg.videoQuality}
-              onChange={(v) => void applyVideoQuality(v as VideoQuality)}
-              options={VIDEO_QUALITY_OPTIONS.map((q) => ({ value: q.value, label: t(q.labelKey) }))}
-            />
-          </div>
-          <div className="muted" style={{ fontSize: 12, marginTop: 6, marginLeft: 160 }}>
-            {t("videoQualityHint")}
-          </div>
-
-          <div className="row" style={{ marginTop: 16, flexWrap: "wrap", alignItems: "flex-start" }}>
-            <div className="muted" style={{ width: 160 }}>
-              {t("cameraPreview")}
-            </div>
-            <div style={{ flex: "1 1 240px" }}>
-              <div
-                className={`tile cameraSettingsPreviewWrap${previewDragging ? " is-dragging" : ""}`}
-                style={{
-                  aspectRatio: tileAspect === "auto" ? "16 / 9" : tileAspectCss(tileAspect),
-                  ["--tile-fit" as string]: tileObjectFit,
-                  ["--tile-radius" as string]: `${tileRadius}px`
-                } as React.CSSProperties}
-                onMouseDown={(e) => {
-                  if (e.button !== 0) return;
-                  e.preventDefault();
-                  e.stopPropagation();
-                  const rect = e.currentTarget.getBoundingClientRect();
-                  previewDragRef.current = {
-                    x: e.clientX,
-                    y: e.clientY,
-                    panX: cameraFx.cropPanX,
-                    panY: cameraFx.cropPanY,
-                    width: rect.width,
-                    height: rect.height
-                  };
-                  setPreviewDragging(true);
-                  const handleMove = (e2: MouseEvent) => {
-                    const drag = previewDragRef.current;
-                    if (!drag) return;
-                    const panX = Math.max(-1, Math.min(1, drag.panX - ((e2.clientX - drag.x) / Math.max(1, drag.width)) * 2));
-                    const panY = Math.max(-1, Math.min(1, drag.panY - ((e2.clientY - drag.y) / Math.max(1, drag.height)) * 2));
-                    setCameraFx((c) => (c.cropPanX === panX && c.cropPanY === panY ? c : { ...c, cropPanX: panX, cropPanY: panY }));
-                  };
-                  const handleUp = () => {
-                    document.removeEventListener("mousemove", handleMove);
-                    document.removeEventListener("mouseup", handleUp);
-                    previewDragRef.current = null;
-                    setPreviewDragging(false);
-                  };
-                  document.addEventListener("mousemove", handleMove);
-                  document.addEventListener("mouseup", handleUp);
-                }}
-              >
-                <video ref={cameraPreviewRef} className="cameraSettingsPreview" playsInline muted autoPlay />
-              </div>
-              <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
-                {t("cameraPreviewHint")}
-              </div>
-            </div>
-          </div>
-          </div>
-
-          <div className="settingsCameraScroll">
-          <div className="settingsGroupTitle">{t("cameraFraming")}</div>
-          <div className="row" style={{ marginTop: 8, flexWrap: "wrap" }}>
-            <div className="muted" style={{ width: 160 }}>
-              {t("cameraCropZoom")}
-            </div>
-            <input
-              type="range"
-              min={100}
-              max={250}
-              step={5}
-              value={Math.round(cameraFx.cropZoom * 100)}
-              onChange={(e) => setCameraFx((c) => ({ ...c, cropZoom: Number(e.target.value) / 100 }))}
-              style={{ flex: "1 1 240px" }}
-            />
-            <span className="muted" style={{ width: 54, textAlign: "right" }}>
-              {Math.round(cameraFx.cropZoom * 100)}%
-            </span>
-          </div>
-          <div className="row" style={{ marginTop: 8, flexWrap: "wrap" }}>
-            <div className="muted" style={{ width: 160 }}>
-              {t("cameraCropPanX")}
-            </div>
-            <input
-              type="range"
-              min={-100}
-              max={100}
-              step={1}
-              value={Math.round(-cameraFx.cropPanX * 100)}
-              onChange={(e) => setCameraFx((c) => ({ ...c, cropPanX: -Number(e.target.value) / 100 }))}
-              style={{ flex: "1 1 240px" }}
-            />
-            <span className="muted" style={{ width: 54, textAlign: "right" }}>
-              {Math.round(-cameraFx.cropPanX * 100)}
-            </span>
-          </div>
-          <div className="row" style={{ marginTop: 8, flexWrap: "wrap" }}>
-            <div className="muted" style={{ width: 160 }}>
-              {t("cameraCropPanY")}
-            </div>
-            <input
-              type="range"
-              min={-100}
-              max={100}
-              step={1}
-              value={Math.round(cameraFx.cropPanY * 100)}
-              onChange={(e) => setCameraFx((c) => ({ ...c, cropPanY: Number(e.target.value) / 100 }))}
-              style={{ flex: "1 1 240px" }}
-            />
-            <span className="muted" style={{ width: 54, textAlign: "right" }}>
-              {Math.round(cameraFx.cropPanY * 100)}
-            </span>
-          </div>
-          <div className="row" style={{ marginTop: 8, flexWrap: "wrap" }}>
-            <div className="muted" style={{ width: 160 }}>
-              {t("cameraBlurAmount")}
-            </div>
-            <input
-              type="range"
-              min={10}
-              max={100}
-              value={cameraFx.blurAmount}
-              onChange={(e) => setCameraFx((c) => ({ ...c, blurAmount: Number(e.target.value) }))}
-              style={{ flex: "1 1 240px" }}
-            />
-            <span className="muted" style={{ width: 54, textAlign: "right" }}>
-              {cameraFx.blurAmount}%
-            </span>
-          </div>
-          <div className="muted settingsHint">{t("cameraCropZoomHint")}</div>
-
-          <div className="panelSectionDivider" />
-          <div className="settingsGroupTitle">{t("cameraManual")}</div>
-          <div className="muted settingsHint">{t("cameraManualHint")}</div>
-          {cameraCaps && !cameraHasManualControls(cameraCaps) && (
-            <div className="muted" style={{ fontSize: 12 }}>
-              {t("cameraManualUnsupported")}
-            </div>
-          )}
-
-          {cameraCaps && cameraCaps.focusModes.length > 0 && (
-            <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
-              <div className="muted" style={{ width: 160 }}>
-                {t("cameraFocusMode")}
-              </div>
-              <Select
-                value={cameraCaps.focusModes.includes(cameraControls.focusMode) ? cameraControls.focusMode : cameraCaps.focusModes[0]}
-                onChange={(v) =>
-                  setCameraControls((c) => ({
-                    ...c,
-                    focusMode: v === "manual" || v === "single-shot" || v === "none" ? v : "continuous"
-                  }))
-                }
-                options={cameraCaps.focusModes.map((mode) => ({ value: mode, label: t(cameraModeLabelKey("focus", mode)) }))}
-              />
-            </div>
-          )}
-          {cameraCaps?.focusDistance && cameraControls.focusMode === "manual" && (
-            <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
-              <div className="muted" style={{ width: 160 }}>
-                {t("cameraFocusDistance")}
-              </div>
-              <input
-                type="range"
-                min={cameraCaps.focusDistance.min}
-                max={cameraCaps.focusDistance.max}
-                step={cameraCaps.focusDistance.step ?? (cameraCaps.focusDistance.max - cameraCaps.focusDistance.min) / 100}
-                value={cameraControls.focusDistance ?? cameraCaps.focusDistance.min}
-                onChange={(e) => setCameraControls((c) => ({ ...c, focusDistance: Number(e.target.value) }))}
-                style={{ flex: "1 1 240px" }}
-              />
-            </div>
-          )}
-          {cameraCaps?.zoom && (
-            <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
-              <div className="muted" style={{ width: 160 }}>
-                {t("cameraZoom")}
-              </div>
-              <input
-                type="range"
-                min={cameraCaps.zoom.min}
-                max={cameraCaps.zoom.max}
-                step={cameraCaps.zoom.step ?? (cameraCaps.zoom.max - cameraCaps.zoom.min) / 100}
-                value={cameraControls.zoom ?? cameraCaps.zoom.min}
-                onChange={(e) => setCameraControls((c) => ({ ...c, zoom: Number(e.target.value) }))}
-                style={{ flex: "1 1 240px" }}
-              />
-            </div>
-          )}
-          {cameraCaps && cameraCaps.exposureModes.length > 0 && (
-            <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
-              <div className="muted" style={{ width: 160 }}>
-                {t("cameraExposureMode")}
-              </div>
-              <Select
-                value={cameraCaps.exposureModes.includes(cameraControls.exposureMode) ? cameraControls.exposureMode : cameraCaps.exposureModes[0]}
-                onChange={(v) =>
-                  setCameraControls((c) => ({
-                    ...c,
-                    exposureMode: v === "manual" || v === "single-shot" || v === "none" ? v : "continuous"
-                  }))
-                }
-                options={cameraCaps.exposureModes.map((mode) => ({ value: mode, label: t(cameraModeLabelKey("exposure", mode)) }))}
-              />
-            </div>
-          )}
-          {cameraCaps?.exposureCompensation && (
-            <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
-              <div className="muted" style={{ width: 160 }}>
-                {t("cameraExposureCompensation")}
-              </div>
-              <input
-                type="range"
-                min={cameraCaps.exposureCompensation.min}
-                max={cameraCaps.exposureCompensation.max}
-                step={cameraCaps.exposureCompensation.step ?? 0.1}
-                value={cameraControls.exposureCompensation ?? 0}
-                onChange={(e) => setCameraControls((c) => ({ ...c, exposureCompensation: Number(e.target.value) }))}
-                style={{ flex: "1 1 240px" }}
-              />
-            </div>
-          )}
-          {cameraCaps?.exposureTime && (cameraCaps.exposureModes.length === 0 || cameraControls.exposureMode === "manual") && (
-            <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
-              <div className="muted" style={{ width: 160 }}>
-                {t("cameraExposureTime")}
-              </div>
-              <input
-                type="range"
-                min={cameraCaps.exposureTime.min}
-                max={cameraCaps.exposureTime.max}
-                step={cameraCaps.exposureTime.step ?? (cameraCaps.exposureTime.max - cameraCaps.exposureTime.min) / 100}
-                value={cameraControls.exposureTime ?? cameraCaps.exposureTime.min}
-                onChange={(e) => setCameraControls((c) => ({ ...c, exposureTime: Number(e.target.value) }))}
-                style={{ flex: "1 1 240px" }}
-              />
-            </div>
-          )}
-          {cameraCaps?.brightness && (
-            <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
-              <div className="muted" style={{ width: 160 }}>
-                {t("cameraBrightness")}
-              </div>
-              <input
-                type="range"
-                min={cameraCaps.brightness.min}
-                max={cameraCaps.brightness.max}
-                step={cameraCaps.brightness.step ?? 1}
-                value={cameraControls.brightness ?? Math.round((cameraCaps.brightness.min + cameraCaps.brightness.max) / 2)}
-                onChange={(e) => setCameraControls((c) => ({ ...c, brightness: Number(e.target.value) }))}
-                style={{ flex: "1 1 240px" }}
-              />
-            </div>
-          )}
-          {cameraCaps?.contrast && (
-            <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
-              <div className="muted" style={{ width: 160 }}>
-                {t("cameraContrast")}
-              </div>
-              <input
-                type="range"
-                min={cameraCaps.contrast.min}
-                max={cameraCaps.contrast.max}
-                step={cameraCaps.contrast.step ?? 1}
-                value={cameraControls.contrast ?? Math.round((cameraCaps.contrast.min + cameraCaps.contrast.max) / 2)}
-                onChange={(e) => setCameraControls((c) => ({ ...c, contrast: Number(e.target.value) }))}
-                style={{ flex: "1 1 240px" }}
-              />
-            </div>
-          )}
-          {cameraCaps?.saturation && (
-            <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
-              <div className="muted" style={{ width: 160 }}>
-                {t("cameraSaturation")}
-              </div>
-              <input
-                type="range"
-                min={cameraCaps.saturation.min}
-                max={cameraCaps.saturation.max}
-                step={cameraCaps.saturation.step ?? 1}
-                value={cameraControls.saturation ?? Math.round((cameraCaps.saturation.min + cameraCaps.saturation.max) / 2)}
-                onChange={(e) => setCameraControls((c) => ({ ...c, saturation: Number(e.target.value) }))}
-                style={{ flex: "1 1 240px" }}
-              />
-            </div>
-          )}
-          {cameraCaps?.sharpness && (
-            <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
-              <div className="muted" style={{ width: 160 }}>
-                {t("cameraSharpness")}
-              </div>
-              <input
-                type="range"
-                min={cameraCaps.sharpness.min}
-                max={cameraCaps.sharpness.max}
-                step={cameraCaps.sharpness.step ?? 1}
-                value={cameraControls.sharpness ?? Math.round((cameraCaps.sharpness.min + cameraCaps.sharpness.max) / 2)}
-                onChange={(e) => setCameraControls((c) => ({ ...c, sharpness: Number(e.target.value) }))}
-                style={{ flex: "1 1 240px" }}
-              />
-            </div>
-          )}
-          {cameraCaps?.pan && (
-            <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
-              <div className="muted" style={{ width: 160 }}>
-                {t("cameraPan")}
-              </div>
-              <input
-                type="range"
-                min={cameraCaps.pan.min}
-                max={cameraCaps.pan.max}
-                step={cameraCaps.pan.step ?? (cameraCaps.pan.max - cameraCaps.pan.min) / 100}
-                value={cameraControls.pan ?? cameraCaps.pan.min}
-                onChange={(e) => setCameraControls((c) => ({ ...c, pan: Number(e.target.value) }))}
-                style={{ flex: "1 1 240px" }}
-              />
-            </div>
-          )}
-          {cameraCaps?.tilt && (
-            <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
-              <div className="muted" style={{ width: 160 }}>
-                {t("cameraTilt")}
-              </div>
-              <input
-                type="range"
-                min={cameraCaps.tilt.min}
-                max={cameraCaps.tilt.max}
-                step={cameraCaps.tilt.step ?? (cameraCaps.tilt.max - cameraCaps.tilt.min) / 100}
-                value={cameraControls.tilt ?? cameraCaps.tilt.min}
-                onChange={(e) => setCameraControls((c) => ({ ...c, tilt: Number(e.target.value) }))}
-                style={{ flex: "1 1 240px" }}
-              />
-            </div>
-          )}
-          {cameraCaps && cameraCaps.whiteBalanceModes.length > 0 && (
-            <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
-              <div className="muted" style={{ width: 160 }}>
-                {t("cameraWhiteBalance")}
-              </div>
-              <Select
-                value={
-                  cameraCaps.whiteBalanceModes.includes(cameraControls.whiteBalanceMode)
-                    ? cameraControls.whiteBalanceMode
-                    : cameraCaps.whiteBalanceModes[0]
-                }
-                onChange={(v) =>
-                  setCameraControls((c) => ({
-                    ...c,
-                    whiteBalanceMode: v === "manual" || v === "single-shot" || v === "none" ? v : "continuous"
-                  }))
-                }
-                options={cameraCaps.whiteBalanceModes.map((mode) => ({ value: mode, label: t(cameraModeLabelKey("wb", mode)) }))}
-              />
-            </div>
-          )}
-          {cameraCaps?.colorTemperature && cameraControls.whiteBalanceMode === "manual" && (
-            <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
-              <div className="muted" style={{ width: 160 }}>
-                {t("cameraColorTemperature")}
-              </div>
-              <input
-                type="range"
-                min={cameraCaps.colorTemperature.min}
-                max={cameraCaps.colorTemperature.max}
-                step={cameraCaps.colorTemperature.step ?? 50}
-                value={cameraControls.colorTemperature ?? cameraCaps.colorTemperature.min}
-                onChange={(e) => setCameraControls((c) => ({ ...c, colorTemperature: Number(e.target.value) }))}
-                style={{ flex: "1 1 240px" }}
-              />
-              <span className="muted" style={{ width: 54, textAlign: "right" }}>
-                {Math.round(cameraControls.colorTemperature ?? cameraCaps.colorTemperature.min)}K
-              </span>
-            </div>
-          )}
-
-          <div className="panelSectionDivider" />
-          <div className="settingsGroupTitle">{t("cameraBackground")}</div>
-          <div className="muted settingsHint">{t("cameraBackgroundHint")}</div>
-          <div className="cameraBgGrid">
-            <button
-              type="button"
-              className={`cameraBgTile ${cameraFx.backgroundMode === "none" ? "is-active" : ""}`}
-              onClick={() => setCameraFx((c) => ({ ...c, backgroundMode: "none" }))}
-            >
-              <span className="cameraBgTileLabel">{t("cameraBgNone")}</span>
-            </button>
-            <button
-              type="button"
-              className={`cameraBgTile ${cameraFx.backgroundMode === "blur" ? "is-active" : ""}`}
-              onClick={() => setCameraFx((c) => ({ ...c, backgroundMode: "blur" }))}
-            >
-              <span className="cameraBgTileLabel">{t("cameraBgBlur")}</span>
-            </button>
-            {CAMERA_PRESETS.map((preset) => (
-              <button
-                key={preset.id}
-                type="button"
-                className={`cameraBgTile ${cameraFx.backgroundMode === "preset" && cameraFx.presetId === preset.id ? "is-active" : ""}`}
-                onClick={() => setCameraFx((c) => ({ ...c, backgroundMode: "preset", presetId: preset.id }))}
-                title={t(`cameraBg_${preset.id}`)}
-              >
-                <img src={cameraBgAssetUrl(preset.file)} alt={t(`cameraBg_${preset.id}`)} />
-                <span className="cameraBgTileCaption">{t(`cameraBg_${preset.id}`)}</span>
-              </button>
-            ))}
-            {customCameraBgs.map((bg) => (
-              <div
-                key={bg.id}
-                className={`cameraBgTile ${cameraFx.backgroundMode === "custom" && cameraFx.customId === bg.id ? "is-active" : ""}`}
-              >
-                <button
-                  type="button"
-                  className="cameraBgTileHit"
-                  onClick={() => setCameraFx((c) => ({ ...c, backgroundMode: "custom", customId: bg.id, customDataUrl: bg.dataUrl }))}
-                >
-                  <img src={bg.dataUrl} alt={t("cameraBgCustom")} />
-                  <span className="cameraBgTileCaption">{t("cameraBgCustom")}</span>
-                </button>
-                <button
-                  type="button"
-                  className="cameraBgTileRemove"
-                  title={t("cameraBgDelete")}
-                  onClick={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    void deleteCustomCameraBackground(bg.id);
-                  }}
-                >
-                  ×
-                </button>
-              </div>
-            ))}
-            <button
-              type="button"
-              className="cameraBgTile cameraBgTileAdd"
-              onClick={() => void addCustomCameraBackground()}
-            >
-              <span className="cameraBgTileLabel">+</span>
-              <span className="cameraBgTileCaption">{t("cameraBgAdd")}</span>
-            </button>
-          </div>
-          </div>
-          </>
-          )}
-
-          {settingsTab === "audio" && (
-          <>
-          <div className="row" style={{ flexWrap: "wrap" }}>
-            <div className="muted" style={{ width: 160 }}>
-              {t("micVolume")}
-            </div>
-            <input
-              type="range"
-              min={0}
-              max={100}
-              value={microphoneVolume}
-              onChange={(e) => setMicrophoneVolume(Number(e.target.value))}
-              style={{ flex: "1 1 240px" }}
-            />
-            <span className="muted" style={{ width: 54, textAlign: "right" }}>
-              {microphoneVolume}%
-            </span>
-          </div>
-
-          <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
-            <div className="muted" style={{ width: 160 }}>
-              {t("remoteMicVolume")}
-            </div>
-            <input
-              type="range"
-              min={0}
-              max={100}
-              value={remoteMicVolume}
-              onChange={(e) => {
-                const v = Number(e.target.value);
-                setRemoteMicVolume(v);
-                setSpeakerVolume(v);
-              }}
-              style={{ flex: "1 1 240px" }}
-            />
-            <span className="muted" style={{ width: 54, textAlign: "right" }}>
-              {remoteMicVolume}%
-            </span>
-          </div>
-
-          <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
-            <div className="muted" style={{ width: 160 }}>
-              {t("remoteScreenShareVolume")}
-            </div>
-            <input
-              type="range"
-              min={0}
-              max={100}
-              value={remoteScreenShareVolume}
-              onChange={(e) => setRemoteScreenShareVolume(Number(e.target.value))}
-              style={{ flex: "1 1 240px" }}
-            />
-            <span className="muted" style={{ width: 54, textAlign: "right" }}>
-              {remoteScreenShareVolume}%
-            </span>
-          </div>
-
-          <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
-            <div className="muted" style={{ width: 160 }}>
-              {t("noiseSuppression")}
-            </div>
-            <label className="row" style={{ gap: 8, flex: "1 1 240px" }}>
-              <input type="checkbox" checked={noiseSuppression} onChange={(e) => setNoiseSuppression(e.target.checked)} />
-              <span>{t("noiseSuppressionEnable")}</span>
-            </label>
-          </div>
-
-          {noiseSuppression && (
-            <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
-              <div className="muted" style={{ width: 160 }}>
-                {t("noiseSensitivity")}
-              </div>
-              <input
-                type="range"
-                min={0}
-                max={100}
-                value={noiseSuppressionSensitivity}
-                onChange={(e) => setNoiseSuppressionSensitivity(Number(e.target.value))}
-                style={{ flex: "1 1 240px" }}
-              />
-              <span className="muted" style={{ width: 54, textAlign: "right" }}>
-                {noiseSuppressionSensitivity}%
-              </span>
-            </div>
-          )}
-
-          <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
-            <div className="muted" style={{ width: 160 }}>
-              {t("voiceActivation")}
-            </div>
-            <label className="row" style={{ gap: 8, flex: "1 1 240px" }}>
-              <input type="checkbox" checked={voiceActivation} onChange={(e) => setVoiceActivation(e.target.checked)} />
-              <span>{t("voiceActivationEnable")}</span>
-            </label>
-          </div>
-          {voiceActivation && (
-            <>
-              <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
-                <div className="muted" style={{ width: 160 }}>
-                  {t("voiceActivationSensitivity")}
-                </div>
-                <input
-                  type="range"
-                  min={0}
-                  max={100}
-                  value={voiceActivationSensitivity}
-                  onChange={(e) => setVoiceActivationSensitivity(Number(e.target.value))}
-                  style={{ flex: "1 1 240px" }}
-                />
-                <span className="muted" style={{ width: 54, textAlign: "right" }}>
-                  {voiceActivationSensitivity}%
-                </span>
-              </div>
-              <div className="muted" style={{ marginTop: 6, marginLeft: 168, fontSize: 12 }}>
-                {t("voiceActivationSensitivityHint")}
-              </div>
-              <div className="muted" style={{ marginTop: 6, marginLeft: 168, fontSize: 12 }}>
-                {t("voiceActivationHint")}
-              </div>
-            </>
-          )}
-
-          <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
-            <div className="muted" style={{ width: 160 }}>
-              {t("soundNotifications")}
-            </div>
-            <label className="row" style={{ gap: 8, flex: "1 1 240px" }}>
-              <input type="checkbox" checked={soundNotificationsEnabled} onChange={(e) => setSoundNotificationsEnabled(e.target.checked)} />
-              <span>{t("soundNotificationsEnable")}</span>
-            </label>
-          </div>
-
-          {soundNotificationsEnabled && (
-            <>
-              <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
-                <div className="muted" style={{ width: 160 }}>
-                  {t("notificationVolume")}
-                </div>
-                <input
-                  type="range"
-                  min={0}
-                  max={100}
-                  value={soundNotificationVolume}
-                  onChange={(e) => setSoundNotificationVolume(Number(e.target.value))}
-                  style={{ flex: "1 1 240px" }}
-                />
-                <span className="muted" style={{ width: 54, textAlign: "right" }}>
-                  {soundNotificationVolume}%
-                </span>
-              </div>
-              <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
-                <div className="muted" style={{ width: 160 }}>
-                  {t("soundCall")}
-                </div>
-                <div style={{ display: "flex", gap: 8, flex: "1 1 240px", alignItems: "center" }}>
-                  <input
-                    className="btn"
-                    type="text"
-                    value={callSoundFile}
-                    onChange={(e) => setCallSoundFile(e.target.value)}
-                    placeholder="snds/call.mp3"
-                    style={{ flex: "1 1 auto" }}
-                  />
-                  <button
-                    className="btn"
-                    onClick={async () => {
-                      try {
-                        const result = await window.lokameet.app.showOpenDialog({
-                          filters: [{ name: "Audio Files", extensions: ["mp3", "wav", "ogg", "m4a"] }]
-                        });
-                        if (result) {
-                          // Преобразуем абсолютный путь в относительный, если возможно
-                          const appPath = await window.lokameet.app.getState().then(() => "").catch(() => "");
-                          setCallSoundFile(result);
-                        }
-                      } catch (e) {
-                        setError(t("errPickFile"));
-                      }
-                    }}
-                    title={t("chooseFile")}
-                  >
-                    📁
-                  </button>
-                  <button
-                    className="btn"
-                    onClick={() => {
-                      if (testSoundAudioRef.current) {
-                        testSoundAudioRef.current.pause();
-                        testSoundAudioRef.current = null;
-                      }
-                      try {
-                        const fileUrl = getSoundFileUrl(callSoundFile);
-                        const audio = new Audio(fileUrl);
-                        audio.volume = callSoundVolume / 100;
-                        testSoundAudioRef.current = audio;
-                        audio.play().catch(() => {
-                          setError(t("errPlaySound"));
-                        });
-                        audio.onended = () => {
-                          testSoundAudioRef.current = null;
-                        };
-                      } catch (e) {
-                        setError(t("errPlaySound"));
-                      }
-                    }}
-                    title={t("previewSound")}
-                  >
-                    ▶️
-                  </button>
-                </div>
-              </div>
-              <div className="row" style={{ marginTop: 8, flexWrap: "wrap", marginLeft: 168 }}>
-                <div className="muted" style={{ fontSize: 12, width: 80 }}>
-                  {t("volume")}
-                </div>
-                <input
-                  type="range"
-                  min={0}
-                  max={100}
-                  value={callSoundVolume}
-                  onChange={(e) => setCallSoundVolume(Number(e.target.value))}
-                  style={{ flex: "1 1 200px" }}
-                />
-                <span className="muted" style={{ width: 54, textAlign: "right", fontSize: 12 }}>
-                  {callSoundVolume}%
-                </span>
-              </div>
-              <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
-                <div className="muted" style={{ width: 160 }}>
-                  {t("soundCaller")}
-                </div>
-                <div style={{ display: "flex", gap: 8, flex: "1 1 240px", alignItems: "center" }}>
-                  <input
-                    className="btn"
-                    type="text"
-                    value={callerSoundFile}
-                    onChange={(e) => setCallerSoundFile(e.target.value)}
-                    placeholder="snds/call_1.mp3"
-                    style={{ flex: "1 1 auto" }}
-                  />
-                  <button
-                    className="btn"
-                    onClick={async () => {
-                      try {
-                        const result = await window.lokameet.app.showOpenDialog({
-                          filters: [{ name: "Audio Files", extensions: ["mp3", "wav", "ogg", "m4a"] }]
-                        });
-                        if (result) {
-                          setCallerSoundFile(result);
-                        }
-                      } catch (e) {
-                        setError(t("errPickFile"));
-                      }
-                    }}
-                    title={t("chooseFile")}
-                  >
-                    📁
-                  </button>
-                  <button
-                    className="btn"
-                    onClick={() => {
-                      if (testSoundAudioRef.current) {
-                        testSoundAudioRef.current.pause();
-                        testSoundAudioRef.current = null;
-                      }
-                      try {
-                        const fileUrl = getSoundFileUrl(callerSoundFile);
-                        const audio = new Audio(fileUrl);
-                        audio.volume = callerSoundVolume / 100;
-                        testSoundAudioRef.current = audio;
-                        audio.play().catch(() => {
-                          setError(t("errPlaySound"));
-                        });
-                        audio.onended = () => {
-                          testSoundAudioRef.current = null;
-                        };
-                      } catch (e) {
-                        setError(t("errPlaySound"));
-                      }
-                    }}
-                    title={t("previewSound")}
-                  >
-                    ▶️
-                  </button>
-                </div>
-              </div>
-              <div className="row" style={{ marginTop: 8, flexWrap: "wrap", marginLeft: 168 }}>
-                <div className="muted" style={{ fontSize: 12, width: 80 }}>
-                  {t("volume")}
-                </div>
-                <input
-                  type="range"
-                  min={0}
-                  max={100}
-                  value={callerSoundVolume}
-                  onChange={(e) => setCallerSoundVolume(Number(e.target.value))}
-                  style={{ flex: "1 1 200px" }}
-                />
-                <span className="muted" style={{ width: 54, textAlign: "right", fontSize: 12 }}>
-                  {callerSoundVolume}%
-                </span>
-              </div>
-              <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
-                <div className="muted" style={{ width: 160 }}>
-                  {t("soundConnect")}
-                </div>
-                <div style={{ display: "flex", gap: 8, flex: "1 1 240px", alignItems: "center" }}>
-                  <input
-                    className="btn"
-                    type="text"
-                    value={connectionSoundFile}
-                    onChange={(e) => setConnectionSoundFile(e.target.value)}
-                    placeholder="snds/int.mp3"
-                    style={{ flex: "1 1 auto" }}
-                  />
-                  <button
-                    className="btn"
-                    onClick={async () => {
-                      try {
-                        const result = await window.lokameet.app.showOpenDialog({
-                          filters: [{ name: "Audio Files", extensions: ["mp3", "wav", "ogg", "m4a"] }]
-                        });
-                        if (result) {
-                          setConnectionSoundFile(result);
-                        }
-                      } catch (e) {
-                        setError(t("errPickFile"));
-                      }
-                    }}
-                    title={t("chooseFile")}
-                  >
-                    📁
-                  </button>
-                  <button
-                    className="btn"
-                    onClick={() => {
-                      if (testSoundAudioRef.current) {
-                        testSoundAudioRef.current.pause();
-                        testSoundAudioRef.current = null;
-                      }
-                      try {
-                        const fileUrl = getSoundFileUrl(connectionSoundFile);
-                        const audio = new Audio(fileUrl);
-                        audio.volume = connectionSoundVolume / 100;
-                        testSoundAudioRef.current = audio;
-                        audio.play().catch(() => {
-                          setError(t("errPlaySound"));
-                        });
-                        audio.onended = () => {
-                          testSoundAudioRef.current = null;
-                        };
-                      } catch (e) {
-                        setError(t("errPlaySound"));
-                      }
-                    }}
-                    title={t("previewSound")}
-                  >
-                    ▶️
-                  </button>
-                </div>
-              </div>
-              <div className="row" style={{ marginTop: 8, flexWrap: "wrap", marginLeft: 168 }}>
-                <div className="muted" style={{ fontSize: 12, width: 80 }}>
-                  {t("volume")}
-                </div>
-                <input
-                  type="range"
-                  min={0}
-                  max={100}
-                  value={connectionSoundVolume}
-                  onChange={(e) => setConnectionSoundVolume(Number(e.target.value))}
-                  style={{ flex: "1 1 200px" }}
-                />
-                <span className="muted" style={{ width: 54, textAlign: "right", fontSize: 12 }}>
-                  {connectionSoundVolume}%
-                </span>
-              </div>
-              <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
-                <div className="muted" style={{ width: 160 }}>
-                  {t("soundMessage")}
-                </div>
-                <div style={{ display: "flex", gap: 8, flex: "1 1 240px", alignItems: "center" }}>
-                  <input
-                    className="btn"
-                    type="text"
-                    value={messageSoundFile}
-                    onChange={(e) => setMessageSoundFile(e.target.value)}
-                    placeholder="snds/sms.mp3"
-                    style={{ flex: "1 1 auto" }}
-                  />
-                  <button
-                    className="btn"
-                    onClick={async () => {
-                      try {
-                        const result = await window.lokameet.app.showOpenDialog({
-                          filters: [{ name: "Audio Files", extensions: ["mp3", "wav", "ogg", "m4a"] }]
-                        });
-                        if (result) {
-                          setMessageSoundFile(result);
-                        }
-                      } catch (e) {
-                        setError(t("errPickFile"));
-                      }
-                    }}
-                    title={t("chooseFile")}
-                  >
-                    📁
-                  </button>
-                  <button
-                    className="btn"
-                    onClick={() => {
-                      if (testSoundAudioRef.current) {
-                        testSoundAudioRef.current.pause();
-                        testSoundAudioRef.current = null;
-                      }
-                      try {
-                        const fileUrl = getSoundFileUrl(messageSoundFile);
-                        const audio = new Audio(fileUrl);
-                        audio.volume = messageSoundVolume / 100;
-                        testSoundAudioRef.current = audio;
-                        audio.play().catch(() => {
-                          setError(t("errPlaySound"));
-                        });
-                        audio.onended = () => {
-                          testSoundAudioRef.current = null;
-                        };
-                      } catch (e) {
-                        setError(t("errPlaySound"));
-                      }
-                    }}
-                    title={t("previewSound")}
-                  >
-                    ▶️
-                  </button>
-                </div>
-              </div>
-              <div className="row" style={{ marginTop: 8, flexWrap: "wrap", marginLeft: 168 }}>
-                <div className="muted" style={{ fontSize: 12, width: 80 }}>
-                  {t("volume")}
-                </div>
-                <input
-                  type="range"
-                  min={0}
-                  max={100}
-                  value={messageSoundVolume}
-                  onChange={(e) => setMessageSoundVolume(Number(e.target.value))}
-                  style={{ flex: "1 1 200px" }}
-                />
-                <span className="muted" style={{ width: 54, textAlign: "right", fontSize: 12 }}>
-                  {messageSoundVolume}%
-                </span>
-              </div>
-              <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
-                <div className="muted" style={{ width: 160 }}>
-                  {t("soundRecord")}
-                </div>
-                <div style={{ display: "flex", gap: 8, flex: "1 1 240px", alignItems: "center" }}>
-                  <input
-                    className="btn"
-                    type="text"
-                    value={recordingSoundFile}
-                    onChange={(e) => setRecordingSoundFile(e.target.value)}
-                    placeholder="snds/record.mp3"
-                    style={{ flex: "1 1 auto" }}
-                  />
-                  <button
-                    className="btn"
-                    onClick={async () => {
-                      try {
-                        const result = await window.lokameet.app.showOpenDialog({
-                          filters: [{ name: "Audio Files", extensions: ["mp3", "wav", "ogg", "m4a"] }]
-                        });
-                        if (result) {
-                          setRecordingSoundFile(result);
-                        }
-                      } catch (e) {
-                        setError(t("errPickFile"));
-                      }
-                    }}
-                    title={t("chooseFile")}
-                  >
-                    📁
-                  </button>
-                  <button
-                    className="btn"
-                    onClick={() => {
-                      if (testSoundAudioRef.current) {
-                        testSoundAudioRef.current.pause();
-                        testSoundAudioRef.current = null;
-                      }
-                      try {
-                        const fileUrl = getSoundFileUrl(recordingSoundFile);
-                        const audio = new Audio(fileUrl);
-                        audio.volume = recordingSoundVolume / 100;
-                        testSoundAudioRef.current = audio;
-                        audio.play().catch(() => {
-                          setError(t("errPlaySound"));
-                        });
-                        audio.onended = () => {
-                          testSoundAudioRef.current = null;
-                        };
-                      } catch (e) {
-                        setError(t("errPlaySound"));
-                      }
-                    }}
-                    title={t("previewSound")}
-                  >
-                    ▶️
-                  </button>
-                </div>
-              </div>
-              <div className="row" style={{ marginTop: 8, flexWrap: "wrap", marginLeft: 168 }}>
-                <div className="muted" style={{ fontSize: 12, width: 80 }}>
-                  {t("volume")}
-                </div>
-                <input
-                  type="range"
-                  min={0}
-                  max={100}
-                  value={recordingSoundVolume}
-                  onChange={(e) => setRecordingSoundVolume(Number(e.target.value))}
-                  style={{ flex: "1 1 200px" }}
-                />
-                <span className="muted" style={{ width: 54, textAlign: "right", fontSize: 12 }}>
-                  {recordingSoundVolume}%
-                </span>
-              </div>
-            </>
-          )}
-          </>
-          )}
-
-          {settingsTab === "ui" && (
-          <>
-          <div className="settingsGroupTitle">{t("uiLayout")}</div>
-          <div className="row" style={{ flexWrap: "wrap" }}>
-            <div className="muted" style={{ width: 160 }}>
-              {t("chatWidth")}
-            </div>
-            <input
-              type="range"
-              min={360}
-              max={440}
-              value={chatHeight}
-              onChange={(e) => {
-                const v = Number(e.target.value);
-                setChatHeight(v);
-              }}
-              style={{ flex: "1 1 240px" }}
-            />
-            <span className="muted" style={{ width: 54, textAlign: "right" }}>
-              {chatHeight}px
-            </span>
-          </div>
-
-          <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
-            <div className="muted" style={{ width: 160 }}>
-              {t("sidebarWidth")}
-            </div>
-            <input
-              type="range"
-              min={360}
-              max={420}
-              value={sidebarWidth}
-              onChange={(e) => setSidebarWidth(Number(e.target.value))}
-              style={{ flex: "1 1 240px" }}
-            />
-            <span className="muted" style={{ width: 54, textAlign: "right" }}>
-              {sidebarWidth}px
-            </span>
-          </div>
-
-          <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
-            <div className="muted" style={{ width: 160 }}>
-              {t("fontSize")}
-            </div>
-            <input
-              type="range"
-              min={0.85}
-              max={1.25}
-              step={0.05}
-              value={fontScale}
-              onChange={(e) => setFontScale(Number(e.target.value))}
-              style={{ flex: "1 1 240px" }}
-            />
-            <span className="muted" style={{ width: 54, textAlign: "right" }}>
-              {Math.round((fontScale || 1) * 100)}%
-            </span>
-          </div>
-
-          <div className="panelSectionDivider" />
-          <div className="settingsGroupTitle">{t("uiChat")}</div>
-
-          <div className="row" style={{ flexWrap: "wrap" }}>
-            <div className="muted" style={{ width: 160 }}>
-              {t("smileSize")}
-            </div>
-            <input
-              type="range"
-              min={16}
-              max={128}
-              value={chatSmileSizePx}
-              onChange={(e) => setChatSmileSizePx(Number(e.target.value))}
-              style={{ flex: "1 1 240px" }}
-            />
-            <span className="muted" style={{ width: 54, textAlign: "right" }}>
-              {chatSmileSizePx}px
-            </span>
-          </div>
-
-          <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
-            <div className="muted" style={{ width: 160 }}>
-              {t("chatFontSize")}
-            </div>
-            <input
-              type="range"
-              min={10}
-              max={24}
-              value={chatFontSize}
-              onChange={(e) => setChatFontSize(Number(e.target.value))}
-              style={{ flex: "1 1 240px" }}
-            />
-            <span className="muted" style={{ width: 54, textAlign: "right" }}>
-              {chatFontSize}px
-            </span>
-          </div>
-
-          <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
-            <div className="muted" style={{ width: 160 }}>
-              {t("chatDisplayLimit")}
-            </div>
-            <Select
-              value={String(chatDisplayLimit)}
-              onChange={(v) => setChatDisplayLimit(Number(v) || 0)}
-              style={{ flex: "1 1 240px" }}
-              options={[
-                { value: "0", label: t("chatShowAll") },
-                { value: "200", label: t("chatLastN", { n: 200 }) },
-                { value: "500", label: t("chatLastN", { n: 500 }) },
-                { value: "1000", label: t("chatLastN", { n: 1000 }) }
-              ]}
-            />
-            <span className="muted" style={{ width: 54, textAlign: "right" }}>
-              {chatDisplayLimit ? `≤${chatDisplayLimit}` : "∞"}
-            </span>
-          </div>
-
-          <label className="row" style={{ marginTop: 12, gap: 8 }}>
-            <input type="checkbox" checked={compactUi} onChange={(e) => setCompactUi(e.target.checked)} />
-            <span>{t("compactChat")}</span>
-          </label>
-          <label className="row" style={{ marginTop: 8, gap: 8 }}>
-            <input type="checkbox" checked={chatAutoScroll} onChange={(e) => setChatAutoScroll(e.target.checked)} />
-            <span>{t("chatAutoScroll")}</span>
-          </label>
-          <label className="row" style={{ marginTop: 8, gap: 8 }}>
-            <input type="checkbox" checked={autoSwitchToChat} onChange={(e) => setAutoSwitchToChat(e.target.checked)} />
-            <span>{t("autoSwitchToChat")}</span>
-          </label>
-
-          <div className="panelSectionDivider" />
-          <div className="settingsGroupTitle">{t("videoTiles")}</div>
-
-          <div className="row" style={{ flexWrap: "wrap" }}>
-            <div className="muted" style={{ width: 160 }}>
-              {t("tileAspect")}
-            </div>
-            <Select
-              value={tileAspect}
-              onChange={(v) => setTileAspect(v as typeof tileAspect)}
-              options={[
-                { value: "auto", label: t("tileAspectAuto") },
-                { value: "16x9", label: "16:9" },
-                { value: "4x3", label: "4:3" },
-                { value: "1x1", label: "1:1" }
-              ]}
-            />
-          </div>
-
-          <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
-            <div className="muted" style={{ width: 160 }}>
-              {t("tileFit")}
-            </div>
-            <Select
-              value={tileObjectFit}
-              onChange={(v) => setTileObjectFit(v as typeof tileObjectFit)}
-              options={[
-                { value: "cover", label: t("tileFitCover") },
-                { value: "contain", label: t("tileFitContain") }
-              ]}
-            />
-          </div>
-
-          <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
-            <div className="muted" style={{ width: 160 }}>
-              {t("tileRadius")}
-            </div>
-            <input
-              type="range"
-              min={4}
-              max={28}
-              value={tileRadius}
-              onChange={(e) => setTileRadius(Number(e.target.value))}
-              style={{ flex: "1 1 240px" }}
-            />
-            <span className="muted" style={{ width: 54, textAlign: "right" }}>
-              {tileRadius}px
-            </span>
-          </div>
-
-          <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
-            <div className="muted" style={{ width: 160 }}>
-              {t("tileGap")}
-            </div>
-            <input
-              type="range"
-              min={4}
-              max={24}
-              value={tileGap}
-              onChange={(e) => setTileGap(Number(e.target.value))}
-              style={{ flex: "1 1 240px" }}
-            />
-            <span className="muted" style={{ width: 54, textAlign: "right" }}>
-              {tileGap}px
-            </span>
-          </div>
-
-          <label className="row" style={{ marginTop: 12, gap: 8 }}>
-            <input type="checkbox" checked={speakingIndicator} onChange={(e) => setSpeakingIndicator(e.target.checked)} />
-            <span>{t("speakingIndicator")}</span>
-          </label>
-
-          <div className="panelSectionDivider" />
-          <div className="settingsGroupTitle">{t("uiGeneral")}</div>
-          <div className="row" style={{ flexWrap: "wrap", alignItems: "flex-start" }}>
-            <div className="muted" style={{ width: 160 }}>
-              {t("options")}
-            </div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 8, flex: "1 1 240px" }}>
-              <label className="row" style={{ gap: 8 }}>
-                <input type="checkbox" checked={showSeconds} onChange={(e) => setShowSeconds(e.target.checked)} />
-                <span>{t("showSeconds")}</span>
-              </label>
-              <label className="row" style={{ gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-                <input
-                  type="checkbox"
-                  checked={autoAwayMinutes > 0}
-                  onChange={(e) => setAutoAwayMinutes(e.target.checked ? 5 : 0)}
-                />
-                <span>{t("autoAway")}</span>
-                {autoAwayMinutes > 0 && (
-                  <>
-                    <span className="muted" style={{ marginLeft: 4 }}>
-                      {t("autoAwayMinutes")}:
-                    </span>
-                    <input
-                      className="btn"
-                      type="number"
-                      min={1}
-                      max={120}
-                      value={autoAwayMinutes}
-                      onChange={(e) => setAutoAwayMinutes(Math.max(1, Math.min(120, Number(e.target.value) || 5)))}
-                      style={{ width: 72, padding: "4px 8px" }}
-                    />
-                  </>
-                )}
-              </label>
-            </div>
-          </div>
-
-          <div className="panelSectionDivider" />
-          <div className="row" style={{ flexWrap: "wrap", gap: 8 }}>
-            <button
-              className="btn"
-              onClick={async () => {
-                try {
-                  const logInfo = await window.lokameet.log.getInfo();
-                  if (logInfo.logDirPath) {
-                    await window.lokameet.app.openPath(logInfo.logDirPath);
-                  } else {
-                    setError(t("errLogsPathMissing"));
-                  }
-                } catch {
-                  setError(t("errOpenLogs"));
-                }
-              }}
-            >
-              📁 {t("openLogsFolder")}
-            </button>
-            <button
-              className="btn btnDanger"
-              onClick={() => {
-                if (confirm(t("clearHistoryConfirm"))) {
-                  window.lokameet.chat.clearHistory().then(() => {
-                    setChats([]);
-                    setError(null);
-                  }).catch(() => {
-                    setError(t("errClearHistory"));
-                  });
-                }
-              }}
-            >
-              {t("clearHistory")}
-            </button>
-          </div>
-          </>
-          )}
-
-          {settingsTab === "games" && (
-          <>
-          <div className="muted" style={{ marginBottom: 12 }}>
-            {t("gamesSettingsHint")}
-          </div>
-          <div className="settingsGroupTitle">{t("gamesSettingsBoard")}</div>
-          <div className="row" style={{ flexWrap: "wrap" }}>
-            <div className="muted" style={{ width: 160 }}>
-              {t("gamesBoardScale")}
-            </div>
-            <Select
-              value={gamesSettings.boardScale}
-              onChange={(v) =>
-                setGamesSettings((s) => ({
-                  ...s,
-                  boardScale: v === "medium" || v === "xl" ? v : "large"
-                }))
-              }
-              style={{ flex: "1 1 240px" }}
-              options={[
-                { value: "medium", label: t("gamesBoardScale_medium") },
-                { value: "large", label: t("gamesBoardScale_large") },
-                { value: "xl", label: t("gamesBoardScale_xl") }
-              ]}
-            />
-          </div>
-          <label className="row" style={{ marginTop: 12, gap: 8 }}>
-            <input
-              type="checkbox"
-              checked={gamesSettings.showCoordinates}
-              onChange={(e) => setGamesSettings((s) => ({ ...s, showCoordinates: e.target.checked }))}
-            />
-            <span>{t("gamesShowCoordinates")}</span>
-          </label>
-          <label className="row" style={{ marginTop: 8, gap: 8 }}>
-            <input
-              type="checkbox"
-              checked={gamesSettings.highlightLastMove}
-              onChange={(e) => setGamesSettings((s) => ({ ...s, highlightLastMove: e.target.checked }))}
-            />
-            <span>{t("gamesHighlightLastMove")}</span>
-          </label>
-          <label className="row" style={{ marginTop: 8, gap: 8 }}>
-            <input
-              type="checkbox"
-              checked={gamesSettings.confirmResign}
-              onChange={(e) => setGamesSettings((s) => ({ ...s, confirmResign: e.target.checked }))}
-            />
-            <span>{t("gamesConfirmResignOpt")}</span>
-          </label>
-
-          <div className="panelSectionDivider" />
-          <div className="settingsGroupTitle">{t("gamesSettingsSound")}</div>
-          <label className="row" style={{ gap: 8 }}>
-            <input
-              type="checkbox"
-              checked={gamesSettings.soundEnabled}
-              onChange={(e) => setGamesSettings((s) => ({ ...s, soundEnabled: e.target.checked }))}
-            />
-            <span>{t("gamesSound")}</span>
-          </label>
-          <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
-            <div className="muted" style={{ width: 160 }}>
-              {t("gamesSoundVolume")}
-            </div>
-            <input
-              type="range"
-              min={0}
-              max={100}
-              value={gamesSettings.soundVolume}
-              disabled={!gamesSettings.soundEnabled}
-              onChange={(e) => setGamesSettings((s) => ({ ...s, soundVolume: Number(e.target.value) }))}
-              style={{ flex: "1 1 240px" }}
-            />
-            <span className="muted" style={{ width: 54, textAlign: "right" }}>
-              {gamesSettings.soundVolume}%
-            </span>
-          </div>
-          <div className="row" style={{ marginTop: 12 }}>
-            <button
-              className="btn"
-              type="button"
-              disabled={!gamesSettings.soundEnabled}
-              onClick={() => playGameSound("hit", gamesSettings)}
-            >
-              {t("gamesSoundPreview")}
-            </button>
-          </div>
-
-          <div className="panelSectionDivider" />
-          <div className="settingsGroupTitle">{t("gamesSettingsCheckers")}</div>
-          <label className="row" style={{ gap: 8 }}>
-            <input
-              type="checkbox"
-              checked={gamesSettings.checkersShowHints}
-              onChange={(e) => setGamesSettings((s) => ({ ...s, checkersShowHints: e.target.checked }))}
-            />
-            <span>{t("gamesCheckersHints")}</span>
-          </label>
-
-          <div className="panelSectionDivider" />
-          <div className="settingsGroupTitle">{t("gamesSettingsChess")}</div>
-          <label className="row" style={{ gap: 8 }}>
-            <input
-              type="checkbox"
-              checked={gamesSettings.chessShowHints}
-              onChange={(e) => setGamesSettings((s) => ({ ...s, chessShowHints: e.target.checked }))}
-            />
-            <span>{t("gamesChessHints")}</span>
-          </label>
-
-          <div className="panelSectionDivider" />
-          <div className="settingsGroupTitle">{t("gamesSettingsBattleship")}</div>
-          <label className="row" style={{ gap: 8 }}>
-            <input
-              type="checkbox"
-              checked={gamesSettings.battleshipShowSunkOutline}
-              onChange={(e) => setGamesSettings((s) => ({ ...s, battleshipShowSunkOutline: e.target.checked }))}
-            />
-            <span>{t("gamesBattleshipSunkOutline")}</span>
-          </label>
-          </>
-          )}
-
-          {settingsTab === "connection" && (
-          <>
-          <div className="muted" style={{ marginBottom: 12 }}>
-            {t("connectionHint")}
-          </div>
-          <div className="row" style={{ flexWrap: "wrap" }}>
-            <input
-              className="btn"
-              style={{ flex: "1 1 160px" }}
-              value={manualHost}
-              onChange={(e) => setManualHost(e.target.value)}
-              placeholder="192.168.0.10"
-            />
-            <input
-              className="btn"
-              style={{ width: 110 }}
-              value={manualPort}
-              onChange={(e) => setManualPort(e.target.value)}
-              placeholder={t("portPlaceholder")}
-            />
-            <button className="btn btnPrimary" onClick={() => void manualConnect()}>
-              OK
-            </button>
-          </div>
-          {manualPeers.length > 0 && (
-            <div className="list" style={{ marginTop: 12 }}>
-              {manualPeers.map((p) => {
-                const peerStatus = displayPeerStatus(p.peerId, p.status);
-                return (
-                <div key={p.peerId} className="item" onClick={() => selectPeerForChat(p)}>
-                  <div className="itemTitle">
-                    <div style={{ fontWeight: 700, display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
-                      <span className="truncate">{p.userName}</span>
-                      <PeerShareMarks
-                        sharing={screenSharingPeerId === p.peerId}
-                        recording={peerIsRecording(p.peerId)}
-                        shareTitle={t("screenShareIndicator")}
-                        recTitle={t("recordingBy", { name: p.userName })}
-                      />
-                      {unreadPeerIds.has(p.peerId) && <span className="unreadMessageDot" title={t("newMessage")} aria-label={t("newMessage")} />}
-                    </div>
-                    <span className={`badge ${statusBadgeClass(peerStatus)}`}>{statusLabel(peerStatus)}</span>
-                  </div>
-                  <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
-                    {p.host}:{p.port}
-                  </div>
-                  <div className="row" style={{ marginTop: 8 }}>
-                    <button className="btn grow" onClick={(e) => (e.stopPropagation(), selectPeerForChat(p))}>
-                      {t("write")}
-                    </button>
-                    <button className="btn btnPrimary grow" onClick={(e) => (e.stopPropagation(), void startDirectCall(p))}>
-                      {t("call")}
-                    </button>
-                  </div>
-                </div>
-                );
-              })}
-            </div>
-          )}
-          </>
-          )}
-
-          {settingsTab === "help" && <SettingsHelpPanel language={profile?.language ?? "ru"} version={appVersion} />}
-          </div>
-
-          <div className="settingsFooter row" style={{ justifyContent: "flex-end", flexWrap: "wrap", gap: 8 }}>
-            <button
-              className="btn btnPrimary"
-              onClick={() => {
-                const patch: Partial<UserProfile> = {
-                  uiChatHeight: chatHeight,
-                  uiSidebarWidth: sidebarWidth,
-                  uiFontScale: fontScale,
-                  uiCompact: compactUi,
-                  uiShowSeconds: showSeconds,
-                  autoAwayMinutes,
-                  defaultVideoQuality: mediaCfg.videoQuality,
-                  autoSwitchToChatOnAccept: autoSwitchToChat,
-                  videoInputDeviceId: selectedVideoDeviceId,
-                  cameraControls,
-                  cameraFx: {
-                    cropZoom: cameraFx.cropZoom,
-                    cropPanX: cameraFx.cropPanX,
-                    cropPanY: cameraFx.cropPanY,
-                    backgroundMode: cameraFx.backgroundMode,
-                    backgroundPreset: cameraFx.presetId,
-                    backgroundCustomId: cameraFx.customId ?? undefined,
-                    blurAmount: cameraFx.blurAmount
-                  },
-                  audioInputDeviceId: selectedAudioInputId,
-                  audioOutputDeviceId: selectedAudioOutputId,
-                  chatAutoScroll,
-                  chatSmileSizePx,
-                  chatFontSize,
-                  chatDisplayLimit,
-                  uiSpeakingIndicator: speakingIndicator,
-                  uiTileAspect: tileAspect,
-                  uiTileObjectFit: tileObjectFit,
-                  uiTileRadius: tileRadius,
-                  uiTileGap: tileGap,
-                  uiLayoutVersion: 2,
-                  microphoneVolume,
-                  speakerVolume: remoteMicVolume,
-                  remoteMicVolume,
-                  remoteScreenShareVolume,
-                  noiseSuppression,
-                  noiseSuppressionSensitivity,
-                  voiceActivation,
-                  voiceActivationSensitivity,
-                  soundNotificationsEnabled,
-                  soundNotificationVolume,
-                  callSoundFile,
-                  messageSoundFile,
-                  callerSoundFile,
-                  connectionSoundFile,
-                  recordingSoundFile,
-                  callSoundVolume,
-                  messageSoundVolume,
-                  callerSoundVolume,
-                  connectionSoundVolume,
-                  recordingSoundVolume,
-                  recordingDir,
-                  lastRecordingPath,
-                  recordingFormat,
-                  recordingQuality,
-                  recordingFps,
-                  recordingBitrate,
-                  gamesSettings
-                };
-                window.lokameet.app
-                  .updateProfile(patch)
-                  .then((p) => {
-                    setProfile(p);
-                    if (isSettingsWindow) void window.lokameet.settings.close();
-                    else setSettingsOpen(false);
-                  })
-                  .catch(() => undefined);
-              }}
-            >
-              Сохранить
-            </button>
-          </div>
-
-          <div className="muted" style={{ marginTop: 12, fontSize: 12 }}>
-            Примечание: часть сетевых настроек (порты/обнаружение) можно расширить при необходимости.
-          </div>
-        </Modal>
-      )}
-    </div>
-  );
-}
-
-function dataTransferTypeList(dt: DataTransfer): string[] {
-  const types = dt.types;
-  if (!types) return [];
-  try {
-    return Array.from(types as ArrayLike<string>);
-  } catch {
-    const out: string[] = [];
-    for (let i = 0; i < types.length; i++) out.push(String(types[i]));
-    return out;
-  }
-}
-
-function isFileDragEvent(e: { dataTransfer?: DataTransfer | null }) {
-  const dt = e.dataTransfer;
-  if (!dt) return false;
-  if (dt.files && dt.files.length > 0) return true;
-  const rawTypes = dt.types as unknown as { contains?: (value: string) => boolean; length?: number };
-  if (typeof rawTypes?.contains === "function" && rawTypes.contains("Files")) return true;
-  const types = dataTransferTypeList(dt);
-  if (types.includes("Files") || types.includes("application/x-moz-file")) return true;
-  // Electron/Windows: при перетаскивании из Проводника types часто пустой до drop.
-  return types.length === 0;
-}
-
-function dataUrlToPngFile(dataUrl: string) {
-  const comma = dataUrl.indexOf(",");
-  const b64 = comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl;
-  const bin = atob(b64);
-  const bytes = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-  const now = new Date();
-  const p = (n: number) => String(n).padStart(2, "0");
-  const name = `screenshot-${now.getFullYear()}${p(now.getMonth() + 1)}${p(now.getDate())}-${p(now.getHours())}${p(now.getMinutes())}${p(now.getSeconds())}.png`;
-  return new File([bytes], name, { type: "image/png" });
-}
-
-function guessPastedFileName(file: File, index: number) {
-  const raw = (file.name || "").trim();
-  if (raw && raw !== "image.png" && raw !== "image.jpg" && raw !== "blob") return raw;
-  const mime = (file.type || "").toLowerCase();
-  if (mime === "image/gif") return `paste-${index + 1}.gif`;
-  if (mime === "image/png") return `paste-${index + 1}.png`;
-  if (mime === "image/jpeg") return `paste-${index + 1}.jpg`;
-  if (mime === "image/webp") return `paste-${index + 1}.webp`;
-  const ext = mime.split("/")[1] || "bin";
-  return `paste-${index + 1}.${ext}`;
-}
-
-function collectPastedFiles(dt: DataTransfer | null): File[] {
-  if (!dt) return [];
-  const files: File[] = [];
-  const seen = new Set<string>();
-  const add = (file: File | null) => {
-    if (!file) return;
-    const mime = (file.type || "").toLowerCase();
-    if (file.size <= 0) return;
-    const key = `${file.size}:${file.type}:${file.lastModified}:${file.name}`;
-    if (seen.has(key)) return;
-    seen.add(key);
-    files.push(new File([file], guessPastedFileName(file, files.length), { type: file.type || mimeFromName(file.name) }));
-  };
-  for (const item of Array.from(dt.items ?? [])) {
-    if (item.kind !== "file") continue;
-    add(item.getAsFile());
-  }
-  if (files.length === 0) {
-    for (const file of Array.from(dt.files ?? [])) add(file);
-  }
-  return files;
-}
-
-function collectDroppedFiles(e: { dataTransfer?: DataTransfer | null }): File[] {
-  const dt = e.dataTransfer;
-  if (!dt) return [];
-  const files: File[] = [];
-  const seen = new Set<string>();
-
-  const add = (file: File | null, item?: DataTransferItem) => {
-    if (!file) return;
-    // webkitGetAsEntry до getAsFile в Chromium/Electron обнуляет файл — только после.
-    if (item && typeof item.webkitGetAsEntry === "function") {
-      const entry = item.webkitGetAsEntry();
-      if (entry && "isDirectory" in entry && entry.isDirectory) return;
-    }
-    const key = `${file.name}:${file.size}:${file.lastModified}`;
-    if (seen.has(key)) return;
-    seen.add(key);
-    files.push(file);
-  };
-
-  // В Electron список files надёжнее, чем items.
-  for (const file of Array.from(dt.files ?? [])) add(file);
-  if (files.length === 0 && dt.items) {
-    for (const item of Array.from(dt.items)) {
-      if (item.kind !== "file") continue;
-      add(item.getAsFile(), item);
-    }
-  }
-  return files;
-}
-
-function ChatComposer(props: {
-  disabled: boolean;
-  onSend: (text: string, files: File[], reply: ChatReplyRef | null) => void;
-  reply?: ChatReplyRef | null;
-  onClearReply?: () => void;
-  smilesFiles: string[];
-  onTyping?: () => void;
-  onPasteFallback?: () => void;
-  onOpenEmbed?: (item: ChatEmbedOpen) => void;
-  insertRef?: React.MutableRefObject<(text: string) => void>;
-  queueRef?: React.MutableRefObject<(files: File[]) => void>;
-}) {
-  const { t } = useTranslation();
-  const [text, setText] = useState("");
-  const [pending, setPending] = useState<Array<{ id: string; file: File; url: string | null }>>([]);
-  const fileRef = useRef<HTMLInputElement | null>(null);
-  const inputRef = useRef<HTMLInputElement | null>(null);
-  const [smilesOpen, setSmilesOpen] = useState(false);
-  const smilesBtnRef = useRef<HTMLButtonElement | null>(null);
-  const smilesRef = useRef<HTMLDivElement | null>(null);
-  const typingTimeoutRef = useRef<number | null>(null);
-
-  useEffect(() => {
-    if (!props.insertRef) return;
-    props.insertRef.current = (chunk: string) => setText((prev) => prev + chunk);
-  }, [props.insertRef]);
-
-  useEffect(() => {
-    if (!props.queueRef) return;
-    props.queueRef.current = (files: File[]) => {
-      const next = files.map((file) => ({
-        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        file,
-        url: file.type.startsWith("image/") || file.type.startsWith("video/") ? URL.createObjectURL(file) : null
-      }));
-      setPending((prev) => [...prev, ...next]);
-      window.setTimeout(() => inputRef.current?.focus(), 0);
-    };
-  }, [props.queueRef]);
-
-  function dropPending(id: string) {
-    setPending((prev) => {
-      const item = prev.find((entry) => entry.id === id);
-      if (item?.url) URL.revokeObjectURL(item.url);
-      return prev.filter((entry) => entry.id !== id);
-    });
-  }
-
-  function submitComposer() {
-    const v = text;
-    const files = pending.map((item) => item.file);
-    const reply = props.reply ?? null;
-    setText("");
-    setPending([]);
-    props.onClearReply?.();
-    if (typingTimeoutRef.current) {
-      clearTimeout(typingTimeoutRef.current);
-      typingTimeoutRef.current = null;
-    }
-    for (const item of pending) {
-      if (item.url) URL.revokeObjectURL(item.url);
-    }
-    if (!v.trim() && files.length === 0) return;
-    props.onSend(v, files, reply);
-  }
-
-  useEffect(() => {
-    if (!smilesOpen) return;
-    const onDown = (e: MouseEvent) => {
-      const tEl = e.target as Node | null;
-      if (!tEl) return;
-      if (smilesRef.current?.contains(tEl)) return;
-      if (smilesBtnRef.current?.contains(tEl)) return;
-      setSmilesOpen(false);
-    };
-    document.addEventListener("mousedown", onDown);
-    return () => document.removeEventListener("mousedown", onDown);
-  }, [smilesOpen]);
-
-  return (
-    <div className="chatInput" style={{ position: "relative" }}>
-      {props.reply && (
-        <div className="chatReplyBar">
-          <div style={{ minWidth: 0 }}>
-            <b>{props.reply.fromUserName}</b>
-            <span className="chatReplyText">{props.reply.text}</span>
-          </div>
-          <button type="button" className="btn" title={t("replyCancel")} onClick={() => props.onClearReply?.()}>
-            ×
-          </button>
-        </div>
-      )}
-      <input
-        ref={fileRef}
-        type="file"
-        multiple
-        style={{ display: "none" }}
-        onChange={(e) => {
-          const chosen = Array.from(e.target.files ?? []);
-          e.currentTarget.value = "";
-          if (chosen.length === 0) return;
-          props.queueRef?.current(chosen);
-        }}
-      />
-      <button className="btn" disabled={props.disabled} onClick={() => fileRef.current?.click()}>
-        {t("file")}
-      </button>
-      <button
-        ref={smilesBtnRef}
-        className="btn"
-        disabled={props.disabled}
-        onClick={() => setSmilesOpen((v) => !v)}
-        aria-expanded={smilesOpen}
-      >
-        {t("stickers")}
-      </button>
-      {smilesOpen && (
-        <div className="smilesPopup" ref={smilesRef}>
-          <div className="smilesGrid">
-            {props.smilesFiles.map((f) => (
-              <button
-                key={f}
-                className="smileBtn"
-                onClick={() => {
-                  setText((prev) => (prev ? `${prev} :${f}: ` : `:${f}: `));
-                  setSmilesOpen(false);
-                  setTimeout(() => inputRef.current?.focus(), 0);
-                  setSmilesOpen(false);
-                }}
-                title={f}
-              >
-                <img className="smileImg" src={`./smiles/${encodeURIComponent(f)}`} alt={f} />
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-      <input
-        ref={inputRef}
-        disabled={props.disabled}
-        value={text}
-        onChange={(e) => {
-          setText(e.target.value);
-          // Отправляем уведомление о наборе текста (не чаще раза в секунду)
-          if (props.onTyping && e.target.value.trim().length > 0) {
-            if (typingTimeoutRef.current) return;
-            props.onTyping();
-            typingTimeoutRef.current = window.setTimeout(() => {
-              typingTimeoutRef.current = null;
-            }, 1000);
-          }
-        }}
-        placeholder={props.disabled ? t("pickChatPlaceholder") : t("messagePlaceholder")}
-        title={t("pasteHint")}
-        onKeyDown={(e) => {
-          if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === "v") {
-            const before = e.currentTarget.value;
-            window.setTimeout(() => {
-              if (inputRef.current && inputRef.current.value !== before) return;
-              props.onPasteFallback?.();
-            }, 60);
-          }
-          if (e.key === "Escape" && props.reply) {
-            e.preventDefault();
-            props.onClearReply?.();
-            return;
-          }
-          if (e.key === "Enter" && !e.shiftKey) {
-            e.preventDefault();
-            if (!text.trim() && pending.length === 0) return;
-            submitComposer();
-          }
-        }}
-      />
-      <button
-        className="btn btnPrimary"
-        disabled={props.disabled || (!text.trim() && pending.length === 0)}
-        onClick={() => submitComposer()}
-      >
-        {t("send")}
-      </button>
-      {pending.length > 0 && (
-        <div className="chatPasteQueue">
-          {pending.map((item) => (
-            <div key={item.id} className="chatPasteChip">
-              {item.url && item.file.type.startsWith("image/") ? (
-                <img src={item.url} alt={item.file.name} />
-              ) : item.url && item.file.type.startsWith("video/") ? (
-                <video src={item.url} muted playsInline preload="metadata" />
-              ) : (
-                <span className="chatPasteChipName">{item.file.name}</span>
-              )}
-              <button type="button" className="chatPasteChipRemove" title={t("pasteRemove")} onClick={() => dropPending(item.id)}>
-                ×
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
-      {(text.includes("http://") || text.includes("https://") || text.includes("www.")) && (
-        <div className="chatComposePreview">
-          <ChatLinkEmbeds text={text} onOpen={props.onOpenEmbed ?? ((item) => openChatLink(item.href))} />
-        </div>
-      )}
-    </div>
-  );
-}
-
-function SettingsHelpPanel(props: { language: "ru" | "en"; version: string }) {
-  const ru = props.language !== "en";
-  const openLink = (url: string) => {
-    void window.lokameet.app.openExternal(url).catch(() => undefined);
-  };
-
-  const copy = ru
-    ? {
-        heroTitle: "LokaMeet",
-        heroLead: "Видеосвязь, звонки и чат в локальной сети — без интернета и без облака.",
-        aboutTitle: "Для чего программа",
-        aboutBody:
-          "LokaMeet предназначен для общения внутри одной локальной сети (офис, дом, учебный класс): личные звонки, групповые конференции, текстовый чат и обмен файлами. Медиа идут напрямую между компьютерами (P2P WebRTC), а серверы в интернете не нужны. В чате скриншот, ссылка или GIF отправляются одним сообщением вместе с текстом, а чужие сообщения можно цитировать. Демонстрация экрана идёт с частотой монитора, от 60 до 120 кадров/с, без обрезки кадра. Микрофон можно открывать только на время речи — чувствительность задаётся ползунком.",
-        howTitle: "Как это работает",
-        howItems: [
-          "При запуске приложение поднимает локальный сигнальный сервер и объявляет себя в LAN через mDNS (Bonjour) и UDP‑broadcast.",
-          "В списке «Пользователи в LAN» появляются другие запущенные клиенты в той же сети.",
-          "Личный звонок — WebRTC peer‑to‑peer между двумя участниками.",
-          "Конференция — mesh‑соединения: хост создаёт комнату, участники подключаются к нему и друг к другу.",
-          "Чат и статусы передаются по тому же локальному каналу; история хранится на вашем компьютере."
-        ],
-        needTitle: "Что нужно для корректной работы",
-        needItems: [
-          "Все участники в одной локальной сети (один сегмент LAN / Wi‑Fi).",
-          "Разрешения Windows на камеру и микрофон для LokaMeet.",
-          "В брандмауэре Windows разрешены входящие/исходящие соединения для приложения (или «Частные сети»).",
-          "Для автообнаружения желателен mDNS (UDP 5353). Если mDNS блокируется, сработает UDP‑фолбэк (порт 45454).",
-          "Антивирус/фильтры не должны резать локальный UDP/WebRTC‑трафик.",
-          "Для демонстрации экрана — доступ к захвату экрана в системе."
-        ],
-        softwareTitle: "Какие программы нужны",
-        softwareIntro:
-          "Для обычного использования LokaMeet почти ничего дополнительно устанавливать не нужно — это самостоятельное приложение. Ниже — обязательное, желательное и то, что нужно только разработчикам.",
-        softwareRequiredTitle: "Обязательно",
-        softwareRequired: [
-          "Windows и сама программа LokaMeet (установщик или portable‑сборка).",
-          "Камера и/или микрофон (и разрешения Windows для LokaMeet).",
-          "Общая локальная сеть с другими участниками."
-        ],
-        softwareOptionalTitle: "Желательно для стабильного автопоиска",
-        softwareOptional: [
-          "Bonjour Print Services (Apple) — улучшает mDNS‑обнаружение в Windows.",
-          "Правила брандмауэра Windows: разрешить LokaMeet в частных сетях."
-        ],
-        softwareDevTitle: "Только для сборки из исходников",
-        softwareDev: ["Node.js (npm)", "Зависимости проекта через npm install (Electron и др. подтянутся сами)."],
-        softwareNotNeededTitle: "Не требуется",
-        softwareNotNeeded:
-          "Интернет, Zoom, браузер, отдельный медиа‑сервер или облачный аккаунт — для работы звонков в LAN не нужны.",
-        linksTitle: "Полезные ссылки и программы",
-        tip: "Если пользователи не видны друг друга: проверьте сеть, брандмауэр и попробуйте ручное подключение по IP/порту во вкладке «Подключение».",
-        changesTitle: "Что нового в 1.4.0",
-        addedTitle: "Добавлено",
-        fixedTitle: "Исправлено",
-        addedItems: [
-          "Демонстрация экрана идёт с частотой монитора: не ниже 60 и не выше 120 кадров/с. Значение видно в «Медиа», под качеством видео. Разрешение совпадает с экраном, кадр не обрезается.",
-          "Микрофон по голосу: ползунок чувствительности во вкладке «Аудио». Выше — микрофон открывается от более тихого голоса. Пока вы молчите, звук собеседнику не уходит.",
-          "В шашках, шахматах и морском бое можно играть с компьютером: легко, средне и сложно.",
-          "Настройки камеры (фокус, экспозиция, яркость и остальные) показываются только если устройство их поддерживает.",
-          "Папка логов и очистка истории чата находятся во вкладке «Интерфейс»."
-        ],
-        fixedItems: [
-          "При демонстрации видео кадры больше не режутся и не пропадают: картинка ближе к оригиналу, движение остаётся плавным.",
-          "Микрофон по голосу больше не глотает начало слова и паузы между словами. Чувствительность не портит звук собеседника.",
-          "Собеседник снова слышит вас с нормальной громкостью: шумоподавление не уводит уровень вниз и не затрагивает чужой микрофон.",
-          "Размытие и замена фона держат контур. Силуэт не мигает, комната не остаётся каймой, закрытое лицо не выедает голову.",
-          "Автофокус наводится и когда лицо в кадре, и когда его закрывают. Камера не остаётся размытой, фон ложится по силуэту."
-        ]
-      }
-    : {
-        heroTitle: "LokaMeet",
-        heroLead: "Video calls and chat on your local network — no internet and no cloud.",
-        aboutTitle: "What the app is for",
-        aboutBody:
-          "LokaMeet is for talking inside one LAN (office, home, classroom): direct calls, group conferences, text chat and file transfer. Media goes peer‑to‑peer via WebRTC; no online servers are required. A screenshot, link or GIF is sent as one message with the text, and you can quote another message. Screen share follows the monitor rate, from 60 to 120 fps, without cropping the frame. The microphone can open only while you speak, with a sensitivity slider.",
-        howTitle: "How it works",
-        howItems: [
-          "On start the app opens a local signaling server and announces itself on the LAN via mDNS (Bonjour) and UDP broadcast.",
-          "Other running clients on the same network appear under “Users in LAN”.",
-          "A direct call is a WebRTC peer‑to‑peer session between two people.",
-          "A conference is a mesh: the host creates a room; others join and connect to each other.",
-          "Chat and status events use the same local channel; history is stored on your PC."
-        ],
-        needTitle: "What you need for reliable operation",
-        needItems: [
-          "Everyone on the same local network segment (LAN / Wi‑Fi).",
-          "Camera and microphone permissions for LokaMeet in Windows.",
-          "Windows Firewall allowing the app on private networks.",
-          "mDNS (UDP 5353) helps discovery; if blocked, UDP fallback (port 45454) is used.",
-          "Security software must not block local UDP/WebRTC traffic.",
-          "Screen capture permission for screen sharing."
-        ],
-        softwareTitle: "What software do you need",
-        softwareIntro:
-          "For normal use you barely need anything else — LokaMeet is a standalone app. Below: required, recommended, and developer-only items.",
-        softwareRequiredTitle: "Required",
-        softwareRequired: [
-          "Windows and LokaMeet itself (installer or portable build).",
-          "Camera and/or microphone (plus Windows permissions for LokaMeet).",
-          "A shared local network with the other participants."
-        ],
-        softwareOptionalTitle: "Recommended for stable discovery",
-        softwareOptional: [
-          "Bonjour Print Services (Apple) — improves mDNS discovery on Windows.",
-          "Windows Firewall rules allowing LokaMeet on private networks."
-        ],
-        softwareDevTitle: "Only when building from source",
-        softwareDev: ["Node.js (npm)", "Project dependencies via npm install (Electron etc. come with them)."],
-        softwareNotNeededTitle: "Not required",
-        softwareNotNeeded:
-          "Internet, Zoom, a browser, a separate media server, or a cloud account are not needed for LAN calls.",
-        linksTitle: "Useful links & software",
-        tip: "If peers do not appear: check the network and firewall, then try manual connect by IP/port in the Connection tab.",
-        changesTitle: "What's new in 1.4.0",
-        addedTitle: "Added",
-        fixedTitle: "Fixed",
-        addedItems: [
-          "Screen share follows the monitor rate: at least 60 fps and at most 120. The value is shown in Media, under video quality. Resolution matches the screen and the frame is not cropped.",
-          "Voice-activated microphone: a sensitivity slider on the Audio tab. Higher opens the mic on a quieter voice. While you are silent, nothing is sent.",
-          "Checkers, chess and battleship can be played against the computer: easy, medium and hard.",
-          "Camera controls (focus, exposure, brightness and the rest) appear only when the device supports them.",
-          "The logs folder and chat history clearing are on the Interface tab."
-        ],
-        fixedItems: [
-          "Screen-share video is no longer cropped or dropped. The picture stays close to the original and motion stays smooth.",
-          "Voice activation no longer cuts off the start of a word or the pause between words. The slider does not spoil the other person's audio.",
-          "The other person hears you at a normal level again. Noise suppression no longer ducks your voice or touches their microphone.",
-          "Blur and background replacement hold the outline. The silhouette does not flicker, the room does not leave a rim, and a covered face does not eat into the head.",
-          "Autofocus locks on whether the face is visible or covered. The camera no longer stays soft, and the background follows the silhouette."
-        ]
-      };
-
-  const links = [
-    {
-      title: ru ? "Bonjour Print Services (Windows)" : "Bonjour Print Services (Windows)",
-      desc: ru
-        ? "Рекомендуется для надёжного mDNS‑обнаружения пользователей в LAN."
-        : "Recommended for reliable mDNS discovery of peers on the LAN.",
-      url: "https://support.apple.com/kb/DL999"
-    },
-    {
-      title: ru ? "Брандмауэр Windows" : "Windows Firewall",
-      desc: ru
-        ? "Откройте параметры и разрешите LokaMeet для частных сетей."
-        : "Open settings and allow LokaMeet on private networks.",
-      url: "ms-settings:windowsdefendersecuritycenter-firewall"
-    },
-    {
-      title: ru ? "Node.js (только для разработки)" : "Node.js (development only)",
-      desc: ru
-        ? "Нужен, если собираете LokaMeet из исходников через npm."
-        : "Needed only if you build LokaMeet from source with npm.",
-      url: "https://nodejs.org/"
-    },
-    {
-      title: "WebRTC",
-      desc: ru
-        ? "Технология P2P‑аудио/видео, на которой построены звонки LokaMeet."
-        : "The P2P audio/video technology behind LokaMeet calls.",
-      url: "https://webrtc.org/"
-    },
-    {
-      title: "Electron",
-      desc: ru ? "Платформа десктоп‑приложения." : "Desktop app runtime.",
-      url: "https://www.electronjs.org/"
-    }
-  ];
-
-  return (
-    <div className="helpPanel">
-      <div className="helpHero">
-        <div className="helpHeroTitleRow">
-          <img className="appLogo helpHeroLogo" src={APP_ICON_SRC} alt="" />
-          <div className="helpHeroTitle">{copy.heroTitle}</div>
-          <span className="appVersionBadge" title={ru ? "Версия сборки" : "Build version"}>
-            v{props.version}
-          </span>
-        </div>
-        <p className="helpHeroLead">{copy.heroLead}</p>
-      </div>
-
-      <section className="helpSection">
-        <h3>{copy.changesTitle}</h3>
-        <p><b>{copy.addedTitle}</b></p>
-        <ul className="helpList">
-          {copy.addedItems.map((item) => (
-            <li key={item}>{item}</li>
-          ))}
-        </ul>
-        <p><b>{copy.fixedTitle}</b></p>
-        <ul className="helpList">
-          {copy.fixedItems.map((item) => (
-            <li key={item}>{item}</li>
-          ))}
-        </ul>
-      </section>
-
-      <section className="helpSection">
-        <h3>{copy.aboutTitle}</h3>
-        <p>{copy.aboutBody}</p>
-      </section>
-
-      <section className="helpSection">
-        <h3>{copy.howTitle}</h3>
-        <ul className="helpList">
-          {copy.howItems.map((item) => (
-            <li key={item}>{item}</li>
-          ))}
-        </ul>
-      </section>
-
-      <section className="helpSection">
-        <h3>{copy.needTitle}</h3>
-        <ul className="helpList">
-          {copy.needItems.map((item) => (
-            <li key={item}>{item}</li>
-          ))}
-        </ul>
-      </section>
-
-      <section className="helpSection helpSoftware">
-        <h3>{copy.softwareTitle}</h3>
-        <p>{copy.softwareIntro}</p>
-        <div className="helpSoftGrid">
-          <div className="helpSoftCard">
-            <div className="helpSoftCardTitle">{copy.softwareRequiredTitle}</div>
-            <ul className="helpList">
-              {copy.softwareRequired.map((item) => (
-                <li key={item}>{item}</li>
-              ))}
-            </ul>
-          </div>
-          <div className="helpSoftCard">
-            <div className="helpSoftCardTitle">{copy.softwareOptionalTitle}</div>
-            <ul className="helpList">
-              {copy.softwareOptional.map((item) => (
-                <li key={item}>{item}</li>
-              ))}
-            </ul>
-          </div>
-          <div className="helpSoftCard">
-            <div className="helpSoftCardTitle">{copy.softwareDevTitle}</div>
-            <ul className="helpList">
-              {copy.softwareDev.map((item) => (
-                <li key={item}>{item}</li>
-              ))}
-            </ul>
-          </div>
-        </div>
-        <div className="helpSoftNote">{copy.softwareNotNeededTitle}: {copy.softwareNotNeeded}</div>
-      </section>
-
-      <section className="helpSection">
-        <h3>{copy.linksTitle}</h3>
-        <div className="helpLinks">
-          {links.map((link) => (
-            <button
-              key={link.url}
-              type="button"
-              className="helpLinkCard"
-              onClick={() => openLink(link.url)}
-              title={link.url}
-            >
-              <span className="helpLinkTitle">{link.title}</span>
-              <span className="helpLinkDesc">{link.desc}</span>
-            </button>
-          ))}
-        </div>
-      </section>
-
-      <div className="helpTip">{copy.tip}</div>
-    </div>
-  );
-}
-
-function Modal(props: {
-  title: string;
-  children: React.ReactNode;
-  onClose: () => void;
-  size?: "default" | "settings";
-  native?: boolean;
-}) {
-  const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
-  const dragRef = useRef<{ dx: number; dy: number } | null>(null);
-  const isSettings = props.size === "settings";
-  const native = Boolean(props.native);
-  const defaultW = 720;
-  const defaultH = 900;
-  const minSizeRef = useRef({
-    w: Math.min(defaultW, window.innerWidth - 16),
-    h: Math.min(defaultH, Math.floor(window.innerHeight * 0.88), window.innerHeight - 16)
+    video.src = url;
   });
-  const [box, setBox] = useState(minSizeRef.current);
-  const boxRef = useRef(box);
-  boxRef.current = box;
-  const posRef = useRef(pos);
-  posRef.current = pos;
-  const resizeRef = useRef<{
-    edge: string;
-    startX: number;
-    startY: number;
-    startW: number;
-    startH: number;
-    startLeft: number;
-    startTop: number;
-  } | null>(null);
+}
 
-  useEffect(() => {
-    if (native) return;
-    const clampPos = (x: number, y: number, w: number, h: number) => ({
-      x: Math.max(8, Math.min(window.innerWidth - w - 8, x)),
-      y: Math.max(8, Math.min(window.innerHeight - h - 8, y))
-    });
-
-    const onMove = (e: MouseEvent) => {
-      const resize = resizeRef.current;
-      if (resize) {
-        const minW = minSizeRef.current.w;
-        const minH = minSizeRef.current.h;
-        const maxW = window.innerWidth - 16;
-        const maxH = window.innerHeight - 16;
-        const dx = e.clientX - resize.startX;
-        const dy = e.clientY - resize.startY;
-        let w = resize.startW;
-        let h = resize.startH;
-        let x = resize.startLeft;
-        let y = resize.startTop;
-        if (resize.edge.includes("e")) w = resize.startW + dx;
-        if (resize.edge.includes("s")) h = resize.startH + dy;
-        if (resize.edge.includes("w")) {
-          w = resize.startW - dx;
-          w = Math.max(minW, Math.min(maxW, w));
-          x = resize.startLeft + resize.startW - w;
-        } else {
-          w = Math.max(minW, Math.min(maxW, w));
-        }
-        if (resize.edge.includes("n")) {
-          h = resize.startH - dy;
-          h = Math.max(minH, Math.min(maxH, h));
-          y = resize.startTop + resize.startH - h;
-        } else {
-          h = Math.max(minH, Math.min(maxH, h));
-        }
-        const nextPos = clampPos(x, y, w, h);
-        setBox({ w, h });
-        setPos(nextPos);
-        return;
-      }
-      const d = dragRef.current;
-      if (!d) return;
-      const w = boxRef.current.w;
-      const h = boxRef.current.h;
-      setPos(clampPos(e.clientX - d.dx, e.clientY - d.dy, w, h));
-    };
-    const onUp = () => {
-      dragRef.current = null;
-      resizeRef.current = null;
-    };
-    document.addEventListener("mousemove", onMove);
-    document.addEventListener("mouseup", onUp);
-    return () => {
-      document.removeEventListener("mousemove", onMove);
-      document.removeEventListener("mouseup", onUp);
-    };
-  }, [native]);
-
-  const beginResize = (edge: string, e: React.MouseEvent) => {
-    if (e.button !== 0) return;
-    e.preventDefault();
-    e.stopPropagation();
-    const panel = e.currentTarget.parentElement as HTMLElement;
-    const rect = panel.getBoundingClientRect();
-    resizeRef.current = {
-      edge,
-      startX: e.clientX,
-      startY: e.clientY,
-      startW: rect.width,
-      startH: rect.height,
-      startLeft: rect.left,
-      startTop: rect.top
-    };
-    setPos({ x: rect.left, y: rect.top });
-    setBox({ w: rect.width, h: rect.height });
-  };
-
+function Splitter({ className, onStart, onDelta, onDone }: { className: string; onStart: () => void; onDelta: (dx: number) => void; onDone: () => void }) {
+  const down = useRef(false);
   return (
     <div
-      className={`modalOverlay${native ? " is-native" : ""}`}
-      onMouseDown={native ? undefined : props.onClose}
-    >
-      <div
-        className={`panel modalPanel${isSettings ? " modalPanelSettings" : ""}${native ? " is-native" : ""}`}
-        style={
-          native
-            ? undefined
-            : {
-                left: pos ? pos.x : "50%",
-                top: pos ? pos.y : "50%",
-                transform: pos ? "none" : "translate(-50%, -50%)",
-                ...(isSettings ? { width: box.w, height: box.h, maxHeight: box.h } : {})
-              }
-        }
-        onMouseDown={(e) => e.stopPropagation()}
-      >
-        <div
-          className={`panelHeader${native ? " is-nativeDrag" : ""}`}
-          style={{ cursor: "move", userSelect: "none" }}
-          onMouseDown={
-            native
-              ? undefined
-              : (e) => {
-                  if (e.button !== 0) return;
-                  const rect = (e.currentTarget.parentElement as HTMLElement).getBoundingClientRect();
-                  dragRef.current = { dx: e.clientX - rect.left, dy: e.clientY - rect.top };
-                  setPos({ x: rect.left, y: rect.top });
-                }
-          }
-        >
-          <div className="truncate" title={props.title}>
-            {props.title}
-          </div>
-          <button className="btn" onClick={props.onClose}>
-            ×
-          </button>
+      className={`splitter ${className}`}
+      onPointerDown={(event) => {
+        down.current = true;
+        onStart();
+        event.currentTarget.setPointerCapture(event.pointerId);
+      }}
+      onPointerMove={(event) => { if (down.current) onDelta(event.movementX); }}
+      onPointerUp={() => { if (!down.current) return; down.current = false; onDone(); }}
+      onPointerCancel={() => { if (!down.current) return; down.current = false; onDone(); }}
+    />
+  );
+}
+
+function imagePreview(file: File): Promise<string> {
+  return new Promise((resolve) => {
+    const image = new Image();
+    const url = URL.createObjectURL(file);
+    const done = (value: string) => {
+      URL.revokeObjectURL(url);
+      resolve(value);
+    };
+    image.onload = () => {
+      const scale = Math.min(1, 480 / Math.max(1, image.width));
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round(image.width * scale));
+      canvas.height = Math.max(1, Math.round(image.height * scale));
+      canvas.getContext("2d")?.drawImage(image, 0, 0, canvas.width, canvas.height);
+      done(canvas.toDataURL("image/jpeg", 0.72));
+    };
+    image.onerror = () => done("");
+    image.src = url;
+  });
+}
+
+function fileUrl(filePath: string): string {
+  return `loka://media/?path=${encodeURIComponent(filePath)}`;
+}
+
+function clock(ts: number): string {
+  return new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+function dayKey(ts: number): string {
+  const date = new Date(ts);
+  return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+}
+
+function dayLabel(ts: number, locale: string, t: (key: Key) => string): string {
+  const date = new Date(ts);
+  const now = new Date();
+  if (dayKey(ts) === dayKey(now.getTime())) return t("chats.today");
+  const y = new Date(now);
+  y.setDate(now.getDate() - 1);
+  if (dayKey(ts) === dayKey(y.getTime())) return t("chats.yesterday");
+  return date.toLocaleDateString(locale === "en" ? "en-GB" : "ru-RU", { day: "numeric", month: "long" });
+}
+
+function stamp(value: number): string {
+  if (!Number.isFinite(value) || value < 0) return "0:00";
+  return `${Math.floor(value / 60)}:${String(Math.floor(value % 60)).padStart(2, "0")}`;
+}
+
+function duration(started: number, now = Date.now()): string {
+  if (!started) return "00:00";
+  const seconds = Math.max(0, Math.floor((now - started) / 1000));
+  return `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
+function when(ts: number): string {
+  if (!ts) return "—";
+  return new Date(ts).toLocaleString([], { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+function isMotion(src?: string): boolean {
+  return Boolean(src?.startsWith("data:video/"));
+}
+
+function focusStyle(focus?: AvatarFocus): CSSProperties {
+  const zoom = Math.max(1, focus?.zoom || 1);
+  const x = clamp(focus?.x ?? 50, 0, 100);
+  const y = clamp(focus?.y ?? 50, 0, 100);
+  return {
+    objectFit: "cover",
+    objectPosition: `${x}% ${y}%`,
+    transform: `scale(${zoom})`,
+    transformOrigin: `${x}% ${y}%`,
+  };
+}
+
+function peerView(peer: PeerInfo, t: (key: Key) => string): { kind: string; label: string } {
+  if (peer.inCall) return peer.callKind === "conf" ? { kind: "conf", label: t("status.inConf") } : { kind: "call", label: t("status.inCall") };
+  if (peer.status === "busy") return { kind: "busy", label: t("status.busy") };
+  if (peer.status === "away") return { kind: "away", label: t("status.away") };
+  if (!peer.online || peer.status === "offline") return { kind: "offline", label: t("status.offline") };
+  return { kind: "online", label: t("status.online") };
+}
+
+function selfView(status: Presence | undefined, inCall: boolean, mode: "p2p" | "conf" | null, t: (key: Key) => string): { kind: string; label: string } {
+  if (inCall) return mode === "conf" ? { kind: "conf", label: t("status.inConf") } : { kind: "call", label: t("status.inCall") };
+  if (status === "busy") return { kind: "busy", label: t("status.busy") };
+  if (status === "invisible") return { kind: "invisible", label: t("status.invisible") };
+  if (status === "away") return { kind: "away", label: t("status.away") };
+  return { kind: "online", label: t("status.online") };
+}
+
+function formatSystem(text: string, t: (key: Key) => string, ts = 0): string {
+  if (!text.startsWith("sys:")) return text;
+  const [code, name = "", room = ""] = text.split("\t");
+  const key = ({
+    "sys:join-room": "sys.joinRoom",
+    "sys:join-conf": "sys.joinConf",
+    "sys:start-conf": "sys.startConf",
+    "sys:leave-conf": "sys.leaveConf",
+    "sys:end-conf": "sys.endConf",
+    "sys:join-call": "sys.joinCall",
+    "sys:leave-call": "sys.leaveCall",
+    "sys:rec-on": "sys.recOn",
+    "sys:rec-off": "sys.recOff",
+    "sys:rec-saved": "sys.recSaved",
+    "sys:control-ask": "sys.controlAsk",
+    "sys:control-ok": "sys.controlOk",
+    "sys:control-no": "sys.controlNo",
+    "sys:control-end": "sys.controlEnd",
+  } as Record<string, Key>)[code];
+  if (!key) return text;
+  const time = ts ? clock(ts) : clock(Date.now());
+  return t(key).replaceAll("{name}", name).replaceAll("{room}", room).replaceAll("{time}", time);
+}
+
+function desktopNotice(_text: string, _enabled: boolean): void {
+  /* Windows toast popups stay off while the app is running */
+}
+
+function PeerCard({ peer, t, onClose }: { peer: PeerInfo; t: (key: Key) => string; onClose: () => void }) {
+  const view = peerView(peer, t);
+  return (
+    <div className="modal-back" onClick={onClose}>
+      <div className="modal peer-card" onClick={(event) => event.stopPropagation()}>
+        <Avatar name={peer.name} color={peer.color} photo={peer.avatar} focus={peer.avatarFocus} large status={view.kind} />
+        <h2>{peer.name} <NickMarks recording={Boolean(peer.recording) || engine.state.recorders.includes(peer.id)} sharing={Boolean(peer.sharing) || engine.state.tiles.some((tile) => tile.source === "screen" && tile.peerId === peer.id)} t={t} /></h2>
+        <div className={`status-word ${view.kind}`}>{view.label}</div>
+        <div className="peer-meta">
+          <div><span>{t("profile.connected")}</span><b>{when(peer.firstSeen)}</b></div>
+          <div><span>{t("profile.lastSeen")}</span><b>{when(peer.lastSeen)}</b></div>
+          <div><span>{t("profile.address")}</span><b>{peer.ip}:{peer.port}</b></div>
         </div>
-        <div className={`panelBody modalBody${isSettings ? " modalBodySettings" : ""}`}>{props.children}</div>
-        {isSettings && !native && (
-          <>
-            <div className="modalResizeHandle modalResizeHandle-n" onMouseDown={(e) => beginResize("n", e)} />
-            <div className="modalResizeHandle modalResizeHandle-s" onMouseDown={(e) => beginResize("s", e)} />
-            <div className="modalResizeHandle modalResizeHandle-e" onMouseDown={(e) => beginResize("e", e)} />
-            <div className="modalResizeHandle modalResizeHandle-w" onMouseDown={(e) => beginResize("w", e)} />
-            <div className="modalResizeHandle modalResizeHandle-ne" onMouseDown={(e) => beginResize("ne", e)} />
-            <div className="modalResizeHandle modalResizeHandle-nw" onMouseDown={(e) => beginResize("nw", e)} />
-            <div className="modalResizeHandle modalResizeHandle-se" onMouseDown={(e) => beginResize("se", e)} />
-            <div className="modalResizeHandle modalResizeHandle-sw" onMouseDown={(e) => beginResize("sw", e)} />
-          </>
-        )}
+        <button className="btn ghost" type="button" onClick={onClose}>{t("composer.cancel")}</button>
       </div>
     </div>
   );
 }
 
-function isAutoFileCaption(text: string) {
-  return /^(Файл|File):\s/i.test((text || "").trim());
-}
-
-function mediaAttachmentsOf(message: ChatMessage): Array<Extract<ChatAttachment, { kind: "file" | "image" | "video" }>> {
-  const list = message.attachments?.length ? message.attachments : message.attachment ? [message.attachment] : [];
-  return list.filter(
-    (item): item is Extract<ChatAttachment, { kind: "file" | "image" | "video" }> =>
-      item.kind === "file" || item.kind === "image" || item.kind === "video"
+function AvatarStudio({ profile, color, t }: { profile: Profile; color: string; t: (key: Key) => string }) {
+  const [src, setSrc] = useState(profile.avatar || "");
+  const [focus, setFocus] = useState<AvatarFocus>(profile.avatarFocus || { x: 50, y: 50, zoom: 1 });
+  const [error, setError] = useState("");
+  const focusRef = useRef(focus);
+  const drag = useRef<{ x: number; y: number; fx: number; fy: number } | null>(null);
+  const stageRef = useRef<HTMLDivElement>(null);
+  const saveTimer = useRef(0);
+  focusRef.current = focus;
+  useEffect(() => {
+    if (drag.current) return;
+    setSrc(profile.avatar || "");
+    const next = profile.avatarFocus || { x: 50, y: 50, zoom: 1 };
+    setFocus(next);
+    focusRef.current = next;
+  }, [profile.avatar, profile.avatarFocus?.x, profile.avatarFocus?.y, profile.avatarFocus?.zoom]);
+  useEffect(() => {
+    const node = stageRef.current;
+    if (!node) return;
+    const onWheel = (event: WheelEvent) => {
+      event.preventDefault();
+      const current = focusRef.current;
+      commit({ ...current, zoom: clamp(current.zoom + (event.deltaY < 0 ? 0.08 : -0.08), 1, 3) });
+    };
+    node.addEventListener("wheel", onWheel, { passive: false });
+    return () => node.removeEventListener("wheel", onWheel);
+  }, [src]);
+  function commit(next: AvatarFocus, avatar?: string) {
+    focusRef.current = next;
+    setFocus(next);
+    window.clearTimeout(saveTimer.current);
+    saveTimer.current = window.setTimeout(() => {
+      void api.invoke("setProfile", avatar !== undefined ? { avatar, avatarFocus: next } : { avatarFocus: next });
+    }, 160);
+  }
+  function onFile(file?: File) {
+    if (!file) return;
+    if (file.size > 4 * 1024 * 1024) {
+      setError(t("profile.tooBig"));
+      return;
+    }
+    setError("");
+    const reader = new FileReader();
+    reader.onload = () => {
+      const url = String(reader.result || "");
+      setSrc(url);
+      commit({ x: 50, y: 50, zoom: 1 }, url);
+    };
+    reader.readAsDataURL(file);
+  }
+  const motion = isMotion(src);
+  return (
+    <div>
+      <div className="profile-hero">
+        <div
+          className="crop-stage"
+          ref={stageRef}
+          style={{ background: color }}
+          onPointerDown={(event) => {
+            drag.current = { x: event.clientX, y: event.clientY, fx: focusRef.current.x, fy: focusRef.current.y };
+            event.currentTarget.setPointerCapture(event.pointerId);
+          }}
+          onPointerMove={(event) => {
+            const origin = drag.current;
+            if (!origin) return;
+            const box = event.currentTarget.getBoundingClientRect();
+            const next = {
+              ...focusRef.current,
+              x: clamp(origin.fx - ((event.clientX - origin.x) / box.width) * 100, 0, 100),
+              y: clamp(origin.fy - ((event.clientY - origin.y) / box.height) * 100, 0, 100),
+            };
+            focusRef.current = next;
+            setFocus(next);
+          }}
+          onPointerUp={() => {
+            if (!drag.current) return;
+            drag.current = null;
+            commit(focusRef.current);
+          }}
+        >
+          {src && motion ? <video src={src} autoPlay muted loop playsInline style={focusStyle(focus)} /> : src ? <img src={src} alt="" style={focusStyle(focus)} /> : <span style={{ fontSize: 48, position: "relative" }}>{profile.name.slice(0, 1).toUpperCase() || "L"}</span>}
+        </div>
+        <div>
+          <div className="name">{profile.name || t("welcome.name")}</div>
+          <p className="hint">{t("profile.cropHint")}</p>
+        </div>
+      </div>
+      <label className="field">{t("profile.zoom")}<input type="range" min={1} max={3} step={0.05} value={focus.zoom} onChange={(event) => commit({ ...focusRef.current, zoom: Number(event.target.value) })} /></label>
+      <div className="row">
+        <label className="btn ghost">{t("settings.photo")}<input hidden type="file" accept="image/*,video/webm,video/mp4,.gif,.webp" onChange={(event) => { onFile(event.target.files?.[0]); event.target.value = ""; }} /></label>
+        <button className="btn ghost" type="button" onClick={() => commit({ x: 50, y: 50, zoom: 1 })}>{t("profile.resetCrop")}</button>
+        {src && <button className="btn ghost" type="button" onClick={() => { setSrc(""); void api.invoke("setProfile", { avatar: "" }); }}>{t("settings.clearPhoto")}</button>}
+      </div>
+      {error && <p className="hint">{error}</p>}
+    </div>
   );
 }
 
-function replySnippet(
-  message: ChatMessage,
-  labels: { photo: string; gif: string; video: string; file: string; link: string; message: string }
-) {
-  const raw = (message.text || "").replace(/:([^:\s]+?\.(?:gif|png)):/gi, " ").replace(/\s+/g, " ").trim();
-  if (raw && !isAutoFileCaption(raw)) return raw.slice(0, 160);
-  const media = mediaAttachmentsOf(message);
-  if (media.some((item) => item.kind === "image" && isGifAttachmentMime(item.mime, item.name))) return labels.gif;
-  if (media.some((item) => item.kind === "image")) return labels.photo;
-  if (media.some((item) => item.kind === "video")) return labels.video;
-  if (media.some((item) => item.kind === "file")) return labels.file;
-  if (/https?:\/\/|www\./i.test(message.text || "")) return labels.link;
-  return raw.slice(0, 160) || labels.message;
+const CAMERA_SKIP = new Set(["deviceId", "groupId", "width", "height", "frameRate", "aspectRatio", "facingMode", "resizeMode", "latency"]);
+const CAP_LABEL: Record<string, Key> = {
+  zoom: "cam.zoom",
+  brightness: "cam.brightness",
+  contrast: "cam.contrast",
+  saturation: "cam.saturation",
+  sharpness: "cam.sharpness",
+  exposureCompensation: "cam.exposureCompensation",
+  colorTemperature: "cam.colorTemperature",
+  focusDistance: "cam.focusDistance",
+  iso: "cam.iso",
+  exposureTime: "cam.exposureTime",
+  pan: "cam.pan",
+  tilt: "cam.tilt",
+  torch: "cam.torch",
+  focusMode: "cam.focusMode",
+  exposureMode: "cam.exposureMode",
+  whiteBalanceMode: "cam.whiteBalanceMode",
+};
+
+function cameraSizes(caps: Record<string, unknown>): Array<{ w: number; h: number }> {
+  const width = caps.width as { max?: number } | undefined;
+  const max = width?.max ?? 1920;
+  return [{ w: 640, h: 480 }, { w: 1280, h: 720 }, { w: 1920, h: 1080 }].filter((size) => size.w <= max + 16);
 }
 
-async function copyChatPayload(text: string) {
-  try {
-    if (window.lokameet?.app?.clipboardWriteText) {
-      await window.lokameet.app.clipboardWriteText(text);
-      return;
-    }
-    await navigator.clipboard.writeText(text);
-  } catch {
-    try {
-      await navigator.clipboard.writeText(text);
-    } catch {
-      // буфер может быть недоступен без фокуса окна
-    }
-  }
+function cameraRates(caps: Record<string, unknown>): number[] {
+  const frame = caps.frameRate as { max?: number } | undefined;
+  const max = frame?.max ?? 30;
+  return [15, 24, 30, 60].filter((rate) => rate <= max + 1);
 }
 
-function openChatLink(raw: string) {
-  const href = /^https?:\/\//i.test(raw) ? raw : `https://${raw.replace(/^\/+/, "")}`;
-  void window.lokameet.app.openExternal(href).catch(() => undefined);
+function modeLabel(item: unknown, t: (key: Key) => string): string {
+  const value = String(item);
+  if (value === "continuous" || value === "auto") return t("settings.auto");
+  if (value === "manual") return t("settings.camManual");
+  return value;
 }
 
-const CHAT_URL_RE = /((?:https?:\/\/|www\.)[^\s<>"'()]+)/gi;
-
-function renderTextWithLinks(text: string, keyPrefix: string, copyLabel: string): React.ReactNode[] {
-  const out: React.ReactNode[] = [];
-  let last = 0;
-  const re = new RegExp(CHAT_URL_RE.source, "gi");
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(text)) !== null) {
-    const start = m.index;
-    const raw = m[1] ?? m[0];
-    if (start > last) out.push(text.slice(last, start));
-    const trimmed = raw.replace(/[.,;:!?]+$/g, "");
-    const href = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
-    out.push(
-      <span key={`${keyPrefix}-url-${start}`} className="chatLinkWrap">
-        <a
-          className="chatLink"
-          href={href}
-          onClick={(e) => {
-            e.preventDefault();
-            openChatLink(trimmed);
-          }}
-        >
-          {trimmed}
-        </a>
-        <button type="button" className="msgCopyBtn" title={copyLabel} onClick={() => void copyChatPayload(href)}>
-          {copyLabel}
-        </button>
-      </span>
-    );
-    last = start + raw.length;
-    if (trimmed.length < raw.length) {
-      out.push(raw.slice(trimmed.length));
-      last = start + raw.length;
-    }
-  }
-  if (last < text.length) out.push(text.slice(last));
-  return out.length ? out : [text];
-}
-
-function renderTextWithSmiles(text: string, smilesSet: Set<string>, copyLabel: string) {
-  // Формат токена: :filename.gif: или :filename.png:
-  const re = /:([^:\s]+?\.(?:gif|png)):/gi;
-  const out: React.ReactNode[] = [];
-  let last = 0;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(text)) !== null) {
-    const start = m.index;
-    const end = re.lastIndex;
-    const file = m[1];
-    if (start > last) out.push(...renderTextWithLinks(text.slice(last, start), `t${start}`, copyLabel));
-    if (file && smilesSet.has(file.toLowerCase())) {
-      out.push(
-        <img
-          key={`${start}-${file}`}
-          className="smileImg"
-          style={{ verticalAlign: "middle" }}
-          src={`./smiles/${encodeURIComponent(file)}`}
-          alt={file}
-          title={file}
-        />
+function CameraCaps({ caps, live, settings, patch, t }: { caps: Record<string, unknown>; live: Record<string, unknown>; settings: Settings; patch: (partial: Partial<Settings>) => void; t: (key: Key) => string }) {
+  const keys = Object.keys(caps).filter((key) => !CAMERA_SKIP.has(key));
+  if (!keys.length) return <p className="hint">{t("settings.cameraPlain")}</p>;
+  const tune = settings.camTune ?? {};
+  const write = (key: string, value: number | string | boolean) => patch({ camTune: { ...tune, [key]: value } });
+  const picture = ["brightness", "contrast", "saturation", "sharpness", "exposureCompensation"];
+  const modes = ["focusMode", "exposureMode", "whiteBalanceMode"];
+  const rest = keys.filter((key) => !picture.includes(key) && !modes.includes(key));
+  const draw = (key: string) => {
+    const cap = caps[key];
+    if (cap == null) return null;
+    const label = CAP_LABEL[key] ? t(CAP_LABEL[key]) : key;
+    if (Array.isArray(cap)) {
+      return (
+        <label className="field" key={key}>{label}
+          <select className="select" value={String(tune[key] ?? live[key] ?? "")} onChange={(event) => write(key, event.target.value)}>
+            <option value="">{t("settings.auto")}</option>
+            {cap.map((item) => <option key={String(item)} value={String(item)}>{modeLabel(item, t)}</option>)}
+          </select>
+        </label>
       );
-    } else {
-      out.push(...renderTextWithLinks(text.slice(start, end), `u${start}`, copyLabel));
     }
-    last = end;
-  }
-  if (last < text.length) out.push(...renderTextWithLinks(text.slice(last), "tail", copyLabel));
-  return <span>{out}</span>;
+    if (cap && typeof cap === "object" && "min" in cap && "max" in cap) {
+      const range = cap as { min: number; max: number; step?: number };
+      const min = Number(range.min);
+      const max = Number(range.max);
+      const span = max - min || 1;
+      const stored = tune[key];
+      const hardware = Number(live[key]);
+      const colorDefault = min + span * 0.62;
+      let current = Number(stored);
+      if (stored == null || stored === "") current = Number.isFinite(hardware) ? hardware : key === "saturation" ? colorDefault : min + span * 0.5;
+      if (key === "saturation" && (!Number.isFinite(current) || current <= min + span * 0.08)) current = colorDefault;
+      const pct = Math.round(((current - min) / span) * 100);
+      return (
+        <label className="field slider-field" key={key}>
+          <span className="slider-top"><span>{label}</span><b>{pct}%</b></span>
+          <input type="range" min={min} max={max} step={Number(range.step) || span / 100} value={current} onChange={(event) => {
+            const next = Number(event.target.value);
+            write(key, key === "saturation" ? Math.max(next, min + span * 0.12) : next);
+          }} />
+        </label>
+      );
+    }
+    if (typeof cap === "boolean" || key === "torch") {
+      return <Toggle key={key} label={label} on={Boolean(tune[key] ?? live[key])} onLabel={t("settings.on")} offLabel={t("settings.off")} set={(value) => write(key, value)} />;
+    }
+    return null;
+  };
+  return (
+    <>
+      {picture.map(draw)}
+      {modes.some((key) => caps[key] != null) && <h2>{t("settings.camModes")}</h2>}
+      {modes.map(draw)}
+      {rest.length > 0 && (
+        <details className="cam-more">
+          <summary>{t("settings.camMore")}</summary>
+          {rest.map(draw)}
+        </details>
+      )}
+    </>
+  );
 }
-
