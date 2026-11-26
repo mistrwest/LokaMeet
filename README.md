@@ -6,6 +6,8 @@
 
 Репозиторий: https://github.com/mistrwest/LokaMeet
 
+![LokaMeet 2.0.0: звонок и чат](screenshot.png)
+
 ## Что нового
 
 ### 2.0.0
